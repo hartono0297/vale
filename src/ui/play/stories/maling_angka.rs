@@ -9,8 +9,8 @@
 use std::f32::consts::{PI, TAU};
 
 use super::{
-    Draw, Ease, HEAD_PIVOT, Layer, MascotShot, Part, Shot, Slot, Stage, blinks, bump, kf, lerp, ring,
-    toward_rest,
+    Draw, Ease, HEAD_PIVOT, Layer, MascotShot, Part, Shot, Slot, Stage, blinks, bump, kept, kf, lerp,
+    ring, toward_rest,
 };
 use crate::ui::geometry::IdleLayout;
 use crate::ui::mascot::CrestPose;
@@ -55,12 +55,13 @@ fn beak_at(m: &MascotShot, rest: (f32, f32), k: f32) -> (f32, f32) {
 }
 
 /// One moment of the story on `stage`. `beat.alpha` eases the whole of it
-/// home and `beat.spread` is where the island has made room (the mascot at
+/// home, paced by the wind-down's time (`kept`), and `beat.spread` is where
+/// the island has made room (the mascot at
 /// its left end, the clock at its right). Exactly at rest at 0 s, at the end
 /// and with `alpha` 0. The falk has no body here, so the look is unused.
 pub fn shot(stage: &Stage) -> Shot {
     let Stage { style, shape: s, beat, .. } = *stage;
-    let (t, a) = (beat.t, beat.alpha.clamp(0.0, 1.0));
+    let (t, a) = (beat.t, kept(beat.alpha.clamp(0.0, 1.0), 0.0, 1.0));
     let mut out = Shot::rest(style, s);
     if t <= 0.0 || t >= Story::MalingAngka.secs() || a == 0.0 {
         return out;
@@ -175,6 +176,7 @@ pub fn shot(stage: &Stage) -> Shot {
         beak_open: chirp > 0.05,
         bare_octopus: false,
         flush: 0.0,
+        alpha: 1.0,
     };
     let beak = beak_at(&head, rest, k);
     let pivot = (rest.0 + head.dx, rest.1 + head.dy);
@@ -418,6 +420,7 @@ mod tests {
                     let drop = (t - 5.05_f32).max(0.0);
                     let want = (beak.0 + 4.0 * drop, beak.1 + 90.0 * drop * drop);
                     assert!((at.0 - want.0).abs() < 1e-3 && (at.1 - want.1).abs() < 1e-3, "{case}: {at:?} is not at the beak {want:?}");
+                    let a = crate::ui::play::stories::kept(a, 0.0, 1.0);
                     assert!((alpha - a).abs() < 1e-3, "{case}: the stolen digit fades with the head");
                     let home = shot.digits[4];
                     if t < 4.7 && a < 1.0 {
@@ -478,6 +481,7 @@ mod tests {
             beak_open: true,
             bare_octopus: false,
             flush: 0.0,
+            alpha: 1.0,
         };
         let base = Pose { glance_x: 1.0, head_dx_dip: 3.0, ..Pose::default() };
         let pose = m.pose(base);

@@ -9,7 +9,7 @@
 
 use std::f32::consts::{PI, TAU};
 
-use super::{Draw, Ease, HEAD_PIVOT, Layer, MascotShot, Part, Shot, Slot, Stage, blinks, island_box, kf, lerp, rim_pt, ring};
+use super::{Draw, Ease, Layer, MascotShot, Part, Shot, Slot, Stage, blinks, island_box, kept, kf, lerp, rim_pt, ring};
 use crate::config::Style;
 use crate::ui::geometry::{ROBOT_COMPACT, corner_radius};
 use crate::ui::play::art::cat::{CAT_SC, slim_tail, small_paw, tail};
@@ -19,10 +19,6 @@ use crate::ui::play::trigger::Story;
 use crate::ui::robot::{Expr, GRID};
 
 use Ease::{I, Lin, O, Ob, Qi, Sb, Sio};
-
-/// The slot head is back up from the dark here (its soft overshoot crosses
-/// rest), and its halo returns over the next 0.1 s.
-const RISEN: f32 = 6.95 + 0.4 * (1.0 - 0.9 / 1.9);
 
 /// The four peeks: start, end, and the end it peeks round (-1 left, 1 right).
 const PEEKS: [(f32, f32, f32); 4] = [(1.6, 2.45, -1.0), (3.0, 3.75, 1.0), (4.12, 5.02, -1.0), (5.32, 6.6, 1.0)];
@@ -56,9 +52,10 @@ fn figure(layer: Layer, items: Vec<Draw>, alpha: f32) -> Part {
 }
 
 /// One moment of the story on `stage`, the cat in the coat of its look.
-/// `beat.alpha` eases it home: from 1 to 0.5 the peeks fade and the island
-/// settles, to 0.25 the slot head comes back out of the dark where it dived,
-/// to 0 it rises home and takes its halo back. Cut short, the story holds
+/// `beat.alpha` eases it home, paced by the wind-down's time (`kept`): over
+/// its first 0.58 the peeks fade and the island settles; from 0.3 to 0.88
+/// the slot head comes back out of the dark where it dived, and from 0.6 it
+/// rises home. Cut short, the story holds
 /// where the cut found it, so nothing it had not brought out shows. Exactly
 /// at rest at 0 s, at the end and with `alpha` 0.
 pub fn shot(stage: &Stage) -> Shot {
@@ -73,36 +70,24 @@ pub fn shot(stage: &Stage) -> Shot {
     let Some(slot) = stage.room().robot else {
         return out;
     };
-    let play = ((a - 0.5) * 2.0).clamp(0.0, 1.0);
-    let k = slot.w / GRID;
-    let (slot_x, slot_y) = (slot.x + slot.w / 2.0, slot.y + HEAD_PIVOT.1 * k);
+    let play = kept(a, 0.0, 0.58);
+    let slot_x = slot.x + slot.w / 2.0;
 
-    // The slot head ducks into the dark and later comes back up, its halo
-    // giving way first and returning last: darkening, it is a part (a part
-    // has no halo), which the slot head hands over to where the halo is gone.
+    // The slot head ducks into the dark and later comes back up, fading with
+    // its halo as one. Wound down, it comes back out of the dark where it
+    // dived, then rises home.
     let away = kf(t, &[(0.5, 0.0, Lin), (0.85, 1.0, I), (6.95, 1.0, Lin), (7.35, 0.0, Sb)]);
-    let duck = away * (2.0 * a).min(1.0);
-    let dark = away.max(0.0) * ((a - 0.25) * 4.0).clamp(0.0, 1.0);
-    let halo = kf(t, &[(0.4, 1.0, Lin), (0.5, 0.0, Lin), (RISEN, 0.0, Lin), (RISEN + 0.1, 1.0, Lin)]);
-    out.halo = lerp(1.0, halo, (4.0 * a).min(1.0));
-    let head = MascotShot {
+    let duck = away * kept(a, 0.6, 1.0);
+    let dark = away.max(0.0) * kept(a, 0.3, 0.88);
+    out.slot = Slot::Story(MascotShot {
         dy: 4.0 * duck,
         sx: 1.0 - 0.15 * duck,
         sy: 1.0 - 0.15 * duck,
         expr: if (7.0..7.7).contains(&t) { Expr::Happy } else { Expr::Idle },
         blink: blinks(t, &[7.7]) > 0.25,
+        alpha: 1.0 - dark,
         ..MascotShot::REST
-    };
-    if dark > 0.0 {
-        out.slot = Slot::Empty;
-        if dark < 1.0 {
-            let size = slot.w / ROBOT_COMPACT;
-            let shot = MascotShot { dy: 0.0, sx: head.sx * size, sy: head.sy * size, ..head };
-            out.parts.push(Part { layer: Layer::Dark, draw: Draw::Head { at: (slot_x, slot_y + head.dy), shot }, alpha: 1.0 - dark });
-        }
-    } else {
-        out.slot = Slot::Story(head);
-    }
+    });
 
     // The island: a bump runs along the lip while the cat moves behind it;
     // the wiggle shakes it, the pounce rocks it (a floating pill is knocked
@@ -197,7 +182,6 @@ mod tests {
     use crate::config::Style;
     use crate::theme::{CatColor, Mascot};
     use crate::ui::cat_style::CatLook;
-    use crate::ui::geometry::ROBOT_COMPACT;
     use crate::ui::play::rim::rim;
     use crate::ui::play::shape::{is_rest, rigid};
     use crate::ui::play::state::{Beat, Play};
@@ -233,19 +217,15 @@ mod tests {
             .collect()
     }
 
-    /// The slot head as the frame shows it, wherever it is drawn: its pivot,
-    /// its dip per grid unit and its opacity. `None` while it is all in the
-    /// dark.
+    /// The slot head as the frame shows it: its pivot, its dip per grid unit
+    /// and its opacity. `None` while it is all in the dark.
     fn slot_head(st: &Stage, shot: &Shot) -> Option<((f32, f32), f32, f32)> {
         let r = st.room().robot.unwrap();
         let k = r.w / GRID;
         match shot.slot {
-            Slot::Story(m) => Some(((r.x + 32.0 * k + m.dx, r.y + 40.0 * k + m.dy), k * m.sx, 1.0)),
+            Slot::Story(m) if m.alpha > 0.0 => Some(((r.x + 32.0 * k + m.dx, r.y + 40.0 * k + m.dy), k * m.sx, m.alpha)),
             Slot::App => Some(((r.x + 32.0 * k, r.y + 40.0 * k), k, 1.0)),
-            Slot::Empty => heads(shot)
-                .into_iter()
-                .find(|h| h.0 == Layer::Dark)
-                .map(|(_, at, m, alpha)| (at, m.sx * ROBOT_COMPACT / GRID, alpha)),
+            _ => None,
         }
     }
 
@@ -349,13 +329,12 @@ mod tests {
                 while t < Story::PetakUmpet.secs() {
                     let st = stage(style, w, h, Beat { spread: 1.0, alpha: 1.0, t, cut_at: None }, true);
                     let shot = shot(&st);
-                    let slot_x = st.room().robot.map(|r| r.x + r.w / 2.0).unwrap();
-                    // Only the slot head, diving, is drawn in the island's
-                    // dark; every peeking head is cut to outside it.
+                    // Every peeking head is cut to outside the island; the
+                    // slot head dives in its own slot.
                     for (layer, at, ..) in heads(&shot) {
-                        assert!(layer == Layer::Back || (layer == Layer::Dark && (at.0 - slot_x).abs() < 0.01),
-                            "{style:?} {w}x{h} t={t}: a head in {layer:?} at {at:?}");
+                        assert_eq!(layer, Layer::Back, "{style:?} {w}x{h} t={t}: a head at {at:?}");
                     }
+                    assert!(matches!(shot.slot, Slot::Story(_) | Slot::App), "{style:?} {w}x{h} t={t}");
                     t += 0.02;
                 }
                 // At each peek's height it shows round its end.
@@ -411,21 +390,11 @@ mod tests {
             for (w, h) in SIZES {
                 let case = format!("{style:?} {w}x{h}");
                 let mut last: Option<((f32, f32), f32, f32)> = None;
-                let mut was_part = false;
                 let (mut dark, mut t) = (false, 0.0);
                 while t <= Story::PetakUmpet.secs() {
                     let st = stage(style, w, h, Beat { spread: 1.0, alpha: 1.0, t, cut_at: None }, true);
                     let shot = shot(&st);
                     let now = slot_head(&st, &shot);
-                    let part = heads(&shot).iter().any(|h| h.0 == Layer::Dark);
-                    // Drawn as a part, the slot is empty; handed back to the
-                    // slot, its halo starts from nothing.
-                    if part {
-                        assert_eq!(shot.slot, Slot::Empty, "{case} t={t}");
-                    }
-                    if was_part && !part {
-                        assert!(shot.halo < 0.15, "{case} t={t}: halo {}", shot.halo);
-                    }
                     if let (Some((p, k, a)), Some((q, j, b))) = (now, last) {
                         assert!((p.0 - q.0).abs() < 0.5 && (p.1 - q.1).abs() < 0.5 && (k - j).abs() < 0.02 && (a - b).abs() < 0.12,
                             "{case} t={t}: {q:?} {j} {b} to {p:?} {k} {a}");
@@ -438,31 +407,38 @@ mod tests {
                         assert!(now.unwrap().2 < 0.12, "{case} t={t}: {now:?}");
                     }
                     last = now;
-                    was_part = part;
                     t += 0.01;
                 }
                 assert!(dark, "{case}: never in the dark");
                 // Gone by the first peek, back after the last.
                 assert!(slot_head(&stage(style, w, h, Beat { spread: 1.0, alpha: 1.0, t: 2.0, cut_at: None }, true), &at(style, w, h, 2.0, 1.0)).is_none(), "{case}");
-                assert!(matches!(at(style, w, h, 7.4, 1.0).slot, Slot::Story(_)), "{case}");
+                assert!(matches!(at(style, w, h, 7.4, 1.0).slot, Slot::Story(m) if m.alpha == 1.0), "{case}");
             }
         }
     }
 
     #[test]
-    fn the_slot_heads_halo_gives_way_before_it_dives_and_returns_after() {
-        let halo = |t: f32| at(Style::Pill, 190.0, 34.0, t, 1.0).halo;
-        assert_eq!(halo(0.3), 1.0);
-        assert!(halo(0.45) > 0.3 && halo(0.45) < 0.7);
-        assert_eq!(halo(0.5), 0.0);
-        assert_eq!(halo(7.6), 1.0);
+    fn the_slot_head_darkens_with_its_halo_in_its_slot() {
+        // The head fades into the dark as the mockup darkens it; its halo
+        // fades with it (the shot's alpha), never apart.
+        let mut t = 0.0;
+        while t < Story::PetakUmpet.secs() {
+            let shot = at(Style::Pill, 190.0, 34.0, t, 1.0);
+            assert_eq!(shot.halo, 1.0, "t={t}");
+            t += 0.05;
+        }
+        let alpha = |t: f32| match at(Style::Pill, 190.0, 34.0, t, 1.0).slot {
+            Slot::Story(m) => m.alpha,
+            other => panic!("t={t}: {other:?}"),
+        };
         assert_eq!(at(Style::Pill, 190.0, 34.0, 0.45, 1.0).slot, Slot::Story(MascotShot::REST));
+        assert!(alpha(0.7) > 0.5 && alpha(0.7) < 1.0, "{}", alpha(0.7));
+        assert_eq!((alpha(0.86), alpha(4.0), alpha(7.4)), (0.0, 0.0, 1.0));
     }
 
-    /// The largest alpha of any part but the slot head coming home (in the
-    /// dark), and how many show.
+    /// The largest alpha of any part, and how many show.
     fn showing(shot: &Shot) -> (f32, usize) {
-        let on: Vec<_> = shot.parts.iter().filter(|p| p.alpha > 0.0 && p.layer != Layer::Dark).collect();
+        let on: Vec<_> = shot.parts.iter().filter(|p| p.alpha > 0.0).collect();
         (on.iter().map(|p| p.alpha).fold(0.0, f32::max), on.len())
     }
 
@@ -488,37 +464,38 @@ mod tests {
 
     #[test]
     fn a_wind_down_brings_the_cat_home_through_its_slot() {
-        // Cut short mid-peek, the slot head deep in the dark, the spread
-        // falling with alpha: the peek fades, the island settles, the slot
-        // head fades back in where it dived and rises home, never jumping.
+        // Cut short mid-peek, the slot head deep in the dark, a real
+        // wind-down in 60 Hz frames: the peek fades and the island settles,
+        // the slot head comes back out of the dark where it dived and rises
+        // home, fading at most a frame's fade and moving under 1.5 dip a
+        // frame of its own.
+        use crate::ui::play::stories::{FRAME_FADE, wind_down_frames};
         for style in [Style::Notch, Style::Pill] {
             for (w, h) in SIZES {
                 for clock in [true, false] {
                     let case = format!("{style:?} {w}x{h} clock={clock}");
+                    let frames = wind_down_frames(2.0, 0.0, |beat| shot(&stage(style, w, h, beat, clock)));
                     let mut last: Option<(((f32, f32), f32, f32), f32)> = None;
-                    for i in (0..=100).rev() {
-                        let a = i as f32 / 100.0;
-                        let st = stage(style, w, h, Beat { spread: a, alpha: a, t: 2.0, cut_at: Some(2.0) }, clock);
-                        let shot = shot(&st);
-                        if a <= 0.5 {
-                            assert!(is_rest(style, &shot.deform), "{case} alpha={a}");
-                            assert!(shot.parts.iter().all(|p| p.layer == Layer::Dark), "{case} alpha={a}");
+                    for (ms, beat, shot) in &frames {
+                        let st = stage(style, w, h, *beat, clock);
+                        let case = format!("{case} +{ms:.1} ms (alpha {})", beat.alpha);
+                        if beat.alpha <= 0.5 {
+                            assert!(is_rest(style, &shot.deform) && shot.parts.is_empty(), "{case}");
                         }
-                        let now = slot_head(&st, &shot);
+                        let now = slot_head(&st, shot);
                         let slot_x = st.room().robot.unwrap().x;
                         if let (Some((p, k, o)), Some(((q, j, b), was))) = (now, last) {
                             let own = (p.0 - q.0) - (slot_x - was);
-                            assert!(own.abs() < 0.6 && (p.1 - q.1).abs() < 0.6 && (k - j).abs() < 0.02 && (o - b).abs() < 0.1,
-                                "{case} alpha={a}: {q:?} {j} {b} to {p:?} {k} {o}");
-                        }
-                        if a < 0.25 {
-                            assert!(now.is_some(), "{case} alpha={a}: no slot head");
+                            assert!(own.abs() < 1.5 && (p.1 - q.1).abs() < 1.5 && (k - j).abs() < 0.05 && (o - b).abs() <= FRAME_FADE + 1e-4,
+                                "{case}: {q:?} {j} {b} to {p:?} {k} {o}");
+                        } else if let Some((_, _, o)) = now {
+                            assert!(o <= FRAME_FADE + 1e-4, "{case}: out of the dark at {o}");
                         }
                         last = now.map(|n| (n, slot_x));
                     }
-                    let s = shape(style, w, h);
-                    let rest = shot(&stage(style, w, h, Beat { spread: 0.0, alpha: 0.0, t: 2.0, cut_at: Some(2.0) }, clock));
-                    assert_eq!(rest, Shot::rest(style, s), "{case}");
+                    let (_, beat, end) = frames.last().unwrap();
+                    assert_eq!(beat.alpha, 0.0, "{case}");
+                    assert_eq!(*end, Shot::rest(style, shape(style, w, h)), "{case}");
                 }
             }
         }

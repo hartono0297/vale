@@ -16,7 +16,7 @@ use crate::ui::cat_style::CatLook;
 use crate::ui::geometry::{IdleLayout, ROBOT_COMPACT, Rect, ShapeRect, shoulder_depth};
 use crate::ui::mascot::CrestPose;
 use crate::ui::play::shape::{Deform, outline, turn_about};
-use crate::ui::play::state::{Beat, spread_offsets};
+use crate::ui::play::state::{Beat, spread_offsets, wind_progress};
 use crate::ui::play::trigger::Story;
 use crate::ui::render::DigitFx;
 use crate::ui::robot::{Expr, GRID, Pose, Seg};
@@ -121,7 +121,7 @@ pub enum Slot {
 /// Where a part is painted, as the mockup's `compose` stacks it (see
 /// `PAINT_ORDER`). Nothing leans on the island's fill being opaque: what
 /// must not show is clipped away.
-// `Wrap` waits for the stories that use it.
+// `Dark` and `Wrap` wait for the stories that use them.
 #[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Layer {
@@ -443,6 +443,9 @@ pub struct MascotShot {
     /// The octopus's flush, 0 to 1: its mantle (and the long arms, `arm`)
     /// mixed toward the flush colour. Never lowers the app's own flush.
     pub flush: f32,
+    /// How much of the head shows, 0 to 1: the slot head and its halo fade
+    /// as one through a layer (a head part fades by its part's alpha).
+    pub alpha: f32,
 }
 
 impl MascotShot {
@@ -461,6 +464,7 @@ impl MascotShot {
         beak_open: false,
         bare_octopus: false,
         flush: 0.0,
+        alpha: 1.0,
     };
 
     /// `base` (the app's pose: its look, its lift) with the story's face on it.
@@ -668,6 +672,16 @@ fn rim_pt(style: Style, s: ShapeRect, side: f32, u: f32, off: f32) -> (f32, f32)
     (cx + side * big * a.cos(), bottom - r + big * a.sin())
 }
 
+/// How a story fades or moves something home during a wind-down: by the
+/// wind-down's time, never by bands of `alpha`, which eases and crosses its
+/// middle band in about one frame. 1 until the wind-down is `from` of the
+/// way through its time, then falling evenly to 0 at `to` (1 while the
+/// story plays). A fade may change by `FRAME_FADE` at most in a 60 Hz frame,
+/// so `to - from` is at least 0.56 (112 of the wind-down's 200 ms).
+fn kept(alpha: f32, from: f32, to: f32) -> f32 {
+    1.0 - ((wind_progress(alpha) - from) / (to - from)).clamp(0.0, 1.0)
+}
+
 /// `fx` eased toward the character at rest as `alpha` falls to 0.
 fn toward_rest(fx: DigitFx, alpha: f32) -> DigitFx {
     let id = DigitFx::IDENTITY;
@@ -714,7 +728,7 @@ pub(crate) fn near_rest(shot: &Shot, tol: f32) -> Result<(), String> {
         Slot::Story(m) => {
             let off = [
                 m.dx, m.dy, m.rot_deg, m.sx - r.sx, m.sy - r.sy, m.glance.0, m.glance.1, m.flush,
-                m.crest.rot_deg - r.crest.rot_deg, m.crest.scale - r.crest.scale,
+                m.crest.rot_deg - r.crest.rot_deg, m.crest.scale - r.crest.scale, m.alpha - r.alpha,
             ];
             if off.iter().any(|v| v.abs() > tol) || m.expr != r.expr || m.blink || m.beak_open {
                 return Err(format!("the slot head is not at rest: {m:?}"));
@@ -835,10 +849,109 @@ macro_rules! story_contract_tests {
                 }
             }
         }
+
+        #[test]
+        fn a_wind_down_fades_every_part_and_the_halo_frame_by_frame() {
+            use $crate::config::Style;
+            for style in [Style::Notch, Style::Pill] {
+                for clock in contract_clocks() {
+                    for part in [0.3, 0.5, 0.7] {
+                        let cut = $story.secs() * part;
+                        for phase in [0.0, 8.0] {
+                            let shots = $crate::ui::play::stories::wind_down_frames(cut, phase, |beat| contract_shot(style, 190.0, 34.0, beat, clock));
+                            if let Err(why) = $crate::ui::play::stories::fades_by_frames(&shots) {
+                                panic!("{style:?} clock={clock} cut at {cut}: {why}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
     };
 }
 #[cfg(test)]
 pub(crate) use story_contract_tests;
+
+/// The most a part's alpha, the halo or the slot head's alpha may change in
+/// one 60 Hz frame of a wind-down.
+#[cfg(test)]
+pub(crate) const FRAME_FADE: f32 = 0.15;
+
+/// The shots of a real wind-down cut `cut` seconds into the story, one per
+/// 60 Hz frame from `phase` ms after the cut until past its end, the first
+/// at the cut itself when `phase` is 0. `shot` turns a beat into the shot.
+#[cfg(test)]
+pub(crate) fn wind_down_frames(cut: f32, phase: f32, shot: impl Fn(Beat) -> Shot) -> Vec<(f32, Beat, Shot)> {
+    use std::time::{Duration, Instant};
+    let t0 = Instant::now();
+    let mut play = crate::ui::play::state::Play::start(Story::MalingAngka, t0);
+    let at = t0 + Duration::from_secs_f32(cut);
+    play.end(at);
+    let mut out = Vec::new();
+    let mut ms = phase;
+    while ms <= 230.0 {
+        let beat = play.beat(at + Duration::from_secs_f32(ms / 1000.0));
+        out.push((ms, beat, shot(beat)));
+        ms += 1000.0 / 60.0;
+    }
+    out
+}
+
+/// Every part's alpha, the halo and the slot head's alpha change by at most
+/// `FRAME_FADE` from one frame of `shots` to the next. Parts are matched by
+/// layer and kind (a head, a figure, a prop, a digit by its index, a
+/// whistle), in order; one gone counts as 0, so nothing may vanish or appear
+/// at more than a frame's fade.
+#[cfg(test)]
+pub(crate) fn fades_by_frames(shots: &[(f32, Beat, Shot)]) -> Result<(), String> {
+    fn kind(d: &Draw) -> usize {
+        match d {
+            Draw::Head { .. } => 0,
+            Draw::Group { items, .. } if items.iter().any(|i| matches!(i, Draw::Head { .. })) => 1,
+            Draw::Group { .. } => 2,
+            Draw::Whistle { .. } => 3,
+            Draw::Digit { index, .. } => 10 + index,
+            _ => 4,
+        }
+    }
+    let alphas = |shot: &Shot| {
+        let mut out: Vec<((usize, usize), Vec<f32>)> = Vec::new();
+        for p in &shot.parts {
+            let pass = PAINT_ORDER.iter().position(|q| *q == p.layer.pass()).unwrap_or(0);
+            let key = (pass, kind(&p.draw));
+            match out.iter_mut().find(|(k, _)| *k == key) {
+                Some((_, v)) => v.push(p.alpha),
+                None => out.push((key, vec![p.alpha])),
+            }
+        }
+        out
+    };
+    for w in shots.windows(2) {
+        let ((_, _, a), (ms, beat, b)) = (&w[0], &w[1]);
+        let case = format!("+{ms:.1} ms (t {}, alpha {})", beat.t, beat.alpha);
+        let (pa, pb) = (alphas(a), alphas(b));
+        let none = Vec::new();
+        for (key, _) in pa.iter().chain(&pb) {
+            let get = |p: &Vec<((usize, usize), Vec<f32>)>| p.iter().find(|(k, _)| k == key).map_or(&none, |(_, v)| v).clone();
+            let (x, y) = (get(&pa), get(&pb));
+            for k in 0..x.len().max(y.len()) {
+                let (u, v) = (x.get(k).copied().unwrap_or(0.0), y.get(k).copied().unwrap_or(0.0));
+                if (u - v).abs() > FRAME_FADE + 1e-4 {
+                    return Err(format!("{case}: part {k} of kind {key:?} from {u} to {v}"));
+                }
+            }
+        }
+        if (a.halo - b.halo).abs() > FRAME_FADE + 1e-4 {
+            return Err(format!("{case}: the halo from {} to {}", a.halo, b.halo));
+        }
+        if let (Slot::Story(m), Slot::Story(n)) = (a.slot, b.slot) {
+            if (m.alpha - n.alpha).abs() > FRAME_FADE + 1e-4 {
+                return Err(format!("{case}: the slot head from {} to {}", m.alpha, n.alpha));
+            }
+        }
+    }
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {
@@ -847,6 +960,19 @@ mod tests {
 
     fn near(a: Rect, b: Rect) -> bool {
         [(a.x, b.x), (a.y, b.y), (a.w, b.w), (a.h, b.h)].iter().all(|(p, q)| (p - q).abs() < 1e-3)
+    }
+
+    #[test]
+    fn kept_paces_a_fade_by_the_wind_downs_time() {
+        // Stepped through a real wind-down in 60 Hz frames: whole at the
+        // cut, gone at its end, never more than a frame's fade at a time.
+        let frames = wind_down_frames(3.0, 0.0, |_| Shot::rest(Style::Pill, crate::ui::play::testing::shape(Style::Pill, 190.0, 34.0)));
+        let k: Vec<f32> = frames.iter().map(|(_, b, _)| kept(b.alpha, 0.2, 0.8)).collect();
+        assert_eq!((k[0], *k.last().unwrap()), (1.0, 0.0));
+        for w in k.windows(2) {
+            assert!(w[1] <= w[0] && w[0] - w[1] <= FRAME_FADE, "{k:?}");
+        }
+        assert_eq!(kept(1.0, 0.2, 0.8), 1.0, "while it plays");
     }
 
     #[test]
@@ -1004,6 +1130,7 @@ mod tests {
             beak_open: false,
             bare_octopus: false,
             flush: 0.0,
+            alpha: 1.0,
         };
         // The app's own pose has the arms, and a shot leaves them there.
         assert!(!Pose::default().bare_octopus);
@@ -1030,6 +1157,7 @@ mod tests {
             beak_open: false,
             bare_octopus: false,
             flush: 0.0,
+            alpha: 1.0,
         };
         assert_eq!(shot.pose(Pose::default()).flush, 0.0);
         assert_eq!(MascotShot { flush: 0.6, ..shot }.pose(Pose::default()).flush, 0.6);
@@ -1055,6 +1183,7 @@ mod tests {
             beak_open: false,
             bare_octopus: false,
             flush: 0.0,
+            alpha: 1.0,
         };
         let s = crate::ui::play::testing::shape(Style::Notch, 190.0, 34.0);
         // A bare head deep in a figure, or the slot head bare.
@@ -1099,6 +1228,7 @@ mod tests {
             beak_open: false,
             bare_octopus: false,
             flush: 0.0,
+            alpha: 1.0,
         };
         let at = (300.0, 100.0);
         let b = Draw::Head { at, shot }.bounds();

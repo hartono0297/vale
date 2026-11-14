@@ -378,6 +378,7 @@ mod tests {
             beak_open: false,
             bare_octopus: false,
             flush: 0.0,
+            alpha: 1.0,
         }
     }
 

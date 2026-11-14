@@ -2725,7 +2725,8 @@ impl Renderer {
     ///
     /// Its see-through halo at `halo` of its strength. It leaves the
     /// strength lowered: nothing after the slot head in the view reads it,
-    /// and a head held back for a fade is painted with it.
+    /// and a head held back for a fade is painted with it. Head and halo fade
+    /// together by the shot's `alpha`.
     fn paint_story_mascot(&self, area: Rect, robot: RobotFrame, m: &MascotShot, halo: f32) {
         self.legible.set(self.legible.get() * halo.clamp(0.0, 1.0));
         let k = area.w / GRID;
@@ -2738,13 +2739,18 @@ impl Renderer {
             rt.GetTransform(&mut before);
             rt.SetTransform(&(own * before));
         }
-        self.paint_robot(
-            area,
-            RobotFrame {
-                expr: m.expr,
-                pose: m.pose(robot.pose),
-            },
-        );
+        let frame = RobotFrame {
+            expr: m.expr,
+            pose: m.pose(robot.pose),
+        };
+        if m.alpha >= 1.0 {
+            self.paint_robot(area, frame);
+        } else if m.alpha > 0.0 {
+            // Head and halo fade as one; a faded story head is never held back.
+            self.push_fade(m.alpha);
+            self.paint_robot_at(area, frame, 1.0);
+            unsafe { rt.PopLayer() };
+        }
         unsafe { rt.SetTransform(&before) };
     }
 
@@ -6231,6 +6237,35 @@ mod tests {
     }
 
     #[test]
+    fn a_story_slot_head_fades_with_its_halo_as_one() {
+        // A story fades the slot head by its shot's alpha (Petak umpet's
+        // dive into the dark): head and halo together, through one layer.
+        let mut r = renderer();
+        let s = shape(Style::Pill, 190.0, 34.0);
+        let area = Rect { x: s.x + 20.0, y: s.y + 4.0, w: 26.0, h: 26.0 };
+        let robot = RobotFrame { expr: Expr::Idle, pose: Pose::default() };
+        let ink = |r: &mut Renderer, legible: f32, alpha: f32| {
+            let px = painted(r, (s.x + 80.0, s.y + 40.0), |r| {
+                r.legible.set(legible);
+                r.paint_story_mascot(area, robot, &MascotShot { alpha, ..MascotShot::REST }, 1.0);
+            });
+            let mut sum = 0u64;
+            for y in 0..px.h {
+                for x in 0..px.w {
+                    sum += pixel(&px, (x, y))[3] as u64;
+                }
+            }
+            sum
+        };
+        for legible in [0.0, 1.0] {
+            let (none, half, full) = (ink(&mut r, legible, 0.0), ink(&mut r, legible, 0.5), ink(&mut r, legible, 1.0));
+            assert_eq!(none, 0, "legible {legible}: nothing at alpha 0");
+            let ratio = half as f64 / full as f64;
+            assert!((ratio - 0.5).abs() < 0.03, "legible {legible}: half is {ratio} of full ({half} of {full})");
+        }
+    }
+
+    #[test]
     fn a_head_part_carries_its_accessory() {
         // The falk with the bow, its head out under the island: the bow's
         // raspberry wings (0xD23F6A) come along, inside the head's box, as
@@ -6255,6 +6290,7 @@ mod tests {
                     beak_open: false,
                     bare_octopus: false,
                     flush: 0.0,
+                    alpha: 1.0,
                 };
                 let head = Draw::Head { at: (s.x + s.w / 2.0, s.y + s.h + 45.0), shot };
                 let b = head.bounds();
@@ -6323,6 +6359,7 @@ mod tests {
                             beak_open: true,
                             bare_octopus: false,
                             flush: 0.0,
+                            alpha: 1.0,
                         };
                         let head = Draw::Head { at: (90.0, 110.0), shot };
                         let b = head.bounds();
@@ -6382,6 +6419,7 @@ mod tests {
                         beak_open: true,
                         bare_octopus: false,
                         flush: 0.0,
+                        alpha: 1.0,
                     };
                     let head = Draw::Head { at, shot };
                     let with = draw(&mut r, PlayFrame { parts: vec![Part { layer: Layer::Front, draw: head, alpha: 1.0 }], ..play_frame(1.0) });
@@ -6465,6 +6503,7 @@ mod tests {
                         beak_open: false,
                         bare_octopus: false,
                         flush: 0.0,
+                        alpha: 1.0,
                     },
                     paws: [Paw::default(), Paw { dx: 1.5, dy: -6.0, lift: 0.8, sq: 0.0 }],
                     tail: Some(Tail::default()),
@@ -6544,6 +6583,7 @@ mod tests {
                 beak_open: false,
                 bare_octopus: false,
                 flush: 0.0,
+                alpha: 1.0,
             },
             tail_rot: 0.0,
             tail_spread: 0.0,

@@ -7,13 +7,12 @@
 
 use std::f32::consts::{PI, TAU};
 
-use super::{Draw, Ease, HEAD_PIVOT, Layer, MascotShot, Part, Shot, Slot, Stage, blinks, bump, kf, lerp, rim_pt, ring};
+use super::{Draw, Ease, HEAD_PIVOT, Layer, MascotShot, Part, Shot, Slot, Stage, blinks, bump, kept, kf, lerp, rim_pt, ring};
 use crate::config::Style;
 use crate::ui::geometry::{ROBOT_COMPACT, ShapeRect, corner_radius};
 use crate::ui::play::art::cat::{CAT_SC, CatPose, Paw, SEAT, cat_at, tail};
 use crate::ui::play::art::tube::{LimbStyle, Stripes, along, catmull_rom, curl, plen};
 use crate::ui::play::shape::{Deform, lip_dent};
-use crate::ui::play::state::wind_progress;
 use crate::ui::play::trigger::Story;
 use crate::ui::robot::{Expr, GRID};
 
@@ -23,8 +22,6 @@ use Ease::{Io, Lin, O, Sio};
 /// faded in over it, has taken over by `SHOWN` (its hop starts at 0.46).
 const DUCKED: f32 = 0.35;
 const SHOWN: f32 = 0.45;
-/// The crouched cat holds still until its hop's squash begins here.
-const STILL: f32 = 0.46;
 /// The cat, crouched again (its hop back ends at 8.0), fades out over the
 /// slot head from `LEAVING`; the slot head is alone by `LEFT` and rises home
 /// by the end.
@@ -119,10 +116,10 @@ fn scarf_width(s: f32) -> f32 {
 }
 
 /// One moment of the story on `stage`, the cat in the coat of its look.
-/// `beat.alpha` eases it home: from 1 to 0.75 the cat crouches back and the
-/// island settles, to 0.5 the cat fades over the slot head where they hand
-/// over, to 0 the slot head rises home. Exactly at rest at 0 s, at the end
-/// and with `alpha` 0.
+/// `beat.alpha` eases it home, paced by the wind-down's time (`kept`): over
+/// its first 0.17 the cat crouches back and the island settles, to 0.75 the
+/// cat fades over the slot head where they hand over, then the slot head
+/// rises home. Exactly at rest at 0 s, at the end and with `alpha` 0.
 pub fn shot(stage: &Stage) -> Shot {
     let Stage { style, shape: s, beat, look, .. } = *stage;
     // Cut short, the story holds where the cut found it and eases home from
@@ -146,16 +143,8 @@ pub fn shot(stage: &Stage) -> Shot {
     // size, so the hand-over shows nothing.
     let crouch_y = bottom - (SEAT.1 - HEAD_PIVOT.1 - CROUCH_DROP) * CROUCH * unit;
     let crouch_k = CROUCH * unit / k;
-    // Cut while the cat still crouches over the slot head, fading in, it
-    // fades out from what it showed over the first 0.6 of the wind-down's
-    // time and the slot head rises after it: paced by alpha, that fade would
-    // fall in one frame.
-    let (fade, home) = if t < STILL {
-        let w = wind_progress(a);
-        ((1.0 - w / 0.6).clamp(0.0, 1.0), ((1.0 - w) / 0.4).clamp(0.0, 1.0))
-    } else {
-        (((a - 0.5) * 4.0).clamp(0.0, 1.0), (2.0 * a).min(1.0))
-    };
+    // Cut while fading in, the cat fades out from what it showed.
+    let (fade, home) = (kept(a, 0.17, 0.75), kept(a, 0.75, 1.0));
     let duck = kf(t, &[(0.0, 0.0, Lin), (DUCKED, 1.0, Sio), (LEFT, 1.0, Lin), (secs, 0.0, Sio)]) * home;
     let show = kf(t, &[(DUCKED, 0.0, Lin), (SHOWN, 1.0, Lin), (LEAVING, 1.0, Lin), (LEFT, 0.0, Lin)])
         * fade;
@@ -176,12 +165,14 @@ pub fn shot(stage: &Stage) -> Shot {
     }
 
     // How much of the story the cat plays: all of it, or eased back to its
-    // crouch as `alpha` falls to 0.75.
-    let f = ((a - 0.75) * 4.0).clamp(0.0, 1.0);
+    // crouch over the wind-down's first 0.17.
+    let f = kept(a, 0.0, 0.17);
     let h = mix_hop(t, 0.48, 7.6);
     let hop = Hop { dk: lerp(1.0, h.dk, f), sc: lerp(CROUCH, h.sc, f), y: h.y * f, sq: lerp(1.0, h.sq, f) };
     let out_of_dark = 1.0 - hop.dk;
-    let ext = f * kf(t, &[(1.35, 0.0, Lin), (3.4, 1.0, Sio), (5.55, 1.0, Io), (5.68, 0.55, O), (6.1, 0.0, Sio)]);
+    // The scarf stays as long as it was and fades over the wind-down's first
+    // 0.58, loosening with the hug: drawn back, it would vanish at once.
+    let ext = kf(t, &[(1.35, 0.0, Lin), (3.4, 1.0, Sio), (5.55, 1.0, Io), (5.68, 0.55, O), (6.1, 0.0, Sio)]);
     let hug = f * kf(t, &[(3.45, 0.0, Lin), (4.1, 1.0, Sio), (5.5, 1.0, Io), (5.62, 0.0, O)]);
     let tickle_at = kf(t, &[(4.55, 0.0, Lin), (4.95, 1.0, Sio), (5.35, 1.0, Io), (5.5, 0.0, Io)]);
     let sneeze_at = kf(t, &[(5.3, 0.0, Lin), (5.48, 1.0, Sio), (5.55, 0.0, O)]);
@@ -218,7 +209,7 @@ pub fn shot(stage: &Stage) -> Shot {
         out.parts.push(Part {
             layer: Layer::Inside,
             draw: Draw::Group { at: (0.0, 0.0), rot_deg: 0.0, scale: (1.0, 1.0), pivot: (0.0, 0.0), items: tail(&line, &style, look) },
-            alpha: show,
+            alpha: show.min(kept(a, 0.0, 0.58)),
         });
     }
 
@@ -471,35 +462,35 @@ mod tests {
 
     #[test]
     fn a_wind_down_eases_the_cat_home_through_its_slot() {
-        // Cut short mid-hug, the spread falling with alpha as the app's beat
-        // has it, the clock on or off (the slot sits elsewhere without it):
-        // the cat crouches back, fades over the slot head exactly where they
-        // hand over, and the slot head rises home.
+        // Cut short mid-hug, a real wind-down in 60 Hz frames, the clock on
+        // or off (the slot sits elsewhere without it): the cat crouches back,
+        // fades over the slot head exactly where they hand over, and the slot
+        // head rises home, never moving more than 3 dip a frame of its own.
+        use crate::ui::play::stories::wind_down_frames;
         for style in [Style::Notch, Style::Pill] {
             for (w, h) in SIZES {
                 for clock in [true, false] {
                     let case = format!("{style:?} {w}x{h} clock={clock}");
+                    let frames = wind_down_frames(4.3, 0.0, |beat| shot(&stage(style, w, h, beat, clock)));
                     let mut last: Option<(((f32, f32), f32), f32)> = None;
                     let mut crossed = false;
-                    for i in (0..=100).rev() {
-                        let a = i as f32 / 100.0;
-                        let st = stage(style, w, h, Beat { spread: a, alpha: a, t: 4.3, cut_at: None }, clock);
-                        let shot = shot(&st);
-                        if a <= 0.75 {
-                            assert!(crate::ui::play::shape::is_rest(style, &shot.deform), "{case} alpha={a}");
+                    for (ms, beat, shot) in &frames {
+                        let st = stage(style, w, h, *beat, clock);
+                        let case = format!("{case} +{ms:.1} ms (alpha {})", beat.alpha);
+                        if beat.alpha <= 0.9 {
+                            assert!(crate::ui::play::shape::is_rest(style, &shot.deform), "{case}");
                         }
                         // Both drawn: the two heads are one.
-                        if let (Some((p, k, alpha)), Slot::Story(m)) = (figure_head(&shot), shot.slot) {
+                        if let (Some((p, k, _)), Slot::Story(m)) = (figure_head(shot), shot.slot) {
                             let (q, j) = slot_head(&st, &m);
-                            assert!((p.0 - q.0).abs() < 0.02 && (p.1 - q.1).abs() < 0.02 && (k - j).abs() < 1e-3,
-                                "{case} alpha={a} (figure at {alpha}): figure {p:?} slot {q:?}");
+                            assert!((p.0 - q.0).abs() < 0.02 && (p.1 - q.1).abs() < 0.02 && (k - j).abs() < 1e-3, "{case}: figure {p:?} slot {q:?}");
                             crossed = true;
                         }
-                        let now = match (figure_head(&shot), shot.slot) {
+                        let now = match (figure_head(shot), shot.slot) {
                             (Some((p, k, alpha)), _) if alpha >= 1.0 => Some((p, k)),
                             (_, Slot::Story(m)) => Some(slot_head(&st, &m)),
                             (_, Slot::App) => Some(slot_head(&st, &MascotShot::REST)),
-                            (None, Slot::Empty) => panic!("{case} alpha={a}: nothing shows the cat"),
+                            (None, Slot::Empty) => panic!("{case}: nothing shows the cat"),
                             (Some((p, k, _)), Slot::Empty) => Some((p, k)),
                         };
                         // The slot moves with the falling spread; the head
@@ -507,14 +498,14 @@ mod tests {
                         let slot_x = st.room().robot.unwrap().x;
                         if let (Some((p, k)), Some(((q, j), was))) = (now, last) {
                             let own = (p.0 - q.0) - (slot_x - was);
-                            assert!(own.abs() < 0.6 && (p.1 - q.1).abs() < 0.6 && (k - j).abs() < 0.02,
-                                "{case} alpha={a}: {q:?} to {p:?}, the slot moved {}", slot_x - was);
+                            assert!(own.abs() < 3.0 && (p.1 - q.1).abs() < 3.0 && (k - j).abs() < 0.1, "{case}: {q:?} to {p:?}, the slot moved {}", slot_x - was);
                         }
                         last = now.map(|n| (n, slot_x));
                     }
                     assert!(crossed, "{case}: no cross-fade seen");
-                    let s = shape(style, w, h);
-                    assert_eq!(shot(&stage(style, w, h, Beat { spread: 0.0, alpha: 0.0, t: 4.3, cut_at: None }, clock)), Shot::rest(style, s), "{case}");
+                    let (_, beat, end) = frames.last().unwrap();
+                    assert_eq!(beat.alpha, 0.0, "{case}");
+                    assert_eq!(*end, Shot::rest(style, shape(style, w, h)), "{case}");
                 }
             }
         }

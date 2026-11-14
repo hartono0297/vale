@@ -1106,6 +1106,7 @@ fn falk_scene(hang: bool, style: Style, shape: ShapeRect, coat: FalkColor) -> st
         beak_open: false,
         bare_octopus: false,
         flush: 0.0,
+        alpha: 1.0,
     };
     let wings = if hang { WingPose::FOLD } else { WingPose::SPREAD };
     let pose = BirdPose {
@@ -1194,6 +1195,7 @@ fn demo_play(which: DemoPlay, style: Style, shape: ShapeRect, cat: CatLook, layo
                     beak_open: false,
                     bare_octopus: false,
                     flush: 0.0,
+                    alpha: 1.0,
                 },
                 paws: [Paw::default(), Paw { dx: 1.5, dy: -6.0, lift: 0.8, sq: 0.0 }],
                 tail: Some(Tail::default()),
@@ -1227,6 +1229,7 @@ fn demo_play(which: DemoPlay, style: Style, shape: ShapeRect, cat: CatLook, layo
                 beak_open: false,
                 bare_octopus: true,
                 flush: 0.0,
+                alpha: 1.0,
             });
             shot.parts = octopus_arms(style, shape, cat.octopus);
             return PlayFrame::of(shot, beat);
