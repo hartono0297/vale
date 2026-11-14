@@ -65,7 +65,7 @@ use super::geometry::{
 use super::icons::{Icon, IconSet};
 use super::motion::{StripFrame, Transit};
 use super::panel_layout::Region;
-use super::play::shape::{Deform, outline};
+use super::play::shape::{Deform, OUTLINE_PTS, outline};
 use super::play::state::{Beat, spread_offsets};
 use super::robot::{Expr, EyesPose, Pose, RobotPainter, eyes_area, eyes_centre, eyes_offset_in};
 use super::shelf_motion::ShelfMotion;
@@ -3547,15 +3547,69 @@ impl Renderer {
 
     /// A play's outline (`play::outline`) as a closed path: its points joined
     /// by straight lines, the last back to the first. A swinging Notch has
-    /// more points than a resting one, so the list's length is not fixed.
-    fn played_path(&self, pts: &[(f32, f32)]) -> Result<ID2D1PathGeometry> {
-        let points: Vec<Vector2> = pts.iter().map(|&(x, y)| Vector2::new(x, y)).collect();
+    /// two more points than a resting one (its extension above the screen
+    /// edge), so the list's length is not fixed.
+    ///
+    /// The Notch gets the shoulders `notch_path` draws, fixed to the body's
+    /// top corners wherever a squeeze or a swing puts them, so that an island
+    /// at rest is the same shape as the resting one and nothing pops when a
+    /// play starts or ends.
+    fn played_path(&self, style: Style, s: ShapeRect, pts: &[(f32, f32)]) -> Result<ID2D1PathGeometry> {
+        let at = |&(x, y): &(f32, f32)| Vector2::new(x, y);
+        let n = pts.len();
+        let ext = usize::from(n > OUTLINE_PTS);
+        let shoulder = shoulder_depth(s);
         unsafe {
             let path = self.d2d.CreatePathGeometry()?;
             let sink = path.Open()?;
-            if let Some((first, rest)) = points.split_first() {
-                sink.BeginFigure(*first, D2D1_FIGURE_BEGIN_FILLED);
-                sink.AddLines(rest);
+            if style == Style::Notch && n >= 2 * ext + 4 && shoulder > 0.0 {
+                // The sides' downward directions: straight down, or along the
+                // extension that leads into each top corner when it swings.
+                let down = |from: (f32, f32), to: (f32, f32)| {
+                    let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+                    let len = dx.hypot(dy).max(f32::EPSILON);
+                    (dx / len, dy / len)
+                };
+                let (corner_l, corner_r) = (pts[ext], pts[n - 1 - ext]);
+                let (down_l, down_r) = if ext == 1 {
+                    (down(pts[0], pts[1]), down(pts[n - 1], pts[n - 2]))
+                } else {
+                    ((0.0, 1.0), (0.0, 1.0))
+                };
+                // Out from the body: left of the left side, right of the right.
+                let step = |c: (f32, f32), d: (f32, f32), out: (f32, f32), along: f32, away: f32| {
+                    Vector2::new(c.0 + d.0 * along + out.0 * away, c.1 + d.1 * along + out.1 * away)
+                };
+                let (out_l, out_r) = ((-down_l.1, down_l.0), (down_r.1, -down_r.0));
+                // The points the shoulders replace: those within a shoulder of
+                // the corner, down the side.
+                let far = |c: (f32, f32), p: &(f32, f32)| (p.0 - c.0).hypot(p.1 - c.1) >= shoulder;
+                let first = (ext..n).find(|&i| far(corner_l, &pts[i])).unwrap_or(n);
+                let last = (0..n - ext).rev().find(|&i| far(corner_r, &pts[i])).unwrap_or(0);
+                let arc = |to: Vector2| D2D1_ARC_SEGMENT {
+                    point: to,
+                    size: D2D_SIZE_F { width: shoulder, height: shoulder },
+                    rotationAngle: 0.0,
+                    sweepDirection: D2D1_SWEEP_DIRECTION_CLOCKWISE,
+                    arcSize: D2D1_ARC_SIZE_SMALL,
+                };
+                sink.BeginFigure(step(corner_l, down_l, out_l, 0.0, shoulder), D2D1_FIGURE_BEGIN_FILLED);
+                sink.AddArc(&arc(step(corner_l, down_l, out_l, shoulder, 0.0)));
+                if first <= last {
+                    let mid: Vec<Vector2> = pts[first..=last].iter().map(at).collect();
+                    sink.AddLines(&mid);
+                }
+                sink.AddLine(step(corner_r, down_r, out_r, shoulder, 0.0));
+                sink.AddArc(&arc(step(corner_r, down_r, out_r, 0.0, shoulder)));
+                if ext == 1 {
+                    sink.AddLine(at(&pts[n - 1]));
+                    sink.AddLine(at(&pts[0]));
+                }
+                sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+            } else if let Some((first, rest)) = pts.split_first() {
+                let rest: Vec<Vector2> = rest.iter().map(at).collect();
+                sink.BeginFigure(at(first), D2D1_FIGURE_BEGIN_FILLED);
+                sink.AddLines(&rest);
                 sink.EndFigure(D2D1_FIGURE_END_CLOSED);
             }
             sink.Close()?;
@@ -3572,7 +3626,7 @@ impl Renderer {
         pts: Option<&[(f32, f32)]>,
     ) -> Result<ID2D1Geometry> {
         match pts {
-            Some(pts) => self.played_path(pts)?.cast(),
+            Some(pts) => self.played_path(style, s, pts)?.cast(),
             None => self.shape_geometry(style, s),
         }
     }
@@ -4496,6 +4550,71 @@ mod tests {
         }
     }
 
+    /// Whether `p` lies within `band` of `g`'s outline.
+    fn near_edge(g: &ID2D1Geometry, p: Vector2, band: f32) -> bool {
+        unsafe { g.StrokeContainsPoint(p, band, None::<&ID2D1StrokeStyle>, None, 0.05) }
+            .expect("stroke")
+            .as_bool()
+    }
+
+    #[test]
+    fn a_play_at_rest_covers_exactly_what_the_resting_island_does() {
+        // Every play starts and ends at rest, and the renderer swaps one path
+        // builder for the other at those moments: any area on which they
+        // differ is a pop. Compared on a grid across the island and the
+        // Notch's shoulders; a point within a hair of either outline is left
+        // out, since the played one is a polyline.
+        let r = renderer();
+        for style in [Style::Notch, Style::Pill] {
+            for (w, h) in [(160.0, 28.0), (190.0, 34.0), (300.0, 44.0)] {
+                let s = shape(style, w, h);
+                let pts = outline(style, s, &Deform::default());
+                let played = r.island_geometry(style, s, Some(&pts)).unwrap();
+                let rest = r.island_geometry(style, s, None).unwrap();
+                let reach = crate::ui::geometry::shoulder_depth(s) + 4.0;
+                let (mut seen, mut wrong) = (0, Vec::new());
+                let mut y = s.y - 3.0 + 0.13;
+                while y < s.y + s.h + 3.0 {
+                    let mut x = s.x - reach + 0.07;
+                    while x < s.x + s.w + reach {
+                        let p = Vector2::new(x, y);
+                        if !near_edge(&rest, p, 0.5) && !near_edge(&played, p, 0.5) {
+                            seen += 1;
+                            if contains(&rest, x, y) != contains(&played, x, y) {
+                                wrong.push((x, y));
+                            }
+                        }
+                        x += 0.5;
+                    }
+                    y += 0.5;
+                }
+                let case = format!("{style:?} {w}x{h}");
+                assert!(seen > 1000, "{case}: only {seen} points compared");
+                assert!(wrong.is_empty(), "{case}: {} of {seen} differ, first {:?}", wrong.len(), &wrong[..wrong.len().min(5)]);
+            }
+        }
+    }
+
+    #[test]
+    fn the_notchs_shoulders_follow_a_squeeze_and_flare_to_the_screen_edge() {
+        let r = renderer();
+        let s = shape(Style::Notch, 190.0, 34.0);
+        let sh = crate::ui::geometry::shoulder_depth(s);
+        let deform = Deform { squeeze: 0.1, ..Deform::default() };
+        let pts = outline(Style::Notch, s, &deform);
+        let played = r.island_geometry(Style::Notch, s, Some(&pts)).unwrap();
+        let (left, right) = (pts[0].0, pts[pts.len() - 1].0);
+        assert!(left > s.x + 5.0, "the premise: the body is squeezed in");
+        for (edge, out) in [(left, -1.0), (right, 1.0)] {
+            // Out on the flare, up at the edge: inside. Out on it but lower
+            // down, where the fillet has curved back to the side: outside.
+            assert!(contains(&played, edge + out * 3.0, 0.5), "flare at {edge}");
+            assert!(!contains(&played, edge + out * 3.0, 8.0), "below the flare at {edge}");
+            assert!(!contains(&played, edge + out * (sh + 2.0), 0.5), "past the flare at {edge}");
+            assert!(contains(&played, edge - out * 3.0, 8.0), "the body at {edge}");
+        }
+    }
+
     #[test]
     fn a_swinging_notch_still_fills_the_screen_edge_from_end_to_end() {
         // The outline holds extra points above the edge when it swings; a path
@@ -4508,6 +4627,29 @@ mod tests {
             let played = r.island_geometry(Style::Notch, s, Some(&pts)).unwrap();
             for x in [s.x + 3.0, s.x + s.w / 2.0, s.x + s.w - 3.0] {
                 assert!(contains(&played, x, 0.5), "swing {swing_deg}, x {x}");
+            }
+            // The shoulders swing with the body: the same flare at each
+            // rotated top corner, as the squeezed one above.
+            let n = pts.len();
+            let unit = |from: (f32, f32), to: (f32, f32)| {
+                let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+                let len = dx.hypot(dy);
+                (dx / len, dy / len)
+            };
+            let (down_l, down_r) = (unit(pts[0], pts[1]), unit(pts[n - 1], pts[n - 2]));
+            for (corner, d, out) in [
+                (pts[1], down_l, (-down_l.1, down_l.0)),
+                (pts[n - 2], down_r, (down_r.1, -down_r.0)),
+            ] {
+                let spot = |along: f32, away: f32| {
+                    (corner.0 + d.0 * along + out.0 * away, corner.1 + d.1 * along + out.1 * away)
+                };
+                let (x, y) = spot(0.5, 3.0);
+                assert!(contains(&played, x, y), "swing {swing_deg}: the flare");
+                let (x, y) = spot(8.0, 3.0);
+                assert!(!contains(&played, x, y), "swing {swing_deg}: below the flare");
+                let (x, y) = spot(8.0, -3.0);
+                assert!(contains(&played, x, y), "swing {swing_deg}: the body");
             }
         }
     }
