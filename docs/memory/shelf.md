@@ -208,3 +208,7 @@ the Clipboard page's image drag ([[clipboard-drag-out]]), which offers copy
 only. That run checked the path live for the first time: a file from
 `DoDragDrop` landed in an Explorer folder as a copy, and the Claude desktop
 app (Chromium/Electron) took it as an attachment.
+
+## Image thumbnails and preview (2026-11-14)
+
+Image cards show a small picture and a right-click gives "Pratinjau gambar": see [[shelf-image-preview]].
