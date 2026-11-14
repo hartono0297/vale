@@ -43,7 +43,7 @@ irm https://raw.githubusercontent.com/hartono0297/vale/main/install.ps1 | iex
 
 The script downloads the latest [release](https://github.com/hartono0297/vale/releases/latest), checks its SHA-256, installs `vale.exe` to `%LOCALAPPDATA%\Programs\Vale`, adds a Start Menu shortcut and starts it. Vale then sits at the top centre of your screen, with an icon in the tray.
 
-- **First run:** Windows asks for access to your notifications; allow it so toasts show in the notch.
+- **First run:** Windows asks for access to your notifications; allow it so toasts show in the notch. A new install starts as a notch with the Shortcuts page first and the main features as tiles; every page and tile can be changed in Settings.
 - **Update:** Vale checks GitHub about once a day and offers a new version in the notch with *Update* and *Later* buttons (it stays until you pick one; *Later* brings it back at the next check); the tray menu and Settings → About have *Check for updates*. *Update* downloads the release, checks its SHA-256, swaps the exe and restarts Vale (no GitHub page, no reinstall). Running the install line again also works. Settings, notes and your Google login are kept. After an update the notch says what changed: click *Updated to X.Y.Z* to open the *What's new* card in Settings → About, which lists the latest versions.
 - **Without the script:** download `vale-<version>.zip` from [Releases](https://github.com/hartono0297/vale/releases/latest), extract it, right-click `install.ps1` → *Run with PowerShell*. The exe also runs from any folder.
 - **SmartScreen:** the exe is not code-signed yet. If Windows warns about it, choose *More info → Run anyway*.

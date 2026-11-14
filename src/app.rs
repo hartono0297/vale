@@ -744,6 +744,7 @@ pub fn run(media_log_flag: bool, start: Start) {
         app.apply(Event::ToastStyle(toast_style), now);
         let pages = PanelPages::from_saved(&app.config.panel_pages);
         app.apply(Event::PanelPages(pages), now);
+        app.state.show_first_page();
         let tiles = ShortcutTiles::from_saved(&app.config.shortcut_tiles);
         app.apply(Event::ShortcutTiles(tiles), now);
         app.check_fullscreen();
