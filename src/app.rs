@@ -109,7 +109,8 @@ use crate::ui::editor::{self, EditorKind, EditorResult, WM_APP_EDITOR_RESULT};
 use crate::ui::frame_clock::{FrameClock, WM_APP_FRAME};
 use crate::ui::geometry::{
     AA_MARGIN, ANIM_MS, LYRIC_HOLD_MS, LYRIC_MAX_W, LYRIC_MIN_W, NOTCH_H_DEFAULT, NOTCH_W_DEFAULT,
-    NotchSize, ShapeKind, ShapeRect, TOAST_SLOT_EXTRA, Under, WINDOW_W, idle_shape_typing,
+    IdleLayout, NotchSize, ShapeKind, ShapeRect, TOAST_SLOT_EXTRA, Under, WINDOW_W, idle_layout_lead,
+    idle_shape_typing,
     island_contains, lerp_shape, lyric_box_w, lyric_cap, lyric_max_w, lyric_scroll_end_ms,
     lyric_scroll_offset, lyric_shape_sized, lyric_slot_width, lyric_target_w, lyric_width_min,
     panel_kind, shape_for, shape_sized, shape_with_robot_sized, toast_peek_reaches, typing_lead,
@@ -133,7 +134,7 @@ use crate::ui::render::{
 use crate::ui::play::{click_through, swallows};
 use crate::ui::play::gate::{Env, instant_stop, may_start, must_stop};
 use crate::ui::play::state::Play;
-use crate::ui::play::stories;
+use crate::ui::play::stories::{self, Stage};
 use crate::ui::play::trigger::{Moment, PRESENCE_MIN, Story, cooldown, has_ready, pick, wait_for};
 use crate::ui::settings_layout::{CardId, MonitorRow};
 use crate::ui::robot::{
@@ -2537,6 +2538,7 @@ impl App {
             play: Play::start(story, now),
             moment,
             shape: play_shape_of(self.config.style, self.notch_size(), self.config.mascot),
+            started: now,
         });
         self.play_clock_jumped = false;
         self.play_input = None;
@@ -2551,6 +2553,16 @@ impl App {
         if self.play.is_none() {
             return;
         }
+        // Input tick first, cursor second. A key or wheel that lands between
+        // the two reads leaves this frame's tick old, so it is judged next
+        // frame, as a key. A mouse move that lands between them shows as a
+        // moved pointer; its own tick may still be missing from the first
+        // read, so on a moved frame the tick is read again before it is kept
+        // (`tick_to_keep`) and never surfaces later as a key. A key pressed in
+        // the same frame as a mouse move is seen as the move, and the next
+        // key ends the play. A failed read counts as no new input; the first
+        // frame only records.
+        let tick_now = last_input_tick();
         // The one pointer reading of this frame feeds the presence gate and
         // the click-through test.
         let mut pt = POINT::default();
@@ -2572,15 +2584,14 @@ impl App {
         let buttons = [VK_LBUTTON, VK_RBUTTON, VK_MBUTTON]
             .into_iter()
             .any(|vk| (unsafe { GetAsyncKeyState(i32::from(vk.0)) }) as u16 & 0x8000 != 0);
-        // Read after the pointer: input that lands between the two readings
-        // then shows as a moved pointer at the next frame, never as a key.
-        // A failed read counts as no new input; the first frame only records.
         let seen = cursor.map(|p| (p.x, p.y));
         let prev = self.play_input;
-        let tick = last_input_tick().or(prev.map(|p| p.0)).unwrap_or(0);
+        let tick = tick_now.or(prev.map(|p| p.0)).unwrap_or(0);
         let (tick0, seen0) = prev.unwrap_or((tick, seen));
-        self.play_input = Some((tick, seen));
-        let ends = input_ends_play((tick0, tick), (seen0, seen), buttons);
+        let kept = tick_to_keep(tick, prev.is_some() && seen0 != seen, last_input_tick);
+        self.play_input = Some((kept, seen));
+        let age = self.play.as_ref().map_or(Duration::ZERO, |a| now.saturating_duration_since(a.started));
+        let ends = input_ends_play((tick0, tick), (seen0, seen), buttons, age);
         let out = advance_slot(&mut self.play, &env, shape, jumped, ends, inside, now);
         if let Some(story) = out.finished {
             self.last_story = Some(story);
@@ -2603,12 +2614,27 @@ impl App {
     }
 
     /// What the renderer gets for the running story on the island `shape`:
-    /// the story's shot at this beat (at rest for a story with no timeline).
-    fn play_frame(&self, now: Instant, shape: ShapeRect) -> Option<PlayFrame> {
+    /// the story's shot at this beat (at rest for a story with no timeline),
+    /// placed by the frame's idle `layout` as the renderer places the slot and
+    /// the clock, with the clock's last character (`minute`) as it shows.
+    fn play_frame(
+        &self,
+        now: Instant,
+        shape: ShapeRect,
+        layout: IdleLayout,
+        minute: Option<char>,
+    ) -> Option<PlayFrame> {
         self.play.as_ref().map(|active| {
             let beat = active.play.beat(now);
-            let shot = stories::shot(active.play.story(), self.config.style, shape, beat);
-            PlayFrame::of(shot, beat)
+            let stage = Stage {
+                style: self.config.style,
+                shape,
+                beat,
+                look: CatLook::of(&self.config),
+                layout,
+                minute,
+            };
+            PlayFrame::of(stories::shot(active.play.story(), &stage), beat)
         })
     }
 
@@ -7585,6 +7611,21 @@ impl App {
             || self.strip_motion.is_some()
             || self.eyes_morph;
         let rec_levels = self.rec_levels();
+        let clock = (self.config.idle_clock && self.drawn == View::Idle)
+            .then(|| Local::now().format("%H:%M").to_string());
+        // The idle island's growth on the left (the typing cat's laptop), so
+        // the robot and the clock stay still as it morphs. Measured against
+        // the plain idle shape, so a symmetric morph back to idle (media, a
+        // notice or the panel ending) keeps the group centred.
+        let idle_lead = if self.drawn == View::Idle && self.config.robot {
+            let plain = shape_with_robot_sized(self.config.style, self.notch_size(), ShapeKind::Idle, true);
+            typing_lead(shape, plain)
+        } else {
+            0.0
+        };
+        // Where the renderer puts the slot and the clock: a story lines up with it.
+        let idle_layout = idle_layout_lead(shape, robot.is_some(), clock.is_some(), idle_lead);
+        let minute = clock.as_deref().and_then(|c| c.chars().last());
         let frame = Frame {
             view: &self.drawn,
             media: state.media(),
@@ -7671,24 +7712,8 @@ impl App {
             cat: CatLook::of(&self.config),
             fill_alpha,
             legibility: notch_fill::legibility(fill_alpha),
-            clock: (self.config.idle_clock && self.drawn == View::Idle)
-                .then(|| Local::now().format("%H:%M").to_string()),
-            // The idle island's growth on the left (the typing cat's
-            // laptop), so the robot and the clock stay still as it morphs.
-            // Measured against the plain idle shape, so a symmetric morph
-            // back to idle (media, a notice or the panel ending) keeps the
-            // group centred.
-            idle_lead: if self.drawn == View::Idle && self.config.robot {
-                let plain = shape_with_robot_sized(
-                    self.config.style,
-                    self.notch_size(),
-                    ShapeKind::Idle,
-                    true,
-                );
-                typing_lead(shape, plain)
-            } else {
-                0.0
-            },
+            clock,
+            idle_lead,
             lyric: self.lyrics.shown(now),
             lyric_scroll: if self.drawn == View::MediaLyric {
                 self.lyric_fit.scroll(now)
@@ -7756,7 +7781,7 @@ impl App {
             notice_close: self.notice_close_view(now),
             transit,
             full_redraw,
-            play: self.play_frame(now, shape),
+            play: self.play_frame(now, shape, idle_layout, minute),
         };
         let key = eq_key(self.draw_gen, &frame, shape, opacity);
         if eq_tick && !dirty::eq_draw_needed(self.eq_key.as_ref(), &key) {
@@ -8837,6 +8862,8 @@ struct ActivePlay {
     play: Play,
     moment: Moment,
     shape: PlayShape,
+    /// When it started: a key in its first `KEY_GRACE` does not end it.
+    started: Instant,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -8887,16 +8914,30 @@ fn step_play(
     play.done(now)
 }
 
+/// The input tick to remember after a frame. When the pointer moved this
+/// frame, the move's own tick may have landed after the first read, so it is
+/// read again (`again`) and kept, or the next frame would see that tick next
+/// to a pointer that now holds still and call it a key.
+fn tick_to_keep(first: u32, pointer_moved: bool, again: impl FnOnce() -> Option<u32>) -> u32 {
+    if pointer_moved { again().unwrap_or(first) } else { first }
+}
+
+/// A key in the first moments of a play does not end it: the Enter that picks
+/// "Mainkan maskot" from the menu is still going up when the play starts.
+const KEY_GRACE: Duration = Duration::from_millis(250);
+
 /// Between two frames of a story, the owner did something that ends it: a
 /// mouse button is down, or input arrived (the last-input tick moved) while
 /// the pointer stayed where it was, which is a key, a hotkey or the wheel.
-/// Moving the mouse alone does not end it.
+/// Moving the mouse alone does not end it, and neither does a key within
+/// `KEY_GRACE` of the start (`age`); a button always does.
 fn input_ends_play(
     tick: (u32, u32),
     cursor: (Option<(i32, i32)>, Option<(i32, i32)>),
     buttons: bool,
+    age: Duration,
 ) -> bool {
-    buttons || (tick.0 != tick.1 && cursor.0 == cursor.1)
+    buttons || (age >= KEY_GRACE && tick.0 != tick.1 && cursor.0 == cursor.1)
 }
 
 /// What one frame of a running story leaves behind.
@@ -12012,7 +12053,7 @@ mod tests {
         let size = NotchSize::from_config(&Config::default());
         let shape = play_shape_of(Style::Notch, size, Mascot::Cat);
         let play = Play::start(Story::Kelelawar, t0);
-        (Some(ActivePlay { play, moment: Moment::Idle, shape }), shape)
+        (Some(ActivePlay { play, moment: Moment::Idle, shape, started: t0 }), shape)
     }
 
     #[test]
@@ -12104,8 +12145,34 @@ mod tests {
             ((5, 9), (None, None), false, true, "no pointer to read either time"),
         ];
         for (tick, cursor, buttons, ends, name) in cases {
-            assert_eq!(input_ends_play(tick, cursor, buttons), ends, "{name}");
+            assert_eq!(input_ends_play(tick, cursor, buttons, Duration::from_secs(5)), ends, "{name}");
         }
+    }
+
+    #[test]
+    fn a_mouse_moves_own_tick_never_shows_up_later_as_a_key() {
+        let (c0, c1) = (Some((10, 20)), Some((11, 20)));
+        let ms = Duration::from_secs(5);
+        // Frame N: tick T0 read, the mouse moves (tick T1), cursor read moved.
+        let (t0, t1) = (5, 9);
+        let kept = tick_to_keep(t0, true, || Some(t1));
+        assert!(!input_ends_play((t0, t0), (c0, c1), false, ms), "frame N: a move");
+        // Frame N+1: the mouse stopped, the tick is still T1.
+        assert!(!input_ends_play((kept, t1), (c1, c1), false, ms), "frame N+1: no key");
+        // A real key afterwards still ends it.
+        assert!(input_ends_play((kept, 12), (c1, c1), false, ms), "a later key ends it");
+        assert_eq!(tick_to_keep(t0, false, || unreachable!()), t0, "no move: no second read");
+        assert_eq!(tick_to_keep(t0, true, || None), t0, "a failed second read keeps the first");
+    }
+
+    #[test]
+    fn a_key_in_the_first_quarter_second_does_not_end_a_play() {
+        let (at, moved) = (Some((10, 20)), Some((11, 20)));
+        let ms = Duration::from_millis;
+        assert!(!input_ends_play((5, 9), (at, at), false, ms(100)), "the menu's Enter key-up");
+        assert!(input_ends_play((5, 9), (at, at), false, ms(300)), "a key later ends it");
+        assert!(input_ends_play((5, 5), (at, moved), true, ms(100)), "a mouse button ends it at once");
+        assert!(input_ends_play((5, 5), (at, at), true, ms(0)), "a button at the very start too");
     }
 
     #[test]

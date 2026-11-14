@@ -8,22 +8,18 @@
 
 use std::f32::consts::{PI, TAU};
 
-use super::{Ease, HEAD_PIVOT, MascotShot, Prop, Shot, blinks, bump, kf, lerp, ring, toward_rest};
-use crate::config::Style;
-use crate::ui::geometry::{ShapeRect, idle_layout_lead};
+use super::{
+    DIGIT_X, Draw, Ease, HEAD_PIVOT, Layer, MascotShot, Part, Shot, Slot, Stage, blinks, bump, kept, kf,
+    lerp, ring, toward_rest,
+};
+use crate::ui::geometry::IdleLayout;
 use crate::ui::mascot::CrestPose;
-use crate::ui::play::state::{Beat, spread_offsets};
 use crate::ui::play::trigger::Story;
 use crate::ui::render::DigitFx;
 use crate::ui::robot::{Expr, GRID};
 
 use Ease::{Io, Lin, O, Sb, Sio};
 
-/// The clock's character centres from the clock box's centre (DM Sans at
-/// 16, `%H:%M`), as the mockup measures them. Only where the falk aims and
-/// where the stolen digit hangs from the beak; the clock's own characters
-/// are placed by DirectWrite.
-const DIGIT_X: [f32; 5] = [-17.2, -7.6, 0.0, 7.6, 17.2];
 /// The digit the falk steals: the minute's last.
 const STOLEN: usize = 4;
 /// The head stops this far right of the stolen digit's centre: close enough
@@ -36,10 +32,11 @@ const CREST_REST: CrestPose = CrestPose { rot_deg: 10.0, scale: 1.0 };
 /// The beak's tip on the head's grid; the stolen digit hangs from it.
 const BEAK: (f32, f32) = (32.0, 49.5);
 
-/// The head's resting pivot (`HEAD_PIVOT`) in the slot of `s` with the
-/// island `spread` open, and the head grid's scale (dip per unit).
-fn head_pivot(s: ShapeRect, spread: f32) -> Option<((f32, f32), f32)> {
-    let slot = spread_offsets(idle_layout_lead(s, true, true, 0.0), s, spread).robot?;
+/// The head's resting pivot (`HEAD_PIVOT`) in the slot of `room` (the
+/// layout as the play has spread it), and the head grid's scale (dip per
+/// unit).
+fn head_pivot(room: IdleLayout) -> Option<((f32, f32), f32)> {
+    let slot = room.robot?;
     let k = slot.w / GRID;
     Some(((slot.x + HEAD_PIVOT.0 * k, slot.y + HEAD_PIVOT.1 * k), k))
 }
@@ -52,19 +49,21 @@ fn beak_at(m: &MascotShot, rest: (f32, f32), k: f32) -> (f32, f32) {
     (rest.0 + m.dx + bx * cos - by * sin, rest.1 + m.dy + bx * sin + by * cos)
 }
 
-/// One moment of the story on `s`. `beat.alpha` eases the whole of it home
-/// and `beat.spread` is where the island has made room (the mascot at its
-/// left end, the clock at its right). Exactly at rest at 0 s, at the end
-/// and with `alpha` 0.
-pub fn shot(style: Style, s: ShapeRect, beat: Beat) -> Shot {
-    let (t, a) = (beat.t, beat.alpha.clamp(0.0, 1.0));
+/// One moment of the story on `stage`. `beat.alpha` eases the whole of it
+/// home, paced by the wind-down's time (`kept`), and `beat.spread` is where
+/// the island has made room (the mascot at
+/// its left end, the clock at its right). Exactly at rest at 0 s, at the end
+/// and with `alpha` 0. The falk has no body here, so the look is unused.
+pub fn shot(stage: &Stage) -> Shot {
+    let Stage { style, shape: s, beat, .. } = *stage;
+    let (t, a) = (beat.t, kept(beat.alpha.clamp(0.0, 1.0), 0.0, 1.0));
     let mut out = Shot::rest(style, s);
     if t <= 0.0 || t >= Story::MalingAngka.secs() || a == 0.0 {
         return out;
     }
     // Where the slot and the clock are once the island has made room.
-    let room = spread_offsets(idle_layout_lead(s, true, true, 0.0), s, beat.spread);
-    let (Some((rest, k)), Some(clock)) = (head_pivot(s, beat.spread), room.clock) else {
+    let room = stage.room();
+    let (Some((rest, k)), Some(clock)) = (head_pivot(room), room.clock) else {
         return out;
     };
     let mid = s.y + s.h / 2.0;
@@ -170,12 +169,18 @@ pub fn shot(style: Style, s: ShapeRect, beat: Beat) -> Shot {
         glance: (look * 2.4 * a, curious * 0.3 * 2.2 * a),
         blink: blinks(t, &[1.15, 4.75, 7.6]) > 0.25,
         beak_open: chirp > 0.05,
+        bare_octopus: false,
+        flush: 0.0,
+        alpha: 1.0,
     };
     let beak = beak_at(&head, rest, k);
     let pivot = (rest.0 + head.dx, rest.1 + head.dy);
     if whistle > 0.0 {
-        out.props.push(Prop::Whistle {
-            at: (pivot.0 + 8.0, pivot.1 - 5.0),
+        out.parts.push(Part {
+            layer: Layer::Front,
+            draw: Draw::Whistle {
+                at: (pivot.0 + 8.0, pivot.1 - 5.0),
+            },
             alpha: whistle.min(1.0) * a,
         });
     }
@@ -202,13 +207,18 @@ pub fn shot(style: Style, s: ShapeRect, beat: Beat) -> Shot {
         } else {
             (beak, head.rot_deg + 80.0)
         };
-        // Gone over its last quarter second of falling, well below the island.
+        // Gone over its last quarter second of falling, well below the
+        // island: in front of it, so it falls out under the lip.
         let fade = ((1.0 - drop) / 0.25).clamp(0.0, 1.0);
         if fade > 0.0 {
-            out.props.push(Prop::Digit {
-                index: STOLEN,
-                at,
-                rot_deg: turn,
+            out.parts.push(Part {
+                layer: Layer::Front,
+                draw: Draw::Digit {
+                    index: STOLEN,
+                    at,
+                    rot_deg: turn,
+                    home,
+                },
                 alpha: fade * a,
             });
         }
@@ -240,7 +250,7 @@ pub fn shot(style: Style, s: ShapeRect, beat: Beat) -> Shot {
         }
     };
     out.digits[STOLEN] = if (3.55..4.7).contains(&t) { fx } else { toward_rest(fx, a) };
-    out.mascot = Some(head);
+    out.slot = Slot::Story(head);
     out
 }
 
@@ -248,63 +258,37 @@ pub fn shot(style: Style, s: ShapeRect, beat: Beat) -> Shot {
 mod tests {
     use super::*;
     use crate::config::Style;
-    use crate::ui::geometry::{ShapeRect, WINDOW_H, WINDOW_W};
+    use crate::ui::cat_style::CatLook;
+    use crate::ui::geometry::{IdleLayout, ShapeRect};
     use crate::ui::mascot::{CrestPose, beak_open, crest_pose};
     use crate::ui::play::shape::is_rest;
     use crate::ui::play::state::Beat;
-    use crate::ui::play::stories::Prop;
+    use crate::ui::play::stories::{Draw, Layer, Part};
     use crate::ui::play::testing::shape;
     use crate::ui::play::trigger::Story;
     use crate::ui::render::DigitFx;
     use crate::ui::robot::{Expr, Pose};
 
-    #[test]
-    fn the_story_starts_and_ends_at_rest_in_both_styles() {
-        for style in [Style::Notch, Style::Pill] {
-            for (w, h) in [(160.0, 28.0), (190.0, 34.0), (300.0, 44.0)] {
-                let s = shape(style, w, h);
-                for t in [0.0, Story::MalingAngka.secs()] {
-                    let shot = shot(style, s, Beat { spread: 1.0, alpha: 1.0, t });
-                    assert!(is_rest(style, &shot.deform), "{style:?} {w}x{h} t={t}");
-                    assert!(shot.digits.iter().all(|d| *d == DigitFx::IDENTITY), "{style:?} {w}x{h} t={t}");
-                }
-            }
-        }
+    crate::ui::play::stories::story_contract_tests!(Story::MalingAngka, super::shot);
+
+    /// The story on the idle island with the clock, as the app plays it.
+    fn shot(style: Style, s: ShapeRect, beat: Beat) -> Shot {
+        let look = CatLook { mascot: crate::theme::Mascot::Falk, ..CatLook::default() };
+        super::shot(&Stage::idle(style, s, beat, look, true))
     }
 
-    #[test]
-    fn alpha_zero_means_no_deformation_at_any_moment() {
-        let s = shape(Style::Pill, 190.0, 34.0);
-        for i in 0..=78 {
-            let beat = Beat { spread: 1.0, alpha: 0.0, t: i as f32 / 10.0 };
-            assert!(is_rest(Style::Pill, &shot(Style::Pill, s, beat).deform), "t={}", beat.t);
-        }
+    /// The idle layout with the clock, spread open by `spread`.
+    fn room(s: ShapeRect, spread: f32) -> IdleLayout {
+        crate::ui::play::state::spread_offsets(crate::ui::geometry::idle_layout_lead(s, true, true, 0.0), s, spread)
     }
 
     #[test]
     fn the_stolen_digit_is_carried_and_then_returned() {
         let s = shape(Style::Notch, 190.0, 34.0);
-        let mid = shot(Style::Notch, s, Beat { spread: 1.0, alpha: 1.0, t: 4.0 });
+        let mid = shot(Style::Notch, s, Beat { spread: 1.0, alpha: 1.0, t: 4.0, cut_at: None });
         assert!(mid.digits.iter().any(|d| d.dx.abs() > 5.0), "a digit has left its place");
-        let end = shot(Style::Notch, s, Beat { spread: 1.0, alpha: 1.0, t: 7.6 });
+        let end = shot(Style::Notch, s, Beat { spread: 1.0, alpha: 1.0, t: 7.6, cut_at: None });
         assert!(end.digits.iter().all(|d| d.dx.abs() < 1.0), "every digit is home before the end");
-    }
-
-    #[test]
-    fn nothing_leaves_the_window_at_any_size_or_style() {
-        for style in [Style::Notch, Style::Pill] {
-            for (w, h) in [(160.0, 28.0), (190.0, 34.0), (300.0, 44.0)] {
-                let s = shape(style, w, h);
-                let mut t = 0.0;
-                while t <= Story::MalingAngka.secs() {
-                    let shot = shot(style, s, Beat { spread: 1.0, alpha: 1.0, t });
-                    let b = shot.bounds();
-                    assert!(b.x >= 0.0 && b.y >= 0.0 && b.x + b.w <= WINDOW_W && b.y + b.h <= WINDOW_H,
-                        "{style:?} {w}x{h} t={t}: {b:?}");
-                    t += 0.04;
-                }
-            }
-        }
     }
 
     /// The shots every 10 ms of the story.
@@ -314,7 +298,7 @@ mod tests {
         (0..=(secs * 100.0) as usize)
             .map(|i| {
                 let t = (i as f32 / 100.0).min(secs);
-                (t, shot(style, s, Beat { spread: 1.0, alpha, t }))
+                (t, shot(style, s, Beat { spread: 1.0, alpha, t, cut_at: None }))
             })
             .collect()
     }
@@ -333,19 +317,19 @@ mod tests {
     #[test]
     fn the_digit_wiggles_is_bitten_carried_dropped_and_regrown() {
         let s = shape(Style::Notch, 190.0, 34.0);
-        let at = |t: f32| shot(Style::Notch, s, Beat { spread: 1.0, alpha: 1.0, t });
+        let at = |t: f32| shot(Style::Notch, s, Beat { spread: 1.0, alpha: 1.0, t, cut_at: None });
         assert!(at(0.9).digits[4].rot_deg.abs() > 0.5 || at(0.95).digits[4].rot_deg.abs() > 0.5, "it wiggles");
         assert!(at(2.5).digits[4].rot_deg.abs() > 1.0, "a tap knocks it");
         // Bitten: gone from its place, in the beak instead.
         let held = at(4.0);
         assert_eq!(held.digits[4].alpha, 0.0);
-        assert!(held.props.iter().any(|p| matches!(p, Prop::Digit { index: 4, alpha, .. } if *alpha == 1.0)));
+        assert!(held.parts.iter().any(|p| matches!(p, Part { layer: Layer::Front, draw: Draw::Digit { index: 4, .. }, alpha } if *alpha == 1.0)));
         // The clock regrows it with a little overshoot, then it is home.
         assert!(at(4.75).digits[4].scale > 0.3 && at(4.75).digits[4].scale < 1.0);
         assert!(at(5.0).digits[4].scale >= 0.99);
         // The stolen one falls and is gone a second after the drop.
-        let falling = |t: f32| at(t).props.iter().find_map(|p| match p {
-            Prop::Digit { at, .. } => Some(*at),
+        let falling = |t: f32| at(t).parts.iter().find_map(|p| match p.draw {
+            Draw::Digit { at, .. } => Some(at),
             _ => None,
         });
         let (a, b) = (falling(5.2).unwrap(), falling(5.8).unwrap());
@@ -365,11 +349,11 @@ mod tests {
                 let head = |m: Option<MascotShot>| m.map_or((0.0, 0.0, 0.0), |m| (m.dx, m.dy, m.rot_deg));
                 // At the clock it is well to the right of its slot.
                 let s = shape(style, w, h);
-                let there = shot(style, s, Beat { spread: 1.0, alpha: 1.0, t: 3.0 }).mascot.unwrap();
+                let there = shot(style, s, Beat { spread: 1.0, alpha: 1.0, t: 3.0, cut_at: None }).head().unwrap();
                 assert!(there.dx > 0.5 * w, "{style:?} {w}x{h}: only {}", there.dx);
                 for pair in frames.windows(2) {
                     let ((t0, a), (t1, b)) = (&pair[0], &pair[1]);
-                    let (p, q) = (head(a.mascot), head(b.mascot));
+                    let (p, q) = (head(a.head()), head(b.head()));
                     // The scoot is quick, but never a jump in one 10 ms frame.
                     assert!((q.0 - p.0).abs() < 0.02 * w && (q.1 - p.1).abs() < 1.0, "{style:?} {w}x{h} {t0}..{t1}: {p:?} {q:?}");
                     assert!((q.2 - p.2).abs() < 4.0, "{style:?} {w}x{h} {t0}..{t1}: turned {} to {}", p.2, q.2);
@@ -381,29 +365,29 @@ mod tests {
     #[test]
     fn the_crest_shoots_up_on_the_regrow_then_droops_and_settles() {
         let s = shape(Style::Pill, 190.0, 34.0);
-        let crest = |t: f32| shot(Style::Pill, s, Beat { spread: 1.0, alpha: 1.0, t }).mascot.unwrap().crest;
+        let crest = |t: f32| shot(Style::Pill, s, Beat { spread: 1.0, alpha: 1.0, t, cut_at: None }).head().unwrap().crest;
         assert!(crest(5.2).scale > 1.6, "startled");
         assert!(crest(6.7).scale < 0.8, "drooping");
         let end = crest(7.79);
         assert!((end.scale - 1.0).abs() < 0.01 && (end.rot_deg - 10.0).abs() < 0.2, "the idle crest: {end:?}");
-        assert_eq!(shot(Style::Pill, s, Beat { spread: 1.0, alpha: 1.0, t: 5.2 }).mascot.unwrap().expr, Expr::Alert);
+        assert_eq!(shot(Style::Pill, s, Beat { spread: 1.0, alpha: 1.0, t: 5.2, cut_at: None }).head().unwrap().expr, Expr::Alert);
     }
 
     #[test]
     fn a_wind_down_eases_everything_home() {
         let s = shape(Style::Notch, 190.0, 34.0);
-        let full = shot(Style::Notch, s, Beat { spread: 1.0, alpha: 1.0, t: 4.0 });
-        let half = shot(Style::Notch, s, Beat { spread: 1.0, alpha: 0.5, t: 4.0 });
-        let (f, h) = (full.mascot.unwrap(), half.mascot.unwrap());
+        let full = shot(Style::Notch, s, Beat { spread: 1.0, alpha: 1.0, t: 4.0, cut_at: None });
+        let half = shot(Style::Notch, s, Beat { spread: 1.0, alpha: 0.5, t: 4.0, cut_at: None });
+        let (f, h) = (full.head().unwrap(), half.head().unwrap());
         assert!((h.rot_deg - f.rot_deg * 0.5).abs() < 1e-3);
         assert!((h.dx - f.dx * 0.5).abs() < 1e-3 && (h.sx - (1.0 + (f.sx - 1.0) * 0.5)).abs() < 1e-3);
-        let gone = shot(Style::Notch, s, Beat { spread: 0.0, alpha: 0.0, t: 4.0 });
+        let gone = shot(Style::Notch, s, Beat { spread: 0.0, alpha: 0.0, t: 4.0, cut_at: None });
         assert_eq!(gone, crate::ui::play::stories::Shot::rest(Style::Notch, s));
     }
 
     /// The beak of the head `m` draws, from the slot of `s` at `spread`.
     fn drawn_beak(s: ShapeRect, spread: f32, m: &MascotShot) -> (f32, f32) {
-        let (rest, k) = head_pivot(s, spread).unwrap();
+        let (rest, k) = head_pivot(room(s, spread)).unwrap();
         beak_at(m, rest, k)
     }
 
@@ -418,19 +402,21 @@ mod tests {
             for a in [0.25, 0.5, 0.75, 1.0] {
                 for t in [4.0, 5.3] {
                     let case = format!("{style:?} alpha={a} t={t}");
-                    let shot = shot(style, s, Beat { spread: 1.0, alpha: a, t });
-                    let m = shot.mascot.unwrap();
+                    let shot = shot(style, s, Beat { spread: 1.0, alpha: a, t, cut_at: None });
+                    let m = shot.head().unwrap();
                     let beak = drawn_beak(s, 1.0, &m);
-                    let digits: Vec<_> = shot.props.iter().filter_map(|p| match *p {
-                        Prop::Digit { index, at, alpha, .. } => Some((index, at, alpha)),
+                    let digits: Vec<_> = shot.parts.iter().filter_map(|p| match p.draw {
+                        Draw::Digit { index, at, .. } => Some((index, at, p.alpha, p.layer)),
                         _ => None,
                     }).collect();
                     assert_eq!(digits.len(), 1, "{case}: one stolen digit");
-                    let (index, at, alpha) = digits[0];
+                    let (index, at, alpha, layer) = digits[0];
                     assert_eq!(index, 4, "{case}");
+                    assert_eq!(layer, Layer::Front, "{case}: it falls out under the island");
                     let drop = (t - 5.05_f32).max(0.0);
                     let want = (beak.0 + 4.0 * drop, beak.1 + 90.0 * drop * drop);
                     assert!((at.0 - want.0).abs() < 1e-3 && (at.1 - want.1).abs() < 1e-3, "{case}: {at:?} is not at the beak {want:?}");
+                    let a = crate::ui::play::stories::kept(a, 0.0, 1.0);
                     assert!((alpha - a).abs() < 1e-3, "{case}: the stolen digit fades with the head");
                     let home = shot.digits[4];
                     if t < 4.7 && a < 1.0 {
@@ -445,12 +431,12 @@ mod tests {
     #[test]
     fn the_whistle_follows_the_drawn_head() {
         let s = shape(Style::Pill, 190.0, 34.0);
-        let (rest, _) = head_pivot(s, 1.0).unwrap();
+        let (rest, _) = head_pivot(room(s, 1.0)).unwrap();
         for a in [0.5, 1.0] {
-            let shot = shot(Style::Pill, s, Beat { spread: 1.0, alpha: a, t: 6.55 });
-            let m = shot.mascot.unwrap();
-            let at = shot.props.iter().find_map(|p| match *p {
-                Prop::Whistle { at, .. } => Some(at),
+            let shot = shot(Style::Pill, s, Beat { spread: 1.0, alpha: a, t: 6.55, cut_at: None });
+            let m = shot.head().unwrap();
+            let at = shot.parts.iter().find_map(|p| match p.draw {
+                Draw::Whistle { at } if p.layer == Layer::Front => Some(at),
                 _ => None,
             }).unwrap();
             let head = (rest.0 + m.dx, rest.1 + m.dy);
@@ -459,19 +445,18 @@ mod tests {
     }
 
     #[test]
-    fn the_mascot_is_the_idle_falk_just_after_the_start_and_just_before_the_end() {
+    fn the_falks_story_never_drops_a_mascots_arms() {
+        // Only the octopus reads the flag, and a story that draws its long arms
+        // asks for it; this story does not, so a mascot swapped in keeps its own.
         for style in [Style::Notch, Style::Pill] {
-            for (w, h) in [(160.0, 28.0), (190.0, 34.0), (300.0, 44.0)] {
-                let s = shape(style, w, h);
-                for t in [0.001, Story::MalingAngka.secs() - 0.001] {
-                    let case = format!("{style:?} {w}x{h} t={t}");
-                    let m = shot(style, s, Beat { spread: 1.0, alpha: 1.0, t }).mascot.unwrap();
-                    assert_eq!(m.expr, Expr::Idle, "{case}");
-                    assert!((m.crest.rot_deg - 10.0).abs() < 1e-3 && (m.crest.scale - 1.0).abs() < 1e-3, "{case}: {:?}", m.crest);
-                    assert!((m.sx - 1.0).abs() < 1e-3 && (m.sy - 1.0).abs() < 1e-3, "{case}");
-                    assert_eq!(m.glance, (0.0, 0.0), "{case}");
-                    assert!(!m.blink && !m.beak_open, "{case}");
-                    assert!(m.dx.abs() < 1e-3 && m.dy.abs() < 1e-3 && m.rot_deg.abs() < 1e-3, "{case}: {m:?}");
+            let s = shape(style, 190.0, 34.0);
+            for i in 0..=160 {
+                let shot = shot(style, s, Beat { spread: 1.0, alpha: 1.0, t: i as f32 * 0.05, cut_at: None });
+                assert!(shot.head().is_none_or(|m| !m.bare_octopus), "{style:?} t={}", i as f32 * 0.05);
+                for part in &shot.parts {
+                    if let Draw::Head { shot, .. } = &part.draw {
+                        assert!(!shot.bare_octopus, "{style:?} t={}", i as f32 * 0.05);
+                    }
                 }
             }
         }
@@ -490,6 +475,9 @@ mod tests {
             glance: (2.4, 0.0),
             blink: true,
             beak_open: true,
+            bare_octopus: false,
+            flush: 0.0,
+            alpha: 1.0,
         };
         let base = Pose { glance_x: 1.0, head_dx_dip: 3.0, ..Pose::default() };
         let pose = m.pose(base);

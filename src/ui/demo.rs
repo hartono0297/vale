@@ -73,6 +73,74 @@
 //!   (2.46 s, the second tap), `-bawa` (4.1 s, the digit carried home),
 //!   `-tumbuh` (4.85 s, the clock regrowing it), `-kaget` (5.3 s, the crest
 //!   shot up and the stolen digit falling) and `-siul` (6.55 s, the whistle).
+//! - The cat's Syal ekor story, frozen at two moments, always with the cat
+//!   (its coat from `DI_CAT_COLOR`, `DI_CAT_ACCESSORY` as above):
+//!   `bata-play-syal-wrap` (4.3 s, the tail hugging the left end, the end
+//!   pulled in, the cat's happy eyes) and `bata-play-syal-sneeze` (5.64 s,
+//!   the sneeze at its height: the island jolted sideways, the lip pushed
+//!   down, the tail letting go).
+//! - The cat's Petak umpet story, frozen at two moments, always with the cat
+//!   (its coat from `DI_CAT_COLOR`, `DI_CAT_ACCESSORY` as above):
+//!   `bata-play-petak-peek` (2.0 s, the head peeking round the left end, cut
+//!   to outside the island, a paw gripping the rim in front, the slot empty)
+//!   and `bata-play-petak-pounce` (5.2 s, the pounce: the bump shooting
+//!   along the lip, the island rocked 2.3 degrees, the tail tip being yanked
+//!   back in at the right end).
+//! - The cat's Bantal angka story, frozen at two moments, always with the cat
+//!   (its coat from `DI_CAT_COLOR`, `DI_CAT_ACCESSORY` as above):
+//!   `bata-play-bantal-sleep` (5.9 s, asleep with its head on the minute,
+//!   the digit squashed and tipped under its cheek, the lip sagging under it,
+//!   two z's rising) and `bata-play-bantal-swap` (6.45 s, the minute turned
+//!   over to the next one, popped up and ringing, the cat startled, its tail
+//!   puffed).
+//! - The cat's Piano ekor story, frozen at two moments, always with the cat
+//!   (its coat from `DI_CAT_COLOR`, `DI_CAT_ACCESSORY` as above):
+//!   `bata-play-piano-tap` (3.0 s, the tail's tip on the minute's last
+//!   digit, which dips with the lip lit under it, notes floating off) and
+//!   `bata-play-piano-sweep` (5.2 s, after the sweep: the lit edge along the
+//!   lip and round the right end's arc, the last digits still lit).
+//! - The octopus's Penasaran jam story, frozen at two moments, always with
+//!   the octopus (its coat from `DI_OCTOPUS_COLOR`, `DI_CAT_ACCESSORY` as
+//!   above): `bata-play-penasaran-pull` (4.6 s, the arm round the right end
+//!   pulling the minute's last digit down, the mantle peeking out, the slot
+//!   empty) and `bata-play-penasaran-plop` (5.0 s, the plop: the ring over
+//!   the digit wobbling home, the octopus flushed and startled, its short
+//!   arms splayed).
+//! - The octopus's Peluk pulau story, frozen at its hug, always with the
+//!   octopus (its coat from `DI_OCTOPUS_COLOR`, `DI_CAT_ACCESSORY` as
+//!   above): `bata-play-peluk-hug` (4.15 s, the mantle under the island,
+//!   flushed and happy, four long arms round both ends and onto its face,
+//!   the island squeezed narrower and taller).
+//! - The octopus's Bungee story, frozen at two moments, always with the
+//!   octopus (its coat from `DI_OCTOPUS_COLOR`, `DI_CAT_ACCESSORY` as above):
+//!   `bata-play-bungee-drop` (1.35 s, the fall: one arm hooked on the lip
+//!   and stretched thin, the others streaming up, the slot empty) and
+//!   `bata-play-bungee-bounce` (2.13 s, the bottom of a bounce: the mantle
+//!   squashed on the taut rope, a Pill pulled down by it).
+//! - The falk's Kelelawar story, frozen at two moments, always with the falk
+//!   (its coat from `DI_FALK_COLOR`, `DI_CAT_ACCESSORY` as above):
+//!   `bata-play-kelelawar-hang` (1.9 s, hanging upside down by its feet from
+//!   the lip, swung 7.4 degrees, the Pill tilted 0.44 degrees with it) and
+//!   `bata-play-kelelawar-open` (3.3 s, the wings spread wide, the happy
+//!   face).
+//! - The falk's Terbang keliling story, frozen at two moments, always with
+//!   the falk (its coat from `DI_FALK_COLOR`, `DI_CAT_ACCESSORY` as above):
+//!   `bata-play-terbang-roll` (2.55 s, halfway round the loop under the
+//!   island, upside down, wings flapping, the slot empty) and
+//!   `bata-play-terbang-loop` (4.52 s, swinging round behind the right end,
+//!   cut to outside the island, on the Pill sinking into the end's arc).
+//! - `bata-play-cat-body`: the seated cat (body, legs, paws, tail) beside
+//!   the island at rest, tail up and one paw lifted, always the cat (its coat
+//!   from `DI_CAT_COLOR`, `DI_CAT_ACCESSORY` as above).
+//! - `bata-play-octopus-arms`: the octopus's mantle alone in the slot and two
+//!   long arms winding round the island's right end (the arms of its three
+//!   stories), always the octopus (its coat from `DI_OCTOPUS_COLOR`,
+//!   `DI_CAT_ACCESSORY` as above).
+//! - `bata-play-falk-open`: the falk out of its slot beside the island's
+//!   right end, wings open; `bata-play-falk-hang`: hanging upside down by its
+//!   feet from the lip below its slot, wings folded, as in its Kelelawar
+//!   story. Always the falk (its coat from `DI_FALK_COLOR`, `DI_CAT_ACCESSORY`
+//!   as above).
 //! - `DI_FONT=mono` sets the UI typeface to JetBrains Mono in every scene
 //!   that builds a renderer (`--demo`, `--demo-cli`, `--demo-robot`,
 //!   `--demo-devices`, `--demo-arrange`) and in `--settings`; unset or an
@@ -219,8 +287,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use super::cat_style::CatLook;
 use super::dock::{self, DockFrame};
 use super::geometry::{
-    ANIM_MS, NOTCH_OPACITY_DEFAULT, NotchSize, ShapeKind, ShapeRect, TOAST_SLOT_EXTRA, Under,
-    ease_out_back, idle_shape_typing, lerp_shape, lyric_box_w, lyric_max_w, lyric_scroll_offset,
+    ANIM_MS, IdleLayout, NOTCH_OPACITY_DEFAULT, NotchSize, ShapeKind, ShapeRect, TOAST_SLOT_EXTRA, Under,
+    ease_out_back, idle_layout_lead, idle_shape_typing, lerp_shape, lyric_box_w, lyric_max_w, lyric_scroll_offset,
     lyric_shape_sized, lyric_slot_width, lyric_width_min, shape_with_robot_sized, typing_lead,
     with_rec_caption, with_toast_slot,
 };
@@ -235,8 +303,14 @@ use super::render::{
     ShelfPreviewView, SystemView, ToastBadgeView, ToastLogoView,
 };
 use super::play::shape::{Deform, Dent};
-use super::play::state::Beat;
-use super::play::stories;
+use super::play::state::{Beat, spread_offsets};
+use super::mascot::CrestPose;
+use super::play::art::cat::{CatPose, Paw, Tail, cat_at};
+use super::play::art::falk::{BirdPose, WingPose, bird, bird_at, bird_parts};
+use super::play::art::octopus;
+use super::play::art::tube::{along, catmull_rom, curl, plen};
+use super::play::rim::rim;
+use super::play::stories::{self, Layer, MascotShot, Part, Slot, Stage};
 use super::play::trigger::Story;
 use super::robot::{Expr, EyesPose, Motion, PAW_LIFT, Pose};
 use super::shelf_motion::{SHELF_ENTER_MS, SHELF_MOVE_MS, SHELF_STAGGER_MS, ShelfMotion};
@@ -509,7 +583,11 @@ enum CliDemo {
 }
 
 /// What a play scene freezes (`bata-play-island`, `bata-play-swing`,
-/// `bata-play-digits`, the `bata-maling-angka-*` moments).
+/// `bata-play-digits`, the `bata-maling-angka-*`, `bata-play-syal-*`,
+/// `bata-play-petak-*`, `bata-play-bantal-*`, `bata-play-piano-*`,
+/// `bata-play-penasaran-*`, `bata-play-bungee-*`, `bata-play-kelelawar-*` and
+/// `bata-play-terbang-*` moments, `bata-play-peluk-hug`, `bata-play-cat-body`,
+/// `bata-play-octopus-arms`, `bata-play-falk-open`, `bata-play-falk-hang`).
 #[derive(Clone, Copy, PartialEq)]
 enum DemoPlay {
     No,
@@ -523,6 +601,37 @@ enum DemoPlay {
     Digits,
     /// The falk's Maling angka at this many seconds, always with the falk.
     MalingAngka(f32),
+    /// The cat's Syal ekor at this many seconds, always with the cat.
+    SyalEkor(f32),
+    /// The cat's Petak umpet at this many seconds, always with the cat.
+    PetakUmpet(f32),
+    /// The cat's Bantal angka at this many seconds, always with the cat.
+    BantalAngka(f32),
+    /// The cat's Piano ekor at this many seconds, always with the cat.
+    PianoEkor(f32),
+    /// The octopus's Penasaran jam at this many seconds, always with the
+    /// octopus.
+    PenasaranJam(f32),
+    /// The octopus's Peluk pulau at this many seconds, always with the
+    /// octopus.
+    PelukPulau(f32),
+    /// The octopus's Bungee at this many seconds, always with the octopus.
+    Bungee(f32),
+    /// The falk's Kelelawar at this many seconds, always with the falk.
+    Kelelawar(f32),
+    /// The falk's Terbang keliling at this many seconds, always with the falk.
+    TerbangKeliling(f32),
+    /// The seated cat beside the island at rest, tail up, one paw lifted,
+    /// always the cat.
+    CatBody,
+    /// The octopus's mantle alone in the slot and two long arms winding round
+    /// the island's right end, always the octopus.
+    OctopusArms,
+    /// The falk beside the island's right end, wings open, always the falk.
+    FalkOpen,
+    /// The falk hanging upside down from the lip below its slot, wings
+    /// folded, as in Kelelawar; always the falk.
+    FalkHang,
 }
 
 /// `View` without its payloads, so scenes can be `const`.
@@ -1015,19 +1124,228 @@ const fn rec_hot_scene(name: &'static str, muted: [bool; 2], hot: Source) -> Sce
     }
 }
 
+/// Two long octopus arms in `coat`, each leaving under the island's lip and
+/// winding up round its right end, hugging the outline `rim` gives, the
+/// outer one further off, their tips curled: the mockup's way for an arm to
+/// wrap an end. They sit behind the island, so their roots are hidden by it.
+fn octopus_arms(style: Style, shape: ShapeRect, coat: OctopusColor) -> Vec<Part> {
+    // A point on the island's outline, `off` outside it.
+    let hug = |u: f32, off: f32| {
+        let r = rim(style, shape, u);
+        (r.x + r.nx * off, r.y + r.ny * off)
+    };
+    let mut parts = Vec::new();
+    for (way, ang, wm, side) in [
+        ([(0.68, -5.0), (0.78, 3.4), (0.86, 3.4), (0.92, 3.0), (0.95, 2.6)], 1.6, 1.0, 1),
+        ([(0.60, -5.0), (0.72, 7.0), (0.82, 7.0), (0.89, 6.4), (0.93, 6.0)], 2.2, 0.9, -1),
+    ] {
+        let way: Vec<_> = way.iter().map(|&(u, off)| hug(u, off)).collect();
+        let d = catmull_rom(&way, 8);
+        let path = curl(&along(&d, plen(&d), 30), ang, 9.0, 12, 0.0);
+        for draw in octopus::arm(&path, coat, side, wm, 0.0) {
+            parts.push(Part { layer: Layer::Back, draw, alpha: 1.0 });
+        }
+    }
+    parts
+}
+
+/// The falk out of its slot (the slot head moved down out of the island,
+/// where its clip hides it), the island making room. Open: beside the
+/// island's right end, wings open, upright. Hanging: as Kelelawar has it
+/// once out, its feet on the lip 6 right of the slot's centre, upside down,
+/// wings folded; the tail, body and wings behind the island, the feet and
+/// the head in front.
+fn falk_scene(hang: bool, style: Style, shape: ShapeRect, coat: FalkColor) -> stories::Shot {
+    let face = MascotShot {
+        dx: 0.0,
+        dy: 0.0,
+        rot_deg: 0.0,
+        sx: 1.0,
+        sy: 1.0,
+        expr: Expr::Idle,
+        crest: CrestPose { rot_deg: 10.0, scale: 1.0 },
+        glance: (0.0, 0.0),
+        blink: false,
+        beak_open: false,
+        bare_octopus: false,
+        flush: 0.0,
+        alpha: 1.0,
+    };
+    let wings = if hang { WingPose::FOLD } else { WingPose::SPREAD };
+    let pose = BirdPose {
+        wl: wings,
+        wr: wings,
+        wl_before: wings,
+        wr_before: wings,
+        wl_front: false,
+        wr_front: false,
+        face,
+        tail_rot: 0.0,
+        tail_spread: 0.0,
+        tuck: false,
+    };
+    let mut shot = stories::Shot::rest(style, shape);
+    shot.slot = Slot::Empty;
+    let part = |layer, draw| Part { layer, draw, alpha: 1.0 };
+    let bottom = shape.y + shape.h;
+    if hang {
+        let room = spread_offsets(idle_layout_lead(shape, true, true, 0.0), shape, 1.0);
+        let slot = room.robot.expect("the idle island has a mascot slot");
+        let at = (slot.x + slot.w / 2.0 + 6.0, bottom + 0.4);
+        let b = bird_parts(&pose, coat);
+        let mut back = vec![b.tail];
+        back.extend(b.body);
+        let mut front = b.feet;
+        front.push(b.head);
+        front.extend(b.wings_front);
+        shot.parts.push(part(Layer::Back, bird_at(at, 180.0, 1.0, 1.0, back)));
+        shot.parts.push(part(Layer::Front, bird_at(at, 180.0, 1.0, 1.0, front)));
+    } else {
+        let at = (shape.x + shape.w + 48.0, bottom + 46.0);
+        shot.parts.push(part(Layer::Back, bird_at(at, 0.0, 1.0, 1.0, vec![bird(&pose, coat)])));
+    }
+    shot
+}
+
 /// The frozen frames of the play scenes (`Scene::play`) on the island `shape`:
 /// the mascot and the clock spread to the island's ends, and the island
-/// deformed as `which` says, or a story's own moment.
-fn demo_play(which: DemoPlay, style: Style, shape: ShapeRect) -> PlayFrame {
+/// deformed as `which` says, or a story's own moment. The cat's body takes
+/// its coat from `cat`.
+///
+/// `layout` is the idle layout the frame lays the slot and the clock by,
+/// `minute` the clock's last character as the scene shows it.
+fn demo_play(
+    which: DemoPlay,
+    style: Style,
+    shape: ShapeRect,
+    cat: CatLook,
+    layout: IdleLayout,
+    minute: Option<char>,
+) -> PlayFrame {
     let beat = Beat {
         spread: 1.0,
         alpha: 1.0,
         t: 0.0,
+        cut_at: None,
     };
     let deform = match which {
         DemoPlay::MalingAngka(t) => {
             let beat = Beat { t, ..beat };
-            return PlayFrame::of(stories::shot(Story::MalingAngka, style, shape, beat), beat);
+            let look = CatLook { mascot: Mascot::Falk, ..cat };
+            let stage = Stage { style, shape, beat, look, layout, minute };
+            return PlayFrame::of(stories::shot(Story::MalingAngka, &stage), beat);
+        }
+        DemoPlay::SyalEkor(t) => {
+            let beat = Beat { t, ..beat };
+            let look = CatLook { mascot: Mascot::Cat, ..cat };
+            let stage = Stage { style, shape, beat, look, layout, minute };
+            return PlayFrame::of(stories::shot(Story::SyalEkor, &stage), beat);
+        }
+        DemoPlay::PetakUmpet(t) => {
+            let beat = Beat { t, ..beat };
+            let look = CatLook { mascot: Mascot::Cat, ..cat };
+            let stage = Stage { style, shape, beat, look, layout, minute };
+            return PlayFrame::of(stories::shot(Story::PetakUmpet, &stage), beat);
+        }
+        DemoPlay::BantalAngka(t) => {
+            let beat = Beat { t, ..beat };
+            let look = CatLook { mascot: Mascot::Cat, ..cat };
+            let stage = Stage { style, shape, beat, look, layout, minute };
+            return PlayFrame::of(stories::shot(Story::BantalAngka, &stage), beat);
+        }
+        DemoPlay::PianoEkor(t) => {
+            let beat = Beat { t, ..beat };
+            let look = CatLook { mascot: Mascot::Cat, ..cat };
+            let stage = Stage { style, shape, beat, look, layout, minute };
+            return PlayFrame::of(stories::shot(Story::PianoEkor, &stage), beat);
+        }
+        DemoPlay::PenasaranJam(t) => {
+            let beat = Beat { t, ..beat };
+            let look = CatLook { mascot: Mascot::Octopus, ..cat };
+            let stage = Stage { style, shape, beat, look, layout, minute };
+            return PlayFrame::of(stories::shot(Story::PenasaranJam, &stage), beat);
+        }
+        DemoPlay::PelukPulau(t) => {
+            let beat = Beat { t, ..beat };
+            let look = CatLook { mascot: Mascot::Octopus, ..cat };
+            let stage = Stage { style, shape, beat, look, layout, minute };
+            return PlayFrame::of(stories::shot(Story::PelukPulau, &stage), beat);
+        }
+        DemoPlay::Bungee(t) => {
+            let beat = Beat { t, ..beat };
+            let look = CatLook { mascot: Mascot::Octopus, ..cat };
+            let stage = Stage { style, shape, beat, look, layout, minute };
+            return PlayFrame::of(stories::shot(Story::Bungee, &stage), beat);
+        }
+        DemoPlay::Kelelawar(t) => {
+            let beat = Beat { t, ..beat };
+            let look = CatLook { mascot: Mascot::Falk, ..cat };
+            let stage = Stage { style, shape, beat, look, layout, minute };
+            return PlayFrame::of(stories::shot(Story::Kelelawar, &stage), beat);
+        }
+        DemoPlay::TerbangKeliling(t) => {
+            let beat = Beat { t, ..beat };
+            let look = CatLook { mascot: Mascot::Falk, ..cat };
+            let stage = Stage { style, shape, beat, look, layout, minute };
+            return PlayFrame::of(stories::shot(Story::TerbangKeliling, &stage), beat);
+        }
+        DemoPlay::CatBody => {
+            let beat = Beat { spread: 0.0, ..beat };
+            let pose = CatPose {
+                dk: 0.0,
+                rise: Some(1.0),
+                head: (0.0, 0.0, 0.0),
+                face: MascotShot {
+                    dx: 0.0,
+                    dy: 0.0,
+                    rot_deg: 0.0,
+                    sx: 1.0,
+                    sy: 1.0,
+                    expr: Expr::Idle,
+                    crest: CrestPose { rot_deg: 0.0, scale: 1.0 },
+                    glance: (0.0, 0.0),
+                    blink: false,
+                    beak_open: false,
+                    bare_octopus: false,
+                    flush: 0.0,
+                    alpha: 1.0,
+                },
+                paws: [Paw::default(), Paw { dx: 1.5, dy: -6.0, lift: 0.8, sq: 0.0 }],
+                tail: Some(Tail::default()),
+            };
+            // Seated on the screen beside the island's right end, below its lip.
+            let at = (shape.x + shape.w + 26.0, shape.y + shape.h + 22.0);
+            let look = CatLook { mascot: Mascot::Cat, ..cat };
+            let mut shot = stories::Shot::rest(style, shape);
+            shot.parts.push(Part {
+                layer: Layer::Back,
+                draw: cat_at(at, 0.0, 1.0, 1.0, &pose, look),
+                alpha: 1.0,
+            });
+            return PlayFrame::of(shot, beat);
+        }
+        DemoPlay::FalkOpen | DemoPlay::FalkHang => {
+            return PlayFrame::of(falk_scene(which == DemoPlay::FalkHang, style, shape, cat.falk), beat);
+        }
+        DemoPlay::OctopusArms => {
+            let mut shot = stories::Shot::rest(style, shape);
+            shot.slot = Slot::Story(MascotShot {
+                dx: 0.0,
+                dy: 0.0,
+                rot_deg: 0.0,
+                sx: 1.0,
+                sy: 1.0,
+                expr: Expr::Idle,
+                crest: CrestPose { rot_deg: 0.0, scale: 1.0 },
+                glance: (0.0, 0.0),
+                blink: false,
+                beak_open: false,
+                bare_octopus: true,
+                flush: 0.0,
+                alpha: 1.0,
+            });
+            shot.parts = octopus_arms(style, shape, cat.octopus);
+            return PlayFrame::of(shot, beat);
         }
         DemoPlay::No | DemoPlay::Dent => Deform {
             dents: vec![Dent {
@@ -1063,8 +1381,9 @@ fn demo_play(which: DemoPlay, style: Style, shape: ShapeRect) -> PlayFrame {
         deform,
         beat,
         digits,
-        mascot: None,
-        props: Vec::new(),
+        slot: Slot::App,
+        halo: 1.0,
+        parts: Vec::new(),
     }
 }
 
@@ -1260,7 +1579,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 224] = [
+const SCENES: [Scene; 245] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -1915,6 +2234,100 @@ const SCENES: [Scene; 224] = [
     Scene {
         play: DemoPlay::MalingAngka(6.55),
         ..bata("bata-maling-angka-siul", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    // Syal ekor, frozen: the tail hugging the left end, the sneeze.
+    Scene {
+        play: DemoPlay::SyalEkor(4.3),
+        ..bata("bata-play-syal-wrap", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    Scene {
+        play: DemoPlay::SyalEkor(5.64),
+        ..bata("bata-play-syal-sneeze", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    // Petak umpet, frozen: the peek round the left end, the pounce.
+    Scene {
+        play: DemoPlay::PetakUmpet(2.0),
+        ..bata("bata-play-petak-peek", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    Scene {
+        play: DemoPlay::PetakUmpet(5.2),
+        ..bata("bata-play-petak-pounce", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    // Bantal angka, frozen: asleep on the minute, the minute turned over.
+    Scene {
+        play: DemoPlay::BantalAngka(5.9),
+        ..bata("bata-play-bantal-sleep", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    Scene {
+        play: DemoPlay::BantalAngka(6.45),
+        ..bata("bata-play-bantal-swap", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    // Piano ekor, frozen: a tap on the minute's last digit, the sweep's lit edge.
+    Scene {
+        play: DemoPlay::PianoEkor(3.0),
+        ..bata("bata-play-piano-tap", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    Scene {
+        play: DemoPlay::PianoEkor(5.2),
+        ..bata("bata-play-piano-sweep", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    // Penasaran jam, frozen: the pull, the plop.
+    Scene {
+        play: DemoPlay::PenasaranJam(4.6),
+        ..bata("bata-play-penasaran-pull", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    Scene {
+        play: DemoPlay::PenasaranJam(5.0),
+        ..bata("bata-play-penasaran-plop", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    // Peluk pulau, frozen: the hug.
+    Scene {
+        play: DemoPlay::PelukPulau(4.15),
+        ..bata("bata-play-peluk-hug", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    // Bungee, frozen: the fall on the stretching arm, the bottom of a bounce.
+    Scene {
+        play: DemoPlay::Bungee(1.35),
+        ..bata("bata-play-bungee-drop", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    Scene {
+        play: DemoPlay::Bungee(2.13),
+        ..bata("bata-play-bungee-bounce", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    // Kelelawar, frozen: hanging from the lip, the wings spread.
+    Scene {
+        play: DemoPlay::Kelelawar(1.9),
+        ..bata("bata-play-kelelawar-hang", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    Scene {
+        play: DemoPlay::Kelelawar(3.3),
+        ..bata("bata-play-kelelawar-open", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    // Terbang keliling, frozen: upside down round the loop, swinging round
+    // behind the right end.
+    Scene {
+        play: DemoPlay::TerbangKeliling(2.55),
+        ..bata("bata-play-terbang-roll", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    Scene {
+        play: DemoPlay::TerbangKeliling(4.52),
+        ..bata("bata-play-terbang-loop", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    Scene {
+        play: DemoPlay::CatBody,
+        ..bata("bata-play-cat-body", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    Scene {
+        play: DemoPlay::OctopusArms,
+        ..bata("bata-play-octopus-arms", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    Scene {
+        play: DemoPlay::FalkOpen,
+        ..bata("bata-play-falk-open", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    Scene {
+        play: DemoPlay::FalkHang,
+        ..bata("bata-play-falk-hang", ShapeKind::Idle, View0::Idle, Expr::Idle)
     },
     Scene {
         clock: Some("23:48"),
@@ -3034,8 +3447,27 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                 palette,
                 // A story scene draws its own mascot, whatever `DI_MASCOT` says.
                 cat: match scene.play {
-                    DemoPlay::MalingAngka(_) => CatLook {
+                    DemoPlay::MalingAngka(_)
+                    | DemoPlay::Kelelawar(_)
+                    | DemoPlay::TerbangKeliling(_)
+                    | DemoPlay::FalkOpen
+                    | DemoPlay::FalkHang => CatLook {
                         mascot: Mascot::Falk,
+                        ..cat
+                    },
+                    DemoPlay::CatBody
+                    | DemoPlay::SyalEkor(_)
+                    | DemoPlay::PetakUmpet(_)
+                    | DemoPlay::BantalAngka(_)
+                    | DemoPlay::PianoEkor(_) => CatLook {
+                        mascot: Mascot::Cat,
+                        ..cat
+                    },
+                    DemoPlay::OctopusArms
+                    | DemoPlay::PenasaranJam(_)
+                    | DemoPlay::PelukPulau(_)
+                    | DemoPlay::Bungee(_) => CatLook {
+                        mascot: Mascot::Octopus,
                         ..cat
                     },
                     _ => cat,
@@ -3186,7 +3618,18 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                     || slide != 0.0
                     || scene.reveal.is_some()
                     || scene.fade_from.is_some(),
-                play: (scene.play != DemoPlay::No).then(|| demo_play(scene.play, style, shape)),
+                play: (scene.play != DemoPlay::No).then(|| {
+                    // As the renderer lays the idle slot and clock out.
+                    let lead = if scene.view == View0::Idle && scene.robot.is_some() {
+                        typing_lead(shape, shape_with_robot_sized(style, notch, ShapeKind::Idle, true))
+                    } else {
+                        0.0
+                    };
+                    let clock = scene.clock.is_some() || clock_on;
+                    let layout = idle_layout_lead(shape, scene.robot.is_some(), clock, lead);
+                    let minute = scene.clock.and_then(|c| c.chars().last());
+                    demo_play(scene.play, style, shape, cat, layout, minute)
+                }),
             };
             if let Err(error) = renderer.draw(&win, style, shape, &frame, opacity) {
                 eprintln!("demo: draw failed: {error}");
@@ -5413,5 +5856,82 @@ mod tests {
         ]));
         assert_eq!(look, CatLook::default());
         assert_eq!(demo_look(env(&[])), CatLook::default());
+    }
+
+    #[test]
+    fn the_octopus_arms_scene_has_a_bare_mantle_and_two_arms_in_the_window() {
+        use crate::ui::geometry::{WINDOW_H, WINDOW_W};
+        use crate::ui::play::testing::shape;
+        for style in [Style::Notch, Style::Pill] {
+            for (w, h) in [(160.0, 28.0), (190.0, 34.0), (300.0, 44.0)] {
+                let s = shape(style, w, h);
+                for coat in OctopusColor::ALL {
+                    let cat = CatLook { octopus: *coat, ..CatLook::default() };
+                    let frame = demo_play(DemoPlay::OctopusArms, style, s, cat, idle_layout_lead(s, true, true, 0.0), Some('2'));
+                    let case = format!("{style:?} {w}x{h} {coat:?}");
+                    // The slot head is the mantle alone: the arms are the story's.
+                    assert!(matches!(frame.slot, Slot::Story(m) if m.bare_octopus), "{case}");
+                    // Two arms, behind the island, in the coat's own colour.
+                    let bodies = frame
+                        .parts
+                        .iter()
+                        .filter(|p| matches!(p.draw, stories::Draw::Fill { rgb, .. } if rgb == crate::ui::mascot::octopus_rgb(*coat)))
+                        .count();
+                    assert_eq!(bodies, 2, "{case}");
+                    assert!(frame.parts.iter().all(|p| p.layer == Layer::Back), "{case}");
+                    for p in &frame.parts {
+                        let b = p.draw.bounds();
+                        assert!(
+                            b.x >= 0.0 && b.y >= 0.0 && b.x + b.w <= WINDOW_W && b.y + b.h <= WINDOW_H,
+                            "{case}: {b:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_falk_scenes_draw_the_bird_out_of_its_slot_in_the_window() {
+        use crate::ui::geometry::{WINDOW_H, WINDOW_W};
+        use crate::ui::play::testing::shape;
+        use stories::Draw;
+        // How many heads a drawable holds, groups opened.
+        fn heads(d: &Draw) -> usize {
+            match d {
+                Draw::Head { .. } => 1,
+                Draw::Group { items, .. } | Draw::Clipped { items, .. } => items.iter().map(heads).sum(),
+                _ => 0,
+            }
+        }
+        for style in [Style::Notch, Style::Pill] {
+            for (w, h) in [(160.0, 28.0), (190.0, 34.0), (300.0, 44.0)] {
+                let s = shape(style, w, h);
+                for coat in FalkColor::ALL {
+                    let cat = CatLook { falk: *coat, ..CatLook::default() };
+                    for (which, layers) in [(DemoPlay::FalkOpen, vec![Layer::Back]), (DemoPlay::FalkHang, vec![Layer::Back, Layer::Front])] {
+                        let frame = demo_play(which, style, s, cat, idle_layout_lead(s, true, true, 0.0), Some('2'));
+                        let case = format!("{style:?} {w}x{h} {coat:?} {layers:?}");
+                        // The slot is empty: the head is the bird's.
+                        assert_eq!(frame.slot, Slot::Empty, "{case}");
+                        // One bird, its head in it once, in the scene's layers.
+                        assert_eq!(frame.parts.iter().map(|p| p.layer).collect::<Vec<_>>(), layers, "{case}");
+                        assert_eq!(frame.parts.iter().map(|p| heads(&p.draw)).sum::<usize>(), 1, "{case}");
+                        for p in &frame.parts {
+                            let b = p.draw.bounds();
+                            assert!(
+                                b.x >= 0.0 && b.y >= 0.0 && b.x + b.w <= WINDOW_W && b.y + b.h <= WINDOW_H,
+                                "{case}: {b:?}"
+                            );
+                            // Out under the island; hanging, the toes grip the lip
+                            // and the tail rises behind the island (its clip cuts it).
+                            if p.layer == Layer::Front || which == DemoPlay::FalkOpen {
+                                assert!(b.y >= s.y + s.h - 3.0, "{case}: {b:?}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

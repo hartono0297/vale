@@ -2,10 +2,12 @@ use windows::Win32::Foundation::{COLORREF, D2DERR_RECREATE_TARGET, POINT, RECT, 
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D_RECT_F, D2D_SIZE_F, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_FIGURE_BEGIN_FILLED,
     D2D1_FIGURE_BEGIN_HOLLOW, D2D1_FIGURE_END_CLOSED, D2D1_FIGURE_END_OPEN, D2D1_FILL_MODE_ALTERNATE,
+    D2D1_FILL_MODE_WINDING,
     D2D1_GRADIENT_STOP, D2D1_PIXEL_FORMAT,
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1_ANTIALIAS_MODE_ALIASED, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_ARC_SEGMENT, D2D1_ARC_SIZE_SMALL, D2D1_CAP_STYLE_ROUND,
+    D2D1_ELLIPSE,
     D2D1_COMBINE_MODE_UNION, D2D1_DASH_STYLE_DASH, D2D1_DASH_STYLE_SOLID, D2D1_DRAW_TEXT_OPTIONS,
     D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_EXTEND_MODE_CLAMP,
     D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_GAMMA_2_2, D2D1_LAYER_OPTIONS_NONE,
@@ -68,9 +70,12 @@ use super::geometry::{
 use super::icons::{Icon, IconSet};
 use super::motion::{StripFrame, Transit};
 use super::panel_layout::Region;
-use super::play::shape::{Deform, outline, rigid, turn_about};
+use super::play::shape::{Deform, outline, rigid, top_corners, turn_about};
 use super::play::state::{Beat, spread_offsets};
-use super::play::stories::{HEAD_PIVOT, MascotShot, Prop, Shot, whistle_arcs};
+use super::play::stories::{
+    Draw, HEAD_PIVOT, Layer, MascotShot, PAINT_ORDER, Part, Pass, Shot, Slot, group_matrix, head_matrix,
+    path_box, whistle_arcs,
+};
 use super::robot::{
     Expr, EyesPose, GRID, Pose, RobotPainter, eyes_area, eyes_centre, eyes_offset_in,
 };
@@ -335,11 +340,14 @@ pub struct PlayFrame {
     /// One per character of the clock (`%H:%M`). All `IDENTITY` draws the
     /// clock as the one run it is at rest.
     pub digits: [DigitFx; 5],
-    /// The story's mascot in place of the one resting in its slot; `None`
-    /// draws the mascot as ever.
-    pub mascot: Option<MascotShot>,
-    /// Painted last, over the island and its edge.
-    pub props: Vec<Prop>,
+    /// What the mascot's slot shows: the app's head as ever, the story's
+    /// head in its place, or nothing.
+    pub slot: Slot,
+    /// How much of its see-through halo a story head in the slot keeps.
+    pub halo: f32,
+    /// What the story draws behind, on and in front of the island, each part
+    /// in its layer (`PAINT_ORDER`).
+    pub parts: Vec<Part>,
 }
 
 impl PlayFrame {
@@ -349,22 +357,26 @@ impl PlayFrame {
             deform: shot.deform,
             beat,
             digits: shot.digits,
-            mascot: shot.mascot,
-            props: shot.props,
+            slot: shot.slot,
+            halo: shot.halo,
+            parts: shot.parts,
         }
     }
 }
 
 /// What a play does to one character of the clock: shifted by `dx`, `dy`
-/// (dip), turned by `rot_deg` and scaled by `scale` about the character's own
-/// centre, and drawn at `alpha` of the clock's own.
+/// (dip), turned by `rot_deg` and scaled by `scale` (its width by `scale_x`
+/// more) about the character's own centre, drawn at `alpha` of the clock's
+/// own, and `ch` drawn in its cell in place of the clock's own character.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DigitFx {
     pub dx: f32,
     pub dy: f32,
     pub rot_deg: f32,
     pub scale: f32,
+    pub scale_x: f32,
     pub alpha: f32,
+    pub ch: Option<char>,
 }
 
 impl DigitFx {
@@ -374,8 +386,16 @@ impl DigitFx {
         dy: 0.0,
         rot_deg: 0.0,
         scale: 1.0,
+        scale_x: 1.0,
         alpha: 1.0,
+        ch: None,
     };
+}
+
+/// A character's own move under `fx`, about the centre `c` of its cell.
+fn digit_matrix(fx: &DigitFx, c: (f32, f32)) -> Matrix3x2 {
+    Matrix3x2::scale_around(fx.scale * fx.scale_x, fx.scale, Vector2::new(c.0, c.1))
+        * turn_about(fx.rot_deg, c, (fx.dx, fx.dy))
 }
 
 /// Whether any character needs a place of its own. When none does, the clock
@@ -406,6 +426,22 @@ const WHISTLE_W: f32 = 0.85;
 /// shrunk to the eyes; any other frame keeps the island's own shape.
 fn playing<'a>(play: Option<&'a PlayFrame>, view: &View, eyes: bool) -> Option<&'a PlayFrame> {
     play.filter(|_| *view == View::Idle && !eyes)
+}
+
+/// `PAINT_ORDER` cut at the island's fill: the steps below it, and the
+/// steps over the island's content (the slot head and the rest of the view),
+/// the played clock among them.
+fn layer_runs() -> (&'static [Pass], &'static [Pass]) {
+    let order: &'static [Pass] = &PAINT_ORDER;
+    let fill = order.iter().position(|p| *p == Pass::Fill).unwrap_or(0);
+    (&order[..fill], &order[fill + 1..])
+}
+
+/// What a story's drawables are placed by: the played clock (its box and
+/// its time) for a digit, the app's pose under a story's head.
+struct Placing<'a> {
+    clock: Option<(Rect, &'a str)>,
+    pose: Option<Pose>,
 }
 
 /// The idle layout as a play puts it: the mascot and the clock pushed to the
@@ -1119,6 +1155,12 @@ struct Target {
     /// An opacity layer inside the first (a page fading in, compact content
     /// fading with its morph). A layer cannot be pushed twice at once.
     layer2: ID2D1Layer,
+    /// A story's fading figure, inside either of the others (`push_fade`).
+    /// Figures never nest, so one is enough.
+    fade: ID2D1Layer,
+    /// A `Draw::Clipped`'s clip, inside any of the others. Clipped parts
+    /// never nest.
+    clip: ID2D1Layer,
 }
 
 /// 32-bpp top-down DIB selected into a memory DC; the layered window is
@@ -2136,6 +2178,8 @@ impl Renderer {
             let brush = rt.CreateSolidColorBrush(&color(self.palette.text, 1.0), None)?;
             let layer = rt.CreateLayer(None)?;
             let layer2 = rt.CreateLayer(None)?;
+            let fade = rt.CreateLayer(None)?;
+            let clip = rt.CreateLayer(None)?;
             self.target = Some(Target {
                 rt,
                 bitmap,
@@ -2143,6 +2187,8 @@ impl Renderer {
                 brush,
                 layer,
                 layer2,
+                fade,
+                clip,
             });
         }
         Ok(())
@@ -2422,16 +2468,25 @@ impl Renderer {
                 target.rt.FillRectangle(&d2d_rect(halo), &target.brush);
                 self.regions.halo = Some(halo);
             }
+        }
+        // A story's layers below the island's fill (`PAINT_ORDER`).
+        let (behind, over) = layer_runs();
+        if let (Some(p), Some(island)) = (play, &played) {
+            let alpha = frame.transit.content_alpha.clamp(0.0, 1.0);
+            for &pass in behind {
+                self.paint_parts(pass, island, shape, frame, p, alpha);
+            }
+        }
+        unsafe {
             // 1.0 (the same call as ever) unless the closed island is see-through.
             target.brush.SetColor(&color(
                 self.palette.surface,
                 frame.fill_alpha.clamp(0.0, 1.0),
             ));
             // The fill goes down first and the content over it, play or not.
-            // Art behind the island or inside it (a story's, later) must not
-            // lean on this fill being opaque, since it can be see-through:
-            // behind is clipped to `outside_island`, inside to the island's
-            // own geometry.
+            // Nothing a story draws leans on this fill being opaque, since it
+            // can be see-through: behind is clipped to `outside_island`,
+            // inside to the island's own geometry.
             match (&played, style) {
                 (Some(island), _) => target.rt.FillGeometry(island, &target.brush, None),
                 (None, Style::Pill) => target.rt.FillRoundedRectangle(
@@ -2557,12 +2612,14 @@ impl Renderer {
                 );
                 let l = play_layout(l, shape, play);
                 if let (Some(area), Some(r)) = (l.robot, robot) {
-                    match play.and_then(|p| p.mascot.as_ref()) {
-                        Some(m) => self.paint_story_mascot(area, r, m),
-                        None => self.paint_robot(area, r),
+                    match play.map_or(Slot::App, |p| p.slot) {
+                        Slot::App => self.paint_robot(area, r),
+                        Slot::Story(m) => self.paint_story_mascot(area, r, &m, play.map_or(1.0, |p| p.halo)),
+                        Slot::Empty => {}
                     }
                 }
-                if let (Some(area), Some(time)) = (l.clock, &frame.clock) {
+                // A play paints its clock over its inside parts, below.
+                if let (None, Some(area), Some(time)) = (play, l.clock, &frame.clock) {
                     // A sleeping Bata dims the clock beside it, as in the design.
                     let asleep = robot.is_some_and(|r| r.expr == Expr::Sleep);
                     self.paint_clock(
@@ -2585,11 +2642,6 @@ impl Renderer {
             if let Some(Some((area, r))) = self.robot_later.take() {
                 self.paint_robot(area, r);
             }
-        }
-        // A story's props over the mascot and the clock, still inside the
-        // island's clip: the island's edge cuts the falling digit off.
-        if let Some(p) = play {
-            self.paint_props(shape, frame, p);
         }
         // The busy toast's logo, at the slot's alpha, over the island's own
         // fill: no shadow on it.
@@ -2667,6 +2719,18 @@ impl Renderer {
         } else {
             unsafe { target.rt.PopAxisAlignedClip() };
         }
+        // A story's layers over the island's content, each with its own
+        // clip, and the played clock in its place among them.
+        if let (Some(p), Some(island)) = (play, &played) {
+            for &pass in over {
+                match pass {
+                    Pass::Clock => {
+                        self.paint_played_clock(style, shape, frame, p, island, content_alpha)
+                    }
+                    _ => self.paint_parts(pass, island, shape, frame, p, content_alpha),
+                }
+            }
+        }
         leaving.and(content)
     }
 
@@ -2675,7 +2739,13 @@ impl Renderer {
     /// about it, with the story's face. The painter draws it as ever, so the
     /// coat and the accessory come along. Inside the island's clip, like the
     /// resting mascot.
-    fn paint_story_mascot(&self, area: Rect, robot: RobotFrame, m: &MascotShot) {
+    ///
+    /// Its see-through halo at `halo` of its strength. It leaves the
+    /// strength lowered: nothing after the slot head in the view reads it,
+    /// and a head held back for a fade is painted with it. Head and halo fade
+    /// together by the shot's `alpha`.
+    fn paint_story_mascot(&self, area: Rect, robot: RobotFrame, m: &MascotShot, halo: f32) {
+        self.legible.set(self.legible.get() * halo.clamp(0.0, 1.0));
         let k = area.w / GRID;
         let pivot = (area.x + HEAD_PIVOT.0 * k, area.y + HEAD_PIVOT.1 * k);
         let own = Matrix3x2::scale_around(m.sx, m.sy, Vector2::new(pivot.0, pivot.1))
@@ -2686,24 +2756,147 @@ impl Renderer {
             rt.GetTransform(&mut before);
             rt.SetTransform(&(own * before));
         }
-        self.paint_robot(
-            area,
-            RobotFrame {
-                expr: m.expr,
-                pose: m.pose(robot.pose),
-            },
-        );
+        let frame = RobotFrame {
+            expr: m.expr,
+            pose: m.pose(robot.pose),
+        };
+        if m.alpha >= 1.0 {
+            self.paint_robot(area, frame);
+        } else if m.alpha > 0.0 {
+            // Head and halo fade as one; a faded story head is never held back.
+            // Its halo and the typing laptop reach past the head's ink: no bound.
+            self.push_fade(m.alpha, None);
+            self.paint_robot_at(area, frame, 1.0);
+            unsafe { rt.PopLayer() };
+        }
         unsafe { rt.SetTransform(&before) };
     }
 
-    /// A story's props, over the mascot and the clock, in the island's clip
-    /// the caller holds: a clock digit away from the clock, and the whistle
-    /// arcs.
-    fn paint_props(&self, shape: ShapeRect, frame: &Frame, play: &PlayFrame) {
-        if play.props.is_empty() {
+    /// The parts of `play` in the layer of `pass`, at `alpha`, with that
+    /// layer's clip: `Back` to the window without the played `island`,
+    /// `Dark` to the island, `Wrap` to the island (and its rect); `Inside`
+    /// and `Front` are unclipped. Built for the frame, only while a play
+    /// runs; a part that fails to build is left out.
+    fn paint_parts(
+        &self,
+        pass: Pass,
+        island: &ID2D1Geometry,
+        shape: ShapeRect,
+        frame: &Frame,
+        play: &PlayFrame,
+        alpha: f32,
+    ) {
+        let mut parts = play.parts.iter().filter(|p| p.layer.pass() == pass).peekable();
+        if parts.peek().is_none() {
             return;
         }
-        let alpha = frame.transit.content_alpha.clamp(0.0, 1.0);
+        // No see-through shadow on a story's own art (a head in the back
+        // layer), whatever the last view left.
+        self.legible.set(0.0);
+        let l = idle_layout_lead(
+            shape,
+            frame.robot.is_some(),
+            frame.clock.is_some(),
+            frame.idle_lead,
+        );
+        let at = Placing {
+            clock: play_layout(l, shape, Some(play)).clock.zip(frame.clock.as_deref()),
+            pose: frame.robot.map(|r| r.pose),
+        };
+        let unit = super::geometry::ROBOT_COMPACT / GRID;
+        let outside;
+        let mask = match pass {
+            Pass::Back => {
+                let Ok(o) = self.outside_island(island) else {
+                    return;
+                };
+                outside = o;
+                Some(&outside)
+            }
+            Pass::Dark | Pass::Wrap => Some(island),
+            _ => None,
+        };
+        if let Some(m) = mask {
+            self.push_mask(m, 1.0);
+        }
+        let target = self.target.as_ref().expect("target ensured by paint");
+        for part in parts {
+            let cut = match part.layer {
+                Layer::Wrap(cut) => cut,
+                _ => None,
+            };
+            if let Some(r) = cut {
+                unsafe {
+                    target.rt.PushAxisAlignedClip(
+                        &d2d_rect(r),
+                        D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                    )
+                };
+            }
+            self.paint_part(part, alpha, unit, &at);
+            if cut.is_some() {
+                unsafe { target.rt.PopAxisAlignedClip() };
+            }
+        }
+        if mask.is_some() {
+            unsafe { target.rt.PopLayer() };
+        }
+    }
+
+    /// `part` at its alpha times `alpha`. A figure (a group, a head) that
+    /// fades goes through one opacity layer, so where its pieces overlap it
+    /// is no darker than elsewhere.
+    fn paint_part(&self, part: &Part, alpha: f32, unit: f32, at: &Placing) {
+        let alpha = part.alpha * alpha;
+        if alpha <= 0.0 {
+            return;
+        }
+        let figure = matches!(
+            part.draw,
+            Draw::Group { .. } | Draw::Head { .. } | Draw::Clipped { .. }
+        );
+        if figure && alpha < 1.0 {
+            self.push_fade(alpha, Some(part.draw.bounds()));
+            self.paint_draw(&part.draw, 1.0, unit, at);
+            let target = self.target.as_ref().expect("target ensured by paint");
+            unsafe { target.rt.PopLayer() };
+            return;
+        }
+        self.paint_draw(&part.draw, alpha, unit, at);
+    }
+
+    /// Everything drawn until `PopLayer` at `opacity`, on the target's own
+    /// fade layer: it nests in whatever is already pushed (a mask, the
+    /// view's fade). `ink` is the box the content stays in, in the current
+    /// user space: the layer is only that big (a layer on the software
+    /// target is an intermediate bitmap), with a margin for antialiasing.
+    /// `None`: no bound.
+    fn push_fade(&self, opacity: f32, ink: Option<Rect>) {
+        let target = self.target.as_ref().expect("target ensured by paint");
+        let params = D2D1_LAYER_PARAMETERS {
+            contentBounds: layer_bounds(ink),
+            geometricMask: ManuallyDrop::new(None),
+            maskAntialiasMode: D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+            maskTransform: Matrix3x2::identity(),
+            opacity,
+            opacityBrush: ManuallyDrop::new(None),
+            layerOptions: D2D1_LAYER_OPTIONS_NONE,
+        };
+        unsafe { target.rt.PushLayer(&params, &target.fade) };
+    }
+
+    /// A play's clock, over its inside parts (`PAINT_ORDER`): in the played
+    /// island's clip, at the view's fade `alpha`, with the see-through
+    /// shadow the clock has at rest.
+    fn paint_played_clock(
+        &self,
+        style: Style,
+        shape: ShapeRect,
+        frame: &Frame,
+        play: &PlayFrame,
+        island: &ID2D1Geometry,
+        alpha: f32,
+    ) {
         let l = idle_layout_lead(
             shape,
             frame.robot.is_some(),
@@ -2711,41 +2904,175 @@ impl Renderer {
             frame.idle_lead,
         );
         let clock = play_layout(l, shape, Some(play)).clock;
-        for prop in &play.props {
-            match *prop {
-                Prop::Digit {
-                    index,
-                    at,
-                    rot_deg,
-                    alpha: a,
-                } => {
-                    if let (Some(area), Some(time)) = (clock, &frame.clock) {
-                        self.paint_digit_prop(time, area, index, at, rot_deg, a * alpha);
-                    }
+        let (Some(area), Some(time)) = (clock, &frame.clock) else {
+            return;
+        };
+        // A sleeping Bata dims the clock beside it, as at rest.
+        let asleep = frame.robot.is_some_and(|r| r.expr == Expr::Sleep);
+        self.push_mask(island, 1.0);
+        let faded = alpha < 1.0;
+        if faded {
+            self.push_opacity(alpha);
+        }
+        self.legible.set(frame.legibility.clamp(0.0, 1.0));
+        let dim = if asleep { 0.6 } else { 1.0 };
+        self.paint_clock(style, shape, Some(play), time, area, dim);
+        self.legible.set(0.0);
+        let target = self.target.as_ref().expect("target ensured by paint");
+        unsafe {
+            if faded {
+                target.rt.PopLayer();
+            }
+            target.rt.PopLayer();
+        }
+    }
+
+    /// One drawable at `alpha`, a head being `unit` dip (or group grid units)
+    /// per grid unit of its own.
+    fn paint_draw(&self, draw: &Draw, alpha: f32, unit: f32, at: &Placing) {
+        let target = self.target.as_ref().expect("target ensured by paint");
+        let path = |segs: &[super::robot::Seg]| super::robot::path(&self.d2d, segs).ok();
+        match draw {
+            Draw::Fill { path: segs, rgb } => {
+                // Nonzero, as the mockup's SVG fills.
+                let filled = super::robot::path_filled(&self.d2d, segs, D2D1_FILL_MODE_WINDING);
+                if let Ok(p) = filled {
+                    self.set_color(*rgb, alpha);
+                    unsafe { target.rt.FillGeometry(&p, &target.brush, None) };
                 }
-                Prop::Whistle { at, alpha: a } => self.paint_whistle(at, a * alpha),
+            }
+            Draw::Tint { path: segs, rgb, alpha: a } => {
+                let filled = super::robot::path_filled(&self.d2d, segs, D2D1_FILL_MODE_WINDING);
+                if let Ok(p) = filled {
+                    self.set_color(*rgb, alpha * a);
+                    unsafe { target.rt.FillGeometry(&p, &target.brush, None) };
+                }
+            }
+            Draw::Stroke { path: segs, rgb, width } => {
+                if let Some(p) = path(segs) {
+                    self.set_color(*rgb, alpha);
+                    unsafe {
+                        target
+                            .rt
+                            .DrawGeometry(&p, &target.brush, *width, &self.round_cap)
+                    };
+                }
+            }
+            Draw::Ellipse { c, r, rgb } => {
+                self.set_color(*rgb, alpha);
+                unsafe {
+                    target.rt.FillEllipse(
+                        &D2D1_ELLIPSE {
+                            point: Vector2::new(c.0, c.1),
+                            radiusX: r.0,
+                            radiusY: r.1,
+                        },
+                        &target.brush,
+                    )
+                };
+            }
+            Draw::Head { at: pivot, shot } => {
+                let Some(base) = at.pose else {
+                    return;
+                };
+                let area = Rect {
+                    x: pivot.0 - HEAD_PIVOT.0 * unit,
+                    y: pivot.1 - HEAD_PIVOT.1 * unit,
+                    w: GRID * unit,
+                    h: GRID * unit,
+                };
+                let robot = RobotFrame {
+                    expr: shot.expr,
+                    pose: shot.pose(base),
+                };
+                self.with_transform(head_matrix(*pivot, shot), || {
+                    self.paint_robot_at(area, robot, alpha)
+                });
+            }
+            Draw::Digit { index, at: to, rot_deg, home } => {
+                if let Some((area, time)) = at.clock {
+                    let place = |c: (f32, f32)| turn_about(*rot_deg, c, (to.0 - home.0, to.1 - home.1));
+                    self.paint_digit_prop(time, area, *index, None, place, alpha);
+                }
+            }
+            Draw::ClockChar { index, fx, .. } => {
+                if let Some((area, time)) = at.clock {
+                    let place = |c: (f32, f32)| digit_matrix(fx, c);
+                    self.paint_digit_prop(time, area, *index, fx.ch, place, alpha * fx.alpha);
+                }
+            }
+            Draw::Whistle { at: c } => self.paint_whistle(*c, alpha),
+            Draw::Group {
+                at: to,
+                rot_deg,
+                scale,
+                pivot,
+                items,
+            } => {
+                self.with_transform(group_matrix(*to, *rot_deg, *scale, *pivot), || {
+                    for item in items {
+                        self.paint_draw(item, alpha, 1.0, at);
+                    }
+                });
+            }
+            Draw::Clipped { clip, items } => {
+                // Its own layer: the back layer's mask and a figure's fade
+                // may already be pushed on the shared ones.
+                let mask = super::robot::path_filled(&self.d2d, clip, D2D1_FILL_MODE_WINDING)
+                    .and_then(|m| m.cast::<ID2D1Geometry>());
+                let Ok(mask) = mask else {
+                    return;
+                };
+                let params = D2D1_LAYER_PARAMETERS {
+                    contentBounds: layer_bounds(Some(path_box(clip, 0.0))),
+                    geometricMask: ManuallyDrop::new(Some(mask)),
+                    maskAntialiasMode: D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                    maskTransform: Matrix3x2::identity(),
+                    opacity: 1.0,
+                    opacityBrush: ManuallyDrop::new(None),
+                    layerOptions: D2D1_LAYER_OPTIONS_NONE,
+                };
+                unsafe { target.rt.PushLayer(&params, &target.clip) };
+                // The layer keeps its own reference while pushed.
+                drop(ManuallyDrop::into_inner(params.geometricMask));
+                for item in items {
+                    self.paint_draw(item, alpha, unit, at);
+                }
+                unsafe { target.rt.PopLayer() };
             }
         }
     }
 
+    /// `paint` with `m` applied before the transform already set.
+    fn with_transform(&self, m: Matrix3x2, paint: impl FnOnce()) {
+        let rt = &self.target.as_ref().expect("target ensured by paint").rt;
+        let mut before = Matrix3x2::identity();
+        unsafe {
+            rt.GetTransform(&mut before);
+            rt.SetTransform(&(m * before));
+        }
+        paint();
+        unsafe { rt.SetTransform(&before) };
+    }
+
     /// Character `index` of the clock `time` (laid out in `area`, as the
-    /// clock is), its cell centred on `at` and turned by `rot_deg`, over an
-    /// outline in the island's colour so it reads on the mascot and off the
-    /// island.
+    /// clock is; `ch` in its place if given), moved by what `place` makes of
+    /// its cell's centre, over an outline in the island's colour so it reads
+    /// on the mascot and off the island.
     fn paint_digit_prop(
         &self,
         time: &str,
         area: Rect,
         index: usize,
-        at: (f32, f32),
-        rot_deg: f32,
+        ch: Option<char>,
+        place: impl FnOnce((f32, f32)) -> Matrix3x2,
         alpha: f32,
     ) {
         let wide: Vec<u16> = time.encode_utf16().collect();
         let Ok(line) = self.layout(&wide, &self.fonts.clock, area.w, area.h) else {
             return;
         };
-        let Some((one, origin, c)) = self.clock_char(&line, &wide, index, area) else {
+        let Some((one, origin, c)) = self.clock_char(&line, &wide, index, area, ch) else {
             return;
         };
         let target = self.target.as_ref().expect("target ensured by paint");
@@ -2753,8 +3080,7 @@ impl Renderer {
         let mut before = Matrix3x2::identity();
         unsafe {
             target.rt.GetTransform(&mut before);
-            let own = turn_about(rot_deg, c, (at.0 - c.0, at.1 - c.1));
-            target.rt.SetTransform(&(own * before));
+            target.rt.SetTransform(&(place(c) * before));
             target.brush.SetColor(&color(self.palette.surface, alpha));
             for (dx, dy) in PROP_OUTLINE {
                 let moved = Vector2::new(origin.X + dx, origin.Y + dy);
@@ -2849,6 +3175,12 @@ impl Renderer {
             self.robot_later.set(Some(Some((area, robot))));
             return;
         }
+        self.paint_robot_at(area, robot, 1.0);
+    }
+
+    /// `paint_robot` at `alpha`, now (a story's head is never held back for
+    /// a fade).
+    fn paint_robot_at(&self, area: Rect, robot: RobotFrame, alpha: f32) {
         let target = self.target.as_ref().expect("target ensured by paint");
         // On a see-through island: a soft dark halo round the mascot (the
         // cat's head, the falk's egg and crest, the octopus's mantle and
@@ -2879,7 +3211,7 @@ impl Renderer {
                 h: r.h + 2.0 * grow,
             };
             for (grow, weight) in [(3.0, 0.10), (1.5, 0.18)] {
-                self.set_color(0x000000, weight * strength);
+                self.set_color(0x000000, weight * strength * alpha);
                 let head = (grown(head, grow), radius + grow);
                 match laptop {
                     // One fill of the union, so where the two meet is not
@@ -2900,7 +3232,7 @@ impl Renderer {
             area,
             robot.expr,
             robot.pose,
-            1.0,
+            alpha,
             self.cat.get(),
         );
     }
@@ -3795,13 +4127,14 @@ impl Renderer {
     ///
     /// The Notch is that body plus the two shoulders `notch_path` draws. They
     /// join the body to the screen edge, which never swings: they sit on the
-    /// edge, follow the squeeze, and ignore the swing. At rest the union is
-    /// the resting island, so nothing pops when a play starts or ends.
+    /// edge, meet the body's sides where `d` puts them (`top_corners`, which
+    /// follows a swung side), and never turn. At rest the union is the
+    /// resting island, so nothing pops when a play starts or ends.
     fn played_path(
         &self,
         style: Style,
         s: ShapeRect,
-        squeeze: f32,
+        d: &Deform,
         pts: &[(f32, f32)],
     ) -> Result<ID2D1PathGeometry> {
         let at = |&(x, y): &(f32, f32)| Vector2::new(x, y);
@@ -3821,9 +4154,7 @@ impl Renderer {
         if style != Style::Notch || shoulder <= 0.0 {
             return Ok(body);
         }
-        // The body's top corners before the swing, the squeeze having moved them.
-        let half = s.w / 2.0 * (1.0 - squeeze);
-        let (left, right) = (s.x + s.w / 2.0 - half, s.x + s.w / 2.0 + half);
+        let (left, right) = top_corners(s, d);
         let left = self.shoulder_path(s.y, left, -1.0, shoulder)?;
         let right = self.shoulder_path(s.y, right, 1.0, shoulder)?;
         self.union(&self.union(&body, &left)?, &right)
@@ -3886,22 +4217,15 @@ impl Renderer {
     ) -> Result<ID2D1Geometry> {
         match play {
             Some(d) => self
-                .played_path(style, s, d.squeeze, &outline(style, s, d))?
+                .played_path(style, s, d, &outline(style, s, d))?
                 .cast(),
             None => self.shape_geometry(style, s),
         }
     }
 
-    /// The window without the island: what is drawn behind the island is
+    /// The window without `island`: what is drawn behind the island is
     /// clipped to it, so the island's own fill never has to hide anything.
-    // Used by the story art the next tasks add.
-    #[allow(dead_code)]
-    fn outside_island(
-        &self,
-        style: Style,
-        s: ShapeRect,
-        play: Option<&Deform>,
-    ) -> Result<ID2D1Geometry> {
+    fn outside_island(&self, island: &ID2D1Geometry) -> Result<ID2D1Geometry> {
         let size = self.target.as_ref().expect("target ensured by paint").size;
         let window = Rect {
             x: 0.0,
@@ -3909,7 +4233,7 @@ impl Renderer {
             w: size.cx as f32 / self.scale,
             h: size.cy as f32 / self.scale,
         };
-        self.cut_out(window, &self.island_geometry(style, s, play)?)
+        self.cut_out(window, island)
     }
 
     /// `window` with `island` cut out: the alternate fill rule counts the
@@ -4071,12 +4395,10 @@ impl Renderer {
         let mut before = Matrix3x2::identity();
         unsafe { rt.GetTransform(&mut before) };
         for (i, fx) in digits.iter().enumerate().take(wide.len()) {
-            let Some((one, origin, c)) = self.clock_char(&line, &wide, i, area) else {
+            let Some((one, origin, c)) = self.clock_char(&line, &wide, i, area, fx.ch) else {
                 continue;
             };
-            let own = Matrix3x2::scale_around(fx.scale, fx.scale, Vector2::new(c.0, c.1))
-                * turn_about(fx.rot_deg, c, (fx.dx, fx.dy));
-            unsafe { rt.SetTransform(&(own * before)) };
+            unsafe { rt.SetTransform(&(digit_matrix(fx, c) * before)) };
             // No CLIP: it would cut a character at its own layout box, which a
             // character scaled past it (the regrow's overshoot) overhangs.
             self.text_legible(
@@ -4091,16 +4413,17 @@ impl Renderer {
     }
 
     /// Character `i` of `wide` where `line` (`wide` laid out in `area`) puts
-    /// it: the character in a layout of its own, with the line's tracking,
-    /// tabular figures and height, the point to draw that from (its left edge
-    /// at the cell's x), and the centre of its cell. `None` when DirectWrite
-    /// cannot place it.
+    /// it: the character (or `ch` in its place) in a layout of its own, with
+    /// the line's tracking, tabular figures and height, the point to draw that
+    /// from (its left edge at the cell's x), and the centre of its cell.
+    /// `None` when DirectWrite cannot place it.
     fn clock_char(
         &self,
         line: &IDWriteTextLayout,
         wide: &[u16],
         i: usize,
         area: Rect,
+        ch: Option<char>,
     ) -> Option<(IDWriteTextLayout, Vector2, (f32, f32))> {
         if i >= wide.len() {
             return None;
@@ -4108,7 +4431,12 @@ impl Renderer {
         let (mut x, mut y) = (0.0, 0.0);
         let mut cell = DWRITE_HIT_TEST_METRICS::default();
         unsafe { line.HitTestTextPosition(i as u32, false, &mut x, &mut y, &mut cell) }.ok()?;
-        let one = self.layout(&wide[i..=i], &self.fonts.clock, area.w, area.h).ok()?;
+        let mut buf = [0u16; 2];
+        let text = match ch {
+            Some(c) => &*c.encode_utf16(&mut buf),
+            None => &wide[i..=i],
+        };
+        let one = self.layout(text, &self.fonts.clock, area.w, area.h).ok()?;
         unsafe {
             let _ = one.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
         }
@@ -4581,6 +4909,29 @@ fn d2d_rect(r: Rect) -> D2D_RECT_F {
     }
 }
 
+/// The `contentBounds` of a layer holding ink inside `ink`: grown by
+/// `LAYER_MARGIN` for the antialiased edge, or unbounded for `None`. The
+/// software target makes an intermediate bitmap of the bounds on every push.
+fn layer_bounds(ink: Option<Rect>) -> D2D_RECT_F {
+    let Some(r) = ink else {
+        return D2D_RECT_F {
+            left: -f32::MAX,
+            top: -f32::MAX,
+            right: f32::MAX,
+            bottom: f32::MAX,
+        };
+    };
+    D2D_RECT_F {
+        left: r.x - LAYER_MARGIN,
+        top: r.y - LAYER_MARGIN,
+        right: r.right() + LAYER_MARGIN,
+        bottom: r.bottom() + LAYER_MARGIN,
+    }
+}
+
+/// Dip a layer's bounds keep clear of the ink it holds.
+const LAYER_MARGIN: f32 = 2.0;
+
 /// `a` moved `t` of the way to `b`, channel by channel (0xRRGGBB): the
 /// tinted text on tinted fills (event blocks) without new colours.
 fn mix(a: u32, b: u32, t: f32) -> u32 {
@@ -4874,13 +5225,57 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_pulled_in_or_shifted_notch_leaves_no_ledge_at_its_shoulder() {
+        // The shoulder's foot is where the body's side is: just above it and
+        // just below it the island's left edge is in the same place.
+        let r = renderer();
+        for (w, h) in [(160.0, 28.0), (190.0, 34.0), (300.0, 44.0)] {
+            let s = shape(Style::Notch, w, h);
+            let foot = s.y + crate::ui::geometry::shoulder_depth(s);
+            for d in [
+                Deform { bulge_left: -2.2, squeeze: 0.018, ..Deform::default() },
+                Deform { jolt: 1.6, ..Deform::default() },
+                Deform { jolt: -1.6, ..Deform::default() },
+            ] {
+                let island = r.island_geometry(Style::Notch, s, Some(&d)).unwrap();
+                let edge = |y: f32| (0..800).map(|i| s.x - 6.0 + i as f32 * 0.025).find(|&x| contains(&island, x, y)).unwrap_or(f32::NAN);
+                let (above, below) = (edge(foot - 0.4), edge(foot + 0.4));
+                assert!((above - below).abs() < 0.5, "{w}x{h} {d:?}: {above} above the foot, {below} below");
+            }
+        }
+    }
+
+    #[test]
+    fn a_rocking_notch_leaves_no_ledge_at_its_shoulder() {
+        // Petak umpet's pounce rocks the Notch about the screen edge by up to
+        // 2.4 degrees: on the side that swings in, the body's side must meet
+        // the static shoulder's foot, with no step between them.
+        let r = renderer();
+        for (w, h) in [(160.0, 28.0), (190.0, 34.0), (300.0, 44.0)] {
+            let s = shape(Style::Notch, w, h);
+            let foot = s.y + crate::ui::geometry::shoulder_depth(s);
+            for swing_deg in [-2.6, -1.2, 1.2, 2.6] {
+                let d = Deform { swing_deg, ..Deform::default() };
+                let island = r.island_geometry(Style::Notch, s, Some(&d)).unwrap();
+                let left = |y: f32| (0..1200).map(|i| s.x - 10.0 + i as f32 * 0.025).find(|&x| contains(&island, x, y)).unwrap_or(f32::NAN);
+                let right = |y: f32| (0..1200).map(|i| s.x + s.w + 10.0 - i as f32 * 0.025).find(|&x| contains(&island, x, y)).unwrap_or(f32::NAN);
+                for (side, edge) in [("left", &left as &dyn Fn(f32) -> f32), ("right", &right)] {
+                    let (above, below) = (edge(foot - 0.4), edge(foot + 0.4));
+                    assert!((above - below).abs() < 0.2, "{w}x{h} swing {swing_deg} {side}: {above} above the foot, {below} below");
+                }
+            }
+        }
+    }
+
     fn play_frame(spread: f32) -> PlayFrame {
         PlayFrame {
             deform: Deform::default(),
-            beat: Beat { spread, alpha: 1.0, t: 0.0 },
+            beat: Beat { spread, alpha: 1.0, t: 0.0, cut_at: None },
             digits: [DigitFx::IDENTITY; 5],
-            mascot: None,
-            props: Vec::new(),
+            slot: Slot::App,
+            halo: 1.0,
+            parts: Vec::new(),
         }
     }
 
@@ -4969,7 +5364,7 @@ mod tests {
                 let n = pts.len();
                 let island = r.island_geometry(Style::Notch, s, Some(&deform)).unwrap();
                 // Only the body, for telling it from a wedge.
-                let body = r.played_path(Style::Pill, s, 0.0, &pts).unwrap().cast().unwrap();
+                let body = r.played_path(Style::Pill, s, &Deform::default(), &pts).unwrap().cast().unwrap();
                 let unit = |from: (f32, f32), to: (f32, f32)| {
                     let (dx, dy) = (to.0 - from.0, to.1 - from.1);
                     let len = dx.hypot(dy);
@@ -5074,7 +5469,7 @@ mod tests {
                 // However the outline winds: the same outline listed the other
                 // way round leaves the same island out.
                 let backwards: Vec<_> = pts.iter().rev().copied().collect();
-                let island = r.played_path(style, s, dented().squeeze, &backwards).unwrap().cast().unwrap();
+                let island = r.played_path(style, s, &dented(), &backwards).unwrap().cast().unwrap();
                 let out = r.cut_out(window, &island).unwrap();
                 assert!(!contains(&out, cx, s.y + 3.0), "{case}: wound the other way");
                 // At rest it is the resting shape that is left out.
@@ -5131,6 +5526,18 @@ mod tests {
     fn with_frame_clock<R>(
         play: Option<PlayFrame>,
         clock: Option<String>,
+        f: impl FnOnce(&Frame) -> R,
+    ) -> R {
+        with_frame_all(play, clock, None, 1.0, f)
+    }
+
+    /// `with_frame_clock` with the mascot `robot` and the island's fill at
+    /// `fill_alpha`.
+    fn with_frame_all<R>(
+        play: Option<PlayFrame>,
+        clock: Option<String>,
+        robot: Option<RobotFrame>,
+        fill_alpha: f32,
         f: impl FnOnce(&Frame) -> R,
     ) -> R {
         use crate::calendar::CalStatus;
@@ -5196,7 +5603,7 @@ mod tests {
             tiles: Vec::new(),
             palette: theme::island(Accent::default(), theme::Surface::Espresso),
             cat: CatLook::default(),
-            fill_alpha: 1.0,
+            fill_alpha,
             legibility: 0.0,
             clock,
             idle_lead: 0.0,
@@ -5246,7 +5653,7 @@ mod tests {
             },
             arrange: Default::default(),
             progress: None,
-            robot: None,
+            robot,
             eyes: false,
             eyes_pose: Default::default(),
             eq_heights: None,
@@ -5309,6 +5716,8 @@ mod tests {
         assert!(wakes(|d| d.rot_deg = 1.0));
         assert!(wakes(|d| d.scale = 1.1));
         assert!(wakes(|d| d.alpha = 0.5));
+        assert!(wakes(|d| d.scale_x = 0.8));
+        assert!(wakes(|d| d.ch = Some('2')));
     }
 
     /// The pixels of a target `dip` big (premultiplied BGRA, rows packed).
@@ -5550,37 +5959,979 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_clock_character_part_is_drawn_in_the_clocks_own_cell() {
+        // A story's clock character (the pillow over the cat) sits where the
+        // clock draws that character, under the same effect: no hop when it
+        // takes over from the clock or hands back.
+        let mut r = renderer();
+        let placing = Placing { clock: Some((clock_area(44.0), "14:32")), pose: None };
+        for fx in [
+            DigitFx::IDENTITY,
+            DigitFx { ch: Some('5'), ..DigitFx::IDENTITY },
+            DigitFx { dx: 3.0, dy: -2.0, rot_deg: 12.0, scale: 1.3, scale_x: 0.8, ..DigitFx::IDENTITY },
+        ] {
+            let part = Draw::ClockChar { index: 4, fx, near: (0.0, 0.0) };
+            let drawn = painted(&mut r, CLOCK_BOX, |r| r.paint_draw(&part, 1.0, 1.0, &placing));
+            let clock = only(&mut r, 4, fx);
+            let ((x, y), ink) = drawn.centre();
+            let ((x0, y0), ink0) = clock.centre();
+            // The outline shifts the weighted centre by under half a pixel
+            // (see `a_digit_prop_lands_where_the_clock_would_move_that_digit`).
+            assert!((x - x0).abs() < 0.6 && (y - y0).abs() < 0.6, "{fx:?}: at ({x}, {y}), the clock's at ({x0}, {y0})");
+            // Its outline in the island's colour adds ink round it.
+            assert!(ink > ink0 * 1.2, "{fx:?}: no outline ({ink} from {ink0})");
+        }
+    }
+
+    #[test]
+    fn a_digit_squashed_keeps_its_centre_and_height() {
+        let mut r = renderer();
+        for i in [0, 1, 3, 4] {
+            let rest = only(&mut r, i, DigitFx::IDENTITY);
+            let ((x0, y0), _) = rest.centre();
+            let squashed = only(&mut r, i, DigitFx { scale_x: 0.5, ..DigitFx::IDENTITY });
+            let ((x, y), _) = squashed.centre();
+            assert!((x - x0).abs() < 1.0 && (y - y0).abs() < 0.3, "character {i}: ({x}, {y}) from ({x0}, {y0})");
+            let (w0, w) = (rest.ink_width() as f32, squashed.ink_width() as f32);
+            assert!(w < w0 * 0.7 && w > w0 * 0.3, "character {i}: {w} px wide from {w0}");
+            // As tall as before: the squash is the width alone.
+            let tall = |p: &Px| (0..p.h).filter(|&y| (0..p.w).any(|x| p.alpha(x, y) > 8.0)).count();
+            assert!(tall(&squashed).abs_diff(tall(&rest)) <= 1, "character {i}: {} rows from {}", tall(&squashed), tall(&rest));
+        }
+    }
+
+    #[test]
+    fn a_digit_drawn_as_another_character_is_that_character_in_its_cell() {
+        // The minute swapped in place: a character drawn as another is the
+        // clock showing that other one, to the pixel, in both typefaces and
+        // at the scales a display has; its own character is plainly not.
+        let mut r = renderer();
+        let area = clock_area(44.0);
+        for ui in [UiFont::Sans, UiFont::Mono] {
+            r.set_ui_font(ui).unwrap();
+            for scale in [1.0, 1.25, 1.5, 2.0] {
+                r.scale = scale;
+                for (time, i, ch, shown) in [("14:01", 4, '2', "14:02"), ("08:59", 3, '0', "08:09"), ("23:48", 0, '1', "13:48")] {
+                    let case = format!("{ui:?} x{scale} {time} [{i}] as {ch}");
+                    let mut fx = [DigitFx::IDENTITY; 5];
+                    fx[i].ch = Some(ch);
+                    let swapped = painted(&mut r, CLOCK_BOX, |r| r.clock_per_character(time, area, 1.0, &fx));
+                    let other = painted(&mut r, CLOCK_BOX, |r| r.text(shown, &r.fonts.clock, area, 1.0));
+                    let (worst, loud) = gap(&other, &swapped);
+                    assert!(worst <= IDENTICAL_WITHIN && loud == 0, "{case}: differs from {shown} by {worst} (loud {loud})");
+                    let own = painted(&mut r, CLOCK_BOX, |r| r.text(time, &r.fonts.clock, area, 1.0));
+                    let (worst, loud) = gap(&own, &swapped);
+                    assert!(worst > 64 && loud > 4, "{case}: still {time} ({worst}, loud {loud})");
+                }
+            }
+        }
+    }
+
     fn at_rest() -> PlayFrame {
         play_frame(1.0)
     }
 
+    /// A part of `layer` filling the whole window in `GREEN`.
+    fn flood(layer: Layer) -> Part {
+        use crate::ui::robot::Seg::{Close, Line, Move};
+        let (w, h) = (crate::ui::geometry::WINDOW_W + 10.0, crate::ui::geometry::WINDOW_H + 10.0);
+        Part {
+            layer,
+            draw: Draw::Fill {
+                path: vec![Move(-10.0, -10.0), Line(w, -10.0), Line(w, h), Line(-10.0, h), Close],
+                rgb: GREEN,
+            },
+            alpha: 1.0,
+        }
+    }
+
+    const GREEN: u32 = 0x00FF00;
+
+    /// Where a point of the window sits against a played island, a dip and a
+    /// half clear of its antialiased edge either way.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Side {
+        In,
+        Out,
+        Edge,
+    }
+
+    /// One layer case over the real `paint_island`, for both styles and a
+    /// solid and a see-through fill, on a dented island: `check` gets the
+    /// window with `parts` and without, each sampled point of the window (its
+    /// pixel and its dip) and where it sits.
+    fn layer_case(parts: Vec<Part>, check: impl Fn(&str, &Px, &Px, (usize, usize), (f32, f32), Side)) {
+        let mut r = renderer();
+        for style in [Style::Notch, Style::Pill] {
+            for fill in [1.0, 0.42] {
+                let s = shape(style, 190.0, 34.0);
+                let dip = (crate::ui::geometry::WINDOW_W, s.y + s.h + 30.0);
+                let play = |parts: Vec<Part>| PlayFrame { deform: dented(), parts, ..play_frame(1.0) };
+                let draw = |r: &mut Renderer, parts: Vec<Part>| {
+                    with_frame_all(Some(play(parts)), None, None, fill, |frame| {
+                        painted(r, dip, |r| r.paint_island(style, s, frame).unwrap())
+                    })
+                };
+                let with = draw(&mut r, parts.clone());
+                let without = draw(&mut r, Vec::new());
+                let island = r.island_geometry(style, s, Some(&dented())).unwrap();
+                let k = r.scale;
+                let case = format!("{style:?} fill {fill}");
+                let around = [(0.0, 0.0), (-1.5, -1.5), (1.5, -1.5), (-1.5, 1.5), (1.5, 1.5)];
+                let mut y = 1.0;
+                while y < dip.1 - 1.0 {
+                    let mut x = 1.0;
+                    while x < dip.0 - 1.0 {
+                        let inside = around.iter().filter(|(dx, dy)| contains(&island, x + dx, y + dy)).count();
+                        let side = match inside {
+                            5 => Side::In,
+                            0 => Side::Out,
+                            _ => Side::Edge,
+                        };
+                        let px = (((x * k) as usize).min(with.w - 1), ((y * k) as usize).min(with.h - 1));
+                        check(&case, &with, &without, px, (x, y), side);
+                        x += 2.5;
+                    }
+                    y += 2.5;
+                }
+            }
+        }
+    }
+
+    fn pixel(p: &Px, (x, y): (usize, usize)) -> [u8; 4] {
+        let i = (y * p.w + x) * 4;
+        [p.bgra[i], p.bgra[i + 1], p.bgra[i + 2], p.bgra[i + 3]]
+    }
+
+    /// The part's full green, opaque.
+    fn green(p: [u8; 4]) -> bool {
+        p[0] < 6 && p[1] > 249 && p[2] < 6 && p[3] > 249
+    }
+
+    /// The same pixel in both renderings, give or take a rasteriser's rounding.
+    fn same(a: [u8; 4], b: [u8; 4]) -> bool {
+        a.iter().zip(b).all(|(p, q)| p.abs_diff(q) <= IDENTICAL_WITHIN)
+    }
+
     #[test]
-    fn a_story_prop_is_clipped_to_the_island() {
-        // The stolen digit falls through the lip; like the head, it is cut
-        // off by the island's edge (the mockup's "inside" layer), never
-        // drawn over the desktop below.
+    fn a_back_part_never_shows_inside_the_island() {
+        // Behind the island is cut away, never covered: with a see-through
+        // fill nothing of it may show through.
+        layer_case(vec![flood(Layer::Back)], |case, with, without, px, at, side| match side {
+            Side::In => assert!(same(pixel(with, px), pixel(without, px)), "{case} {at:?}: {:?} shows inside", pixel(with, px)),
+            Side::Out => assert!(green(pixel(with, px)), "{case} {at:?}: {:?} outside", pixel(with, px)),
+            Side::Edge => {}
+        });
+    }
+
+    #[test]
+    fn a_dark_part_never_shows_outside_the_island() {
+        layer_case(vec![flood(Layer::Dark)], |case, with, without, px, at, side| match side {
+            Side::In => assert!(green(pixel(with, px)), "{case} {at:?}: {:?} inside", pixel(with, px)),
+            Side::Out => assert!(same(pixel(with, px), pixel(without, px)), "{case} {at:?}: {:?} shows outside", pixel(with, px)),
+            Side::Edge => {}
+        });
+    }
+
+    #[test]
+    fn a_wrap_part_is_cut_to_its_rect_and_the_island() {
+        // The left half of the window, from far above to far below.
+        let mid = crate::ui::geometry::WINDOW_W / 2.0;
+        let cut = Rect { x: -10.0, y: -10.0, w: mid + 10.0, h: 400.0 };
+        layer_case(vec![flood(Layer::Wrap(Some(cut)))], |case, with, without, px, at, side| {
+            let (p, q) = (pixel(with, px), pixel(without, px));
+            match side {
+                Side::In if at.0 < mid - 1.5 => assert!(green(p), "{case} {at:?}: {p:?} inside the rect"),
+                Side::In if at.0 > mid + 1.5 => assert!(same(p, q), "{case} {at:?}: {p:?} shows past the rect"),
+                Side::Out => assert!(same(p, q), "{case} {at:?}: {p:?} shows outside the island"),
+                _ => {}
+            }
+        });
+        // Without a rect it is the island alone.
+        layer_case(vec![flood(Layer::Wrap(None))], |case, with, without, px, at, side| match side {
+            Side::In => assert!(green(pixel(with, px)), "{case} {at:?}: {:?} inside", pixel(with, px)),
+            Side::Out => assert!(same(pixel(with, px), pixel(without, px)), "{case} {at:?}: {:?} shows outside", pixel(with, px)),
+            Side::Edge => {}
+        });
+    }
+
+    #[test]
+    fn a_front_part_shows_everywhere() {
+        layer_case(vec![flood(Layer::Front)], |case, with, _, px, at, _| {
+            assert!(green(pixel(with, px)), "{case} {at:?}: {:?}", pixel(with, px));
+        });
+    }
+
+    #[test]
+    fn an_inside_part_shows_inside_and_outside_the_island() {
+        // Unclipped: a limb that hangs out of the island's dark reads below it.
+        layer_case(vec![flood(Layer::Inside)], |case, with, _, px, at, _| {
+            assert!(green(pixel(with, px)), "{case} {at:?}: {:?}", pixel(with, px));
+        });
+    }
+
+    #[test]
+    fn a_fill_fills_where_its_figures_overlap() {
+        // The mockup's SVG fills are nonzero: two overlapping figures of one
+        // path, drawn the same way round, leave no hole where they cross.
+        use crate::ui::robot::Seg::{Close, Line, Move};
+        let rect = |x: f32, y: f32| [Move(x, y), Line(x + 20.0, y), Line(x + 20.0, y + 10.0), Line(x, y + 10.0), Close];
+        let mut r = renderer();
+        let s = shape(Style::Pill, 190.0, 34.0);
+        let below = s.y + s.h + 20.0;
+        let path: Vec<_> = rect(100.0, below).into_iter().chain(rect(110.0, below)).collect();
+        let part = Part { layer: Layer::Front, draw: Draw::Fill { path, rgb: GREEN }, alpha: 1.0 };
+        let play = PlayFrame { parts: vec![part], ..play_frame(1.0) };
+        let px = with_frame_all(Some(play), None, None, 1.0, |frame| {
+            painted(&mut r, (crate::ui::geometry::WINDOW_W, below + 20.0), |r| r.paint_island(Style::Pill, s, frame).unwrap())
+        });
+        let k = r.scale;
+        let at = |x: f32| ((x * k) as usize, ((below + 5.0) * k) as usize);
+        assert!(green(pixel(&px, at(105.0))), "{:?}", pixel(&px, at(105.0)));
+        assert!(green(pixel(&px, at(115.0))), "a hole where they overlap: {:?}", pixel(&px, at(115.0)));
+    }
+
+    #[test]
+    fn a_tint_darkens_what_is_under_it_instead_of_covering_it() {
+        // The limb's shade band is translucent black: over red it leaves half
+        // red, over a blue stripe a darker blue (not the body's colour).
+        use crate::ui::robot::Seg::{Close, Line, Move};
+        let rect = |x: f32, y: f32, w: f32| vec![Move(x, y), Line(x + w, y), Line(x + w, y + 10.0), Line(x, y + 10.0), Close];
+        let mut r = renderer();
+        let s = shape(Style::Pill, 190.0, 34.0);
+        let below = s.y + s.h + 20.0;
+        let part = |draw| Part { layer: Layer::Front, draw, alpha: 1.0 };
+        let parts = vec![
+            part(Draw::Fill { path: rect(100.0, below, 60.0), rgb: 0xFF0000 }),
+            part(Draw::Fill { path: rect(130.0, below, 10.0), rgb: 0x0000FF }),
+            part(Draw::Tint { path: rect(100.0, below, 60.0), rgb: 0x000000, alpha: 0.5 }),
+        ];
+        let play = PlayFrame { parts, ..play_frame(1.0) };
+        let px = with_frame_all(Some(play), None, None, 1.0, |frame| {
+            painted(&mut r, (crate::ui::geometry::WINDOW_W, below + 20.0), |r| r.paint_island(Style::Pill, s, frame).unwrap())
+        });
+        let k = r.scale;
+        let at = |x: f32| pixel(&px, ((x * k) as usize, ((below + 5.0) * k) as usize));
+        let red = at(110.0);
+        assert!(red[2].abs_diff(128) <= 3 && red[0] < 3 && red[1] < 3, "red half dark: {red:?}");
+        let blue = at(135.0);
+        assert!(blue[0].abs_diff(128) <= 3 && blue[2] < 3, "blue darkened, not replaced: {blue:?}");
+    }
+
+    #[test]
+    fn an_inside_part_paints_under_the_clock() {
+        // The mockup paints its inside layer before the clock: where an
+        // inside part and a digit overlap, the digit's ink wins.
+        let mut r = renderer();
+        for style in [Style::Notch, Style::Pill] {
+            for fill in [1.0, 0.42] {
+                let s = shape(style, 190.0, 34.0);
+                let dip = (crate::ui::geometry::WINDOW_W, s.y + s.h + 10.0);
+                let draw = |r: &mut Renderer, clock: bool, parts: Vec<Part>| {
+                    let clock = clock.then(|| "14:32".to_owned());
+                    let play = PlayFrame { parts, ..play_frame(1.0) };
+                    with_frame_all(Some(play), clock, None, fill, |frame| {
+                        painted(r, dip, |r| r.paint_island(style, s, frame).unwrap())
+                    })
+                };
+                let none = draw(&mut r, false, Vec::new());
+                let clock = draw(&mut r, true, Vec::new());
+                let with = draw(&mut r, true, vec![flood(Layer::Inside)]);
+                let case = format!("{style:?} fill {fill}");
+                let diff = |i: usize| (0..4).map(|c| clock.bgra[i * 4 + c].abs_diff(none.bgra[i * 4 + c])).max().unwrap();
+                let n = clock.w * clock.h;
+                let most = (0..n).map(diff).max().unwrap();
+                // The digits' fully inked pixels: the same whatever is under them.
+                let core: Vec<usize> = (0..n).filter(|&i| diff(i) + 3 >= most).collect();
+                assert!(most > 100 && core.len() >= 10, "{case}: the clock drew too little ({most}, {})", core.len());
+                for i in core {
+                    let at = (i % clock.w, i / clock.w);
+                    assert!(same(pixel(&with, at), pixel(&clock, at)), "{case} {at:?}: {:?} over the digit's {:?}", pixel(&with, at), pixel(&clock, at));
+                }
+                // And the part is drawn, where no digit is: the island's left end.
+                let k = r.scale;
+                let left = (((s.x + 12.0) * k) as usize, ((s.y + s.h / 2.0) * k) as usize);
+                assert!(green(pixel(&with, left)), "{case}: {:?}", pixel(&with, left));
+                // Unclipped: it shows below the island too.
+                let below = (((s.x + s.w / 2.0) * k) as usize, ((s.y + s.h + 5.0) * k) as usize);
+                assert!(green(pixel(&with, below)), "{case}: clipped below the island: {:?}", pixel(&with, below));
+            }
+        }
+    }
+
+    #[test]
+    fn a_fading_group_does_not_darken_where_its_pieces_overlap() {
+        // Two overlapping opaque fills in one group at half alpha: one
+        // opacity for the whole figure, so the overlap is as faint as the rest.
+        use crate::ui::robot::Seg::{Close, Line, Move};
+        let rect = |x: f32| Draw::Fill {
+            path: vec![Move(x, 0.0), Line(x + 20.0, 0.0), Line(x + 20.0, 10.0), Line(x, 10.0), Close],
+            rgb: GREEN,
+        };
         let mut r = renderer();
         for style in [Style::Notch, Style::Pill] {
             let s = shape(style, 190.0, 34.0);
-            let bottom = s.y + s.h;
-            let at = (s.x + s.w / 2.0, bottom + 2.0);
-            let play = |props: Vec<Prop>| PlayFrame { props, ..play_frame(1.0) };
-            let dip = (crate::ui::geometry::WINDOW_W, bottom + 30.0);
-            let draw = |r: &mut Renderer, props: Vec<Prop>| {
-                with_frame_clock(Some(play(props)), Some("14:32".to_owned()), |frame| {
-                    painted(r, dip, |r| r.paint_island(style, s, frame).unwrap())
+            let below = s.y + s.h + 20.0;
+            let group = Draw::Group {
+                at: (100.0, below),
+                rot_deg: 0.0,
+                scale: (1.0, 1.0),
+                pivot: (0.0, 0.0),
+                items: vec![rect(0.0), rect(10.0)],
+            };
+            let play = PlayFrame { parts: vec![Part { layer: Layer::Front, draw: group, alpha: 0.5 }], ..play_frame(1.0) };
+            let px = with_frame_all(Some(play), None, None, 1.0, |frame| {
+                painted(&mut r, (crate::ui::geometry::WINDOW_W, below + 20.0), |r| r.paint_island(style, s, frame).unwrap())
+            });
+            let k = r.scale;
+            let at = |x: f32| (((100.0 + x) * k) as usize, ((below + 5.0) * k) as usize);
+            let (one, both) = (pixel(&px, at(5.0)), pixel(&px, at(15.0)));
+            assert!((120..=135).contains(&one[3]), "{style:?}: not half: {one:?}");
+            assert!(same(one, both), "{style:?}: the overlap {both:?} is darker than {one:?}");
+        }
+    }
+
+    #[test]
+    fn a_fading_clipped_figure_does_not_darken_where_its_pieces_overlap() {
+        // The same, for a part that is a `Clipped` (a bat cut to the window,
+        // the Peluk pulau's mantle): one fade layer round the clip's own.
+        use crate::ui::robot::Seg::{Close, Line, Move};
+        let mut r = renderer();
+        for style in [Style::Notch, Style::Pill] {
+            let s = shape(style, 190.0, 34.0);
+            let below = s.y + s.h + 20.0;
+            let rect = |x: f32, w: f32| vec![Move(x, below), Line(x + w, below), Line(x + w, below + 10.0), Line(x, below + 10.0), Close];
+            let fill = |x: f32| Draw::Fill { path: rect(x, 20.0), rgb: GREEN };
+            let clipped = Draw::Clipped { clip: rect(100.0, 60.0), items: vec![fill(100.0), fill(110.0)] };
+            let play = PlayFrame { parts: vec![Part { layer: Layer::Front, draw: clipped, alpha: 0.5 }], ..play_frame(1.0) };
+            let px = with_frame_all(Some(play), None, None, 1.0, |frame| {
+                painted(&mut r, (crate::ui::geometry::WINDOW_W, below + 20.0), |r| r.paint_island(style, s, frame).unwrap())
+            });
+            let k = r.scale;
+            let at = |x: f32| ((x * k) as usize, ((below + 5.0) * k) as usize);
+            let (one, both) = (pixel(&px, at(105.0)), pixel(&px, at(115.0)));
+            assert!((120..=135).contains(&one[3]), "{style:?}: not half: {one:?}");
+            assert!(same(one, both), "{style:?}: the overlap {both:?} is darker than {one:?}");
+        }
+    }
+
+    #[test]
+    fn a_fading_figure_loses_no_ink_to_its_layer_bounds() {
+        // A fade layer is only as big as the figure's bounds. Faded to half,
+        // every pixel must be halfway between the island without the figure
+        // and with it at full: nothing at its edge is cut off. A turned and
+        // scaled Calico cat (patches cut to its body), a fat stroke with
+        // round caps, a bare clipped stroke and every mascot's head, turned
+        // and stretched.
+        use crate::theme::{CatAccessory, CatColor, Mascot};
+        use crate::ui::mascot::CrestPose;
+        use crate::ui::play::art::cat::{CatPose, Paw, Tail, cat_at};
+        use crate::ui::robot::Seg::{Close, Line, Move};
+        let mut r = renderer();
+        let k = r.scale;
+        let robot = Some(RobotFrame { expr: Expr::Idle, pose: Pose::default() });
+        let s = shape(Style::Pill, 190.0, 34.0);
+        let dip = (crate::ui::geometry::WINDOW_W, s.y + s.h + 90.0);
+        let at = (s.x + s.w + 30.0, s.y + s.h + 50.0);
+        let cat_look = CatLook { mascot: Mascot::Cat, color: CatColor::Calico, accessory: CatAccessory::Bow, ..CatLook::default() };
+        let pose = CatPose {
+            dk: 0.0,
+            rise: Some(1.0),
+            head: (0.0, 0.0, 0.0),
+            face: MascotShot::REST,
+            paws: [Paw::default(), Paw { dx: 1.5, dy: -6.0, lift: 0.8, sq: 0.0 }],
+            tail: Some(Tail::default()),
+        };
+        let stroke = vec![Move(0.0, 0.0), Line(30.0, 14.0)];
+        let mut cases = vec![
+            ("cat", cat_at(at, 25.0, 1.2, 0.9, &pose, cat_look)),
+            (
+                "stroke",
+                Draw::Group { at, rot_deg: 30.0, scale: (1.0, 2.0), pivot: (0.0, 0.0), items: vec![Draw::Stroke { path: stroke.clone(), rgb: GREEN, width: 9.0 }] },
+            ),
+            (
+                "clipped stroke",
+                Draw::Clipped {
+                    clip: vec![Move(at.0 - 5.0, at.1 - 5.0), Line(at.0 + 20.0, at.1 - 5.0), Line(at.0 + 20.0, at.1 + 30.0), Line(at.0 - 5.0, at.1 + 30.0), Close],
+                    items: vec![Draw::Stroke { path: stroke.iter().map(|g| match *g { Move(x, y) => Move(x + at.0, y + at.1), Line(x, y) => Line(x + at.0, y + at.1), o => o }).collect(), rgb: GREEN, width: 40.0 }],
+                },
+            ),
+        ];
+        let shot = MascotShot {
+            rot_deg: 20.0,
+            sx: 1.3,
+            sy: 0.8,
+            crest: CrestPose { rot_deg: 10.0, scale: 1.75 },
+            expr: Expr::Happy,
+            ..MascotShot::REST
+        };
+        cases.push(("head", Draw::Head { at, shot }));
+        for (name, draw) in cases {
+            for &mascot in Mascot::ALL {
+                r.cat.set(CatLook { mascot, ..cat_look });
+                let paint = |r: &mut Renderer, alpha: Option<f32>| {
+                    let parts = alpha.map(|a| Part { layer: Layer::Front, draw: draw.clone(), alpha: a }).into_iter().collect();
+                    let play = PlayFrame { parts, ..play_frame(1.0) };
+                    with_frame_all(Some(play), None, robot, 1.0, |frame| {
+                        painted(r, dip, |r| r.paint_island(Style::Pill, s, frame).unwrap())
+                    })
+                };
+                let (none, full, half) = (paint(&mut r, None), paint(&mut r, Some(1.0)), paint(&mut r, Some(0.5)));
+                let (mut worst, mut ink) = (0, 0);
+                for i in 0..none.bgra.len() {
+                    let want = (none.bgra[i] as f32 + full.bgra[i] as f32) / 2.0;
+                    worst = worst.max((half.bgra[i] as f32 - want).abs().ceil() as u32);
+                    ink += usize::from(full.bgra[i] != none.bgra[i]);
+                }
+                assert!(ink > 100 * (k as usize), "{name} {mascot:?}: the figure drew nothing ({ink})");
+                assert!(worst <= 3, "{name} {mascot:?}: faded ink off by {worst} from half of the full figure's");
+            }
+        }
+    }
+
+    #[test]
+    fn a_clip_whose_box_holds_the_ink_changes_no_pixel() {
+        // A `Clipped` layer is only its clip's box big: with a clip that
+        // holds a turned fat stroke, the part is the stroke alone, pixel
+        // for pixel.
+        use crate::ui::robot::Seg::{Close, Line, Move};
+        let mut r = renderer();
+        let s = shape(Style::Pill, 190.0, 34.0);
+        let below = s.y + s.h + 20.0;
+        let stroke = Draw::Stroke { path: vec![Move(100.0, below), Line(140.0, below + 20.0)], rgb: GREEN, width: 9.0 };
+        let clip = vec![Move(90.0, below - 10.0), Line(150.0, below - 10.0), Line(150.0, below + 30.0), Line(90.0, below + 30.0), Close];
+        let paint = |r: &mut Renderer, draw: Draw| {
+            let play = PlayFrame { parts: vec![Part { layer: Layer::Front, draw, alpha: 1.0 }], ..play_frame(1.0) };
+            with_frame_all(Some(play), None, None, 1.0, |frame| {
+                painted(r, (crate::ui::geometry::WINDOW_W, below + 40.0), |r| r.paint_island(Style::Pill, s, frame).unwrap())
+            })
+        };
+        let bare = paint(&mut r, stroke.clone());
+        let clipped = paint(&mut r, Draw::Clipped { clip, items: vec![stroke] });
+        assert!(bare.bgra.iter().zip(&clipped.bgra).all(|(a, b)| a.abs_diff(*b) <= 1), "the clip cut the stroke");
+    }
+
+    #[test]
+    fn an_empty_slot_paints_no_mascot_and_the_app_slot_its_own() {
+        // The terracotta cat's head (0xE2683C) in the slot: painted for the
+        // app's slot, gone from an empty one.
+        let mut r = renderer();
+        for style in [Style::Notch, Style::Pill] {
+            for fill in [1.0, 0.42] {
+                let s = shape(style, 190.0, 34.0);
+                let dip = (crate::ui::geometry::WINDOW_W, s.y + s.h + 10.0);
+                let robot = Some(RobotFrame { expr: Expr::Idle, pose: Pose::default() });
+                let fur = |r: &mut Renderer, slot: Slot| {
+                    let play = PlayFrame { slot, ..play_frame(1.0) };
+                    let px = with_frame_all(Some(play), None, robot, fill, |frame| {
+                        painted(r, dip, |r| r.paint_island(style, s, frame).unwrap())
+                    });
+                    let mut n = 0;
+                    for y in 0..px.h {
+                        for x in 0..px.w {
+                            let [blue, green, red, alpha] = pixel(&px, (x, y));
+                            if alpha > 200 && red > 190 && (80..130).contains(&green) && blue < 90 {
+                                n += 1;
+                            }
+                        }
+                    }
+                    n
+                };
+                let case = format!("{style:?} fill {fill}");
+                assert!(fur(&mut r, Slot::App) > 50, "{case}: the app's head");
+                assert!(fur(&mut r, Slot::Story(MascotShot::REST)) > 50, "{case}: the story's head");
+                assert_eq!(fur(&mut r, Slot::Empty), 0, "{case}: an empty slot");
+            }
+        }
+    }
+
+    #[test]
+    fn a_story_slot_head_wears_the_halo_the_shot_gives_it() {
+        // On a see-through island the slot head has a dark halo; a story
+        // fades it (`PlayFrame::halo`) where its own figure, which has none,
+        // takes over.
+        let mut r = renderer();
+        let s = shape(Style::Pill, 190.0, 34.0);
+        let area = Rect { x: s.x + 20.0, y: s.y + 4.0, w: 26.0, h: 26.0 };
+        let robot = RobotFrame { expr: Expr::Idle, pose: Pose::default() };
+        let ink = |r: &mut Renderer, legible: f32, halo: f32| {
+            let px = painted(r, (s.x + 80.0, s.y + 40.0), |r| {
+                r.legible.set(legible);
+                r.paint_story_mascot(area, robot, &MascotShot::REST, halo);
+            });
+            let mut sum = 0u64;
+            for y in 0..px.h {
+                for x in 0..px.w {
+                    sum += pixel(&px, (x, y))[3] as u64;
+                }
+            }
+            sum
+        };
+        let (none, half, full) = (ink(&mut r, 1.0, 0.0), ink(&mut r, 1.0, 0.5), ink(&mut r, 1.0, 1.0));
+        assert!(full > half && half > none, "{none} {half} {full}");
+        // With nothing to make legible there is no halo to fade.
+        assert_eq!(ink(&mut r, 0.0, 1.0), none);
+    }
+
+    #[test]
+    fn a_story_slot_head_fades_with_its_halo_as_one() {
+        // A story fades the slot head by its shot's alpha (Petak umpet's
+        // dive into the dark): head and halo together, through one layer.
+        let mut r = renderer();
+        let s = shape(Style::Pill, 190.0, 34.0);
+        let area = Rect { x: s.x + 20.0, y: s.y + 4.0, w: 26.0, h: 26.0 };
+        let robot = RobotFrame { expr: Expr::Idle, pose: Pose::default() };
+        let ink = |r: &mut Renderer, legible: f32, alpha: f32| {
+            let px = painted(r, (s.x + 80.0, s.y + 40.0), |r| {
+                r.legible.set(legible);
+                r.paint_story_mascot(area, robot, &MascotShot { alpha, ..MascotShot::REST }, 1.0);
+            });
+            let mut sum = 0u64;
+            for y in 0..px.h {
+                for x in 0..px.w {
+                    sum += pixel(&px, (x, y))[3] as u64;
+                }
+            }
+            sum
+        };
+        for legible in [0.0, 1.0] {
+            let (none, half, full) = (ink(&mut r, legible, 0.0), ink(&mut r, legible, 0.5), ink(&mut r, legible, 1.0));
+            assert_eq!(none, 0, "legible {legible}: nothing at alpha 0");
+            let ratio = half as f64 / full as f64;
+            assert!((ratio - 0.5).abs() < 0.03, "legible {legible}: half is {ratio} of full ({half} of {full})");
+        }
+    }
+
+    #[test]
+    fn a_head_part_carries_its_accessory() {
+        // The falk with the bow, its head out under the island: the bow's
+        // raspberry wings (0xD23F6A) come along, inside the head's box, as
+        // the slot head carries them.
+        use crate::theme::{CatAccessory, Mascot};
+        use crate::ui::mascot::CrestPose;
+        let mut r = renderer();
+        for style in [Style::Notch, Style::Pill] {
+            for fill in [1.0, 0.42] {
+                let s = shape(style, 190.0, 34.0);
+                let dip = (crate::ui::geometry::WINDOW_W, s.y + s.h + 80.0);
+                let shot = MascotShot {
+                    dx: 0.0,
+                    dy: 0.0,
+                    rot_deg: 20.0,
+                    sx: 1.2,
+                    sy: 1.2,
+                    expr: Expr::Idle,
+                    crest: CrestPose { rot_deg: 10.0, scale: 1.0 },
+                    glance: (0.0, 0.0),
+                    blink: false,
+                    beak_open: false,
+                    bare_octopus: false,
+                    flush: 0.0,
+                    alpha: 1.0,
+                };
+                let head = Draw::Head { at: (s.x + s.w / 2.0, s.y + s.h + 45.0), shot };
+                let b = head.bounds();
+                let part = Part { layer: Layer::Front, draw: head, alpha: 1.0 };
+                let robot = Some(RobotFrame { expr: Expr::Idle, pose: Pose::default() });
+                let k = r.scale;
+                let raspberry = |r: &mut Renderer, accessory: CatAccessory| {
+                    r.cat.set(CatLook { mascot: Mascot::Falk, accessory, ..CatLook::default() });
+                    let play = PlayFrame { parts: vec![part.clone()], ..play_frame(1.0) };
+                    let px = with_frame_all(Some(play), None, robot, fill, |frame| {
+                        painted(r, dip, |r| r.paint_island(style, s, frame).unwrap())
+                    });
+                    let (mut inside, mut outside) = (0, 0);
+                    for y in 0..px.h {
+                        for x in 0..px.w {
+                            let [blue, green, red, alpha] = pixel(&px, (x, y));
+                            let (dx, dy) = (x as f32 / k, y as f32 / k);
+                            // The slot head in the island wears the bow too.
+                            let island = dy < s.y + s.h + 2.0;
+                            if !island && alpha > 240 && red > 180 && green < 100 && (70..140).contains(&blue) {
+                                if dx >= b.x && dx <= b.x + b.w && dy >= b.y && dy <= b.y + b.h {
+                                    inside += 1;
+                                } else {
+                                    outside += 1;
+                                }
+                            }
+                        }
+                    }
+                    (inside, outside)
+                };
+                let case = format!("{style:?} fill {fill}");
+                let (with, stray) = raspberry(&mut r, CatAccessory::Bow);
+                assert!(with > 10, "{case}: the bow did not come along ({with} px)");
+                assert_eq!(stray, 0, "{case}: the bow left the head's box");
+                assert_eq!(raspberry(&mut r, CatAccessory::None), (0, 0), "{case}: raspberry without the bow");
+            }
+        }
+    }
+
+    #[test]
+    fn a_head_part_stays_inside_its_bounds() {
+        // Every mascot with every accessory, startled with its crest shot up
+        // and turned, at a story's sizes: no ink outside `Draw::bounds`, so a
+        // story's window test holds for what is really drawn.
+        use crate::theme::{CatAccessory, Mascot};
+        use crate::ui::mascot::CrestPose;
+        let mut r = renderer();
+        let k = r.scale;
+        let robot = Some(RobotFrame { expr: Expr::Idle, pose: Pose::default() });
+        let s = shape(Style::Pill, 160.0, 28.0);
+        for &mascot in Mascot::ALL {
+            for &accessory in CatAccessory::ALL {
+                r.cat.set(CatLook { mascot, accessory, ..CatLook::default() });
+                for (expr, crest) in [(Expr::Idle, 1.0), (Expr::Alert, 1.75), (Expr::Happy, 0.7)] {
+                    for (rot_deg, size) in [(0.0, 1.0), (35.0, 0.86), (-80.0, 1.3), (180.0, 1.0)] {
+                        let shot = MascotShot {
+                            dx: 0.0,
+                            dy: 0.0,
+                            rot_deg,
+                            sx: size,
+                            sy: size,
+                            expr,
+                            crest: CrestPose { rot_deg: 10.0, scale: crest },
+                            glance: (2.4, 0.66),
+                            blink: false,
+                            beak_open: true,
+                            bare_octopus: false,
+                            flush: 0.0,
+                            alpha: 1.0,
+                        };
+                        let head = Draw::Head { at: (90.0, 110.0), shot };
+                        let b = head.bounds();
+                        let play = PlayFrame { parts: vec![Part { layer: Layer::Front, draw: head, alpha: 1.0 }], ..play_frame(1.0) };
+                        let draw = |r: &mut Renderer, play: PlayFrame| {
+                            with_frame_all(Some(play), None, robot, 1.0, |frame| {
+                                painted(r, (crate::ui::geometry::WINDOW_W, 160.0), |r| r.paint_island(Style::Pill, s, frame).unwrap())
+                            })
+                        };
+                        let (with, without) = (draw(&mut r, play), draw(&mut r, play_frame(1.0)));
+                        let mut ink = 0;
+                        for y in 0..with.h {
+                            for x in 0..with.w {
+                                if pixel(&with, (x, y)) == pixel(&without, (x, y)) {
+                                    continue;
+                                }
+                                ink += 1;
+                                let (dx, dy) = ((x as f32 + 0.5) / k, (y as f32 + 0.5) / k);
+                                let off = dx < b.x - 0.5 || dx > b.x + b.w + 0.5 || dy < b.y - 0.5 || dy > b.y + b.h + 0.5;
+                                assert!(!off, "{mascot:?} {accessory:?} {expr:?} {rot_deg} {size}: ink at ({dx}, {dy}) outside {b:?}");
+                            }
+                        }
+                        assert!(ink > 100, "{mascot:?} {accessory:?}: the head drew nothing");
+                    }
+                }
+            }
+        }
+        // Upright, three times the slot's size so a pixel is under one grid
+        // unit, every face but the typing laptop, the crest at rest and
+        // startled (1.75): the ink's extremes on the grid (each pixel's far
+        // edge), against `HEAD_INK` less its margin.
+        use crate::ui::play::stories::HEAD_INK;
+        let unit = 3.0 * crate::ui::geometry::ROBOT_COMPACT / crate::ui::robot::GRID;
+        let at = (200.0, 100.0);
+        let (mut l, mut t, mut rt, mut b) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for &mascot in Mascot::ALL {
+            for &accessory in CatAccessory::ALL {
+                r.cat.set(CatLook { mascot, accessory, ..CatLook::default() });
+                let draw = |r: &mut Renderer, play: PlayFrame| {
+                    with_frame_all(Some(play), None, robot, 1.0, |frame| {
+                        painted(r, (crate::ui::geometry::WINDOW_W, 160.0), |r| r.paint_island(Style::Pill, s, frame).unwrap())
+                    })
+                };
+                let without = draw(&mut r, play_frame(1.0));
+                let faces = Expr::ALL.into_iter().filter(|e| *e != Expr::Typing);
+                for (expr, crest) in faces.flat_map(|e| [(e, 1.0), (e, 1.75)]) {
+                    let shot = MascotShot {
+                        dx: 0.0,
+                        dy: 0.0,
+                        rot_deg: 0.0,
+                        sx: 3.0,
+                        sy: 3.0,
+                        expr,
+                        crest: CrestPose { rot_deg: 10.0, scale: crest },
+                        glance: (2.4, 0.66),
+                        blink: false,
+                        beak_open: true,
+                        bare_octopus: false,
+                        flush: 0.0,
+                        alpha: 1.0,
+                    };
+                    let head = Draw::Head { at, shot };
+                    let with = draw(&mut r, PlayFrame { parts: vec![Part { layer: Layer::Front, draw: head, alpha: 1.0 }], ..play_frame(1.0) });
+                    for y in 0..with.h {
+                        for x in 0..with.w {
+                            if pixel(&with, (x, y)) != pixel(&without, (x, y)) {
+                                let gx = |e: f32| HEAD_PIVOT.0 + ((x as f32 + e) / k - at.0) / unit;
+                                let gy = |e: f32| HEAD_PIVOT.1 + ((y as f32 + e) / k - at.1) / unit;
+                                (l, t, rt, b) = (l.min(gx(0.0)), t.min(gy(0.0)), rt.max(gx(1.0)), b.max(gy(1.0)));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let (bl, bt, br, bb) = HEAD_INK;
+        assert!(bl <= l - 2.0 && bt <= t - 2.0 && br >= rt + 2.0 && bb >= b + 2.0, "ink {l} {t} {rt} {b} in {HEAD_INK:?}");
+    }
+
+    #[test]
+    fn a_clipped_part_shows_only_inside_its_clip() {
+        // A bar cut to its left half, inside a group scaled 2x: the clip
+        // moves with the group's transform, in front and in the back layer
+        // (which already has its own clip pushed).
+        use crate::ui::robot::Seg::{Close, Line, Move};
+        let rect = |w: f32, h: f32| vec![Move(0.0, 0.0), Line(w, 0.0), Line(w, h), Line(0.0, h), Close];
+        let mut r = renderer();
+        let s = shape(Style::Pill, 190.0, 34.0);
+        let below = s.y + s.h + 20.0;
+        for layer in [Layer::Front, Layer::Back] {
+            let group = Draw::Group {
+                at: (100.0, below),
+                rot_deg: 0.0,
+                scale: (2.0, 2.0),
+                pivot: (0.0, 0.0),
+                items: vec![Draw::Clipped { clip: rect(10.0, 5.0), items: vec![Draw::Fill { path: rect(20.0, 5.0), rgb: GREEN }] }],
+            };
+            let play = PlayFrame { parts: vec![Part { layer, draw: group, alpha: 1.0 }], ..play_frame(1.0) };
+            let draw = |r: &mut Renderer, play: PlayFrame| {
+                with_frame_all(Some(play), None, None, 1.0, |frame| {
+                    painted(r, (crate::ui::geometry::WINDOW_W, below + 20.0), |r| r.paint_island(Style::Pill, s, frame).unwrap())
                 })
             };
-            let with = draw(&mut r, vec![Prop::Digit { index: 4, at, rot_deg: 0.0, alpha: 1.0 }]);
-            let without = draw(&mut r, Vec::new());
+            let (with, without) = (draw(&mut r, play), draw(&mut r, play_frame(1.0)));
             let k = r.scale;
-            // Nothing at all from a dip and a half under the lip down.
-            let below = ((bottom + 1.5) * k).ceil() as usize;
-            let ink: f32 = (below..with.h).flat_map(|y| (0..with.w).map(move |x| (x, y))).map(|(x, y)| with.alpha(x, y)).sum();
-            assert_eq!(ink, 0.0, "{style:?}: the prop shows under the island");
-            // And it is drawn: the part inside the island differs.
-            let (_, loud) = gap(&with, &without);
-            assert!(loud > 5, "{style:?}: the prop drew nothing inside the island");
+            let at = |x: f32| ((x * k) as usize, ((below + 5.0) * k) as usize);
+            assert!(green(pixel(&with, at(110.0))), "{layer:?}: {:?} inside the clip", pixel(&with, at(110.0)));
+            assert!(same(pixel(&with, at(130.0)), pixel(&without, at(130.0))), "{layer:?}: {:?} past the clip", pixel(&with, at(130.0)));
+        }
+    }
+
+    #[test]
+    fn a_seated_cat_carries_its_accessory_outside_the_island() {
+        // The cat sitting beside the island in the back layer, with the bow:
+        // its head comes from the app's painter, so the raspberry bow
+        // (0xD23F6A) comes along; and no ink leaves the figure's bounds.
+        use crate::theme::{CatAccessory, CatColor, Mascot};
+        use crate::ui::mascot::CrestPose;
+        use crate::ui::play::art::cat::{CatPose, Paw, Tail, cat_at};
+        let mut r = renderer();
+        let k = r.scale;
+        let robot = Some(RobotFrame { expr: Expr::Idle, pose: Pose::default() });
+        for style in [Style::Notch, Style::Pill] {
+            for color in [CatColor::Terracotta, CatColor::Calico, CatColor::Black] {
+                let s = shape(style, 190.0, 34.0);
+                let dip = (crate::ui::geometry::WINDOW_W, s.y + s.h + 80.0);
+                let pose = CatPose {
+                    dk: 0.0,
+                    rise: Some(1.0),
+                    head: (0.0, 0.0, 0.0),
+                    face: MascotShot {
+                        dx: 0.0,
+                        dy: 0.0,
+                        rot_deg: 0.0,
+                        sx: 1.0,
+                        sy: 1.0,
+                        expr: Expr::Idle,
+                        crest: CrestPose { rot_deg: 0.0, scale: 1.0 },
+                        glance: (0.0, 0.0),
+                        blink: false,
+                        beak_open: false,
+                        bare_octopus: false,
+                        flush: 0.0,
+                        alpha: 1.0,
+                    },
+                    paws: [Paw::default(), Paw { dx: 1.5, dy: -6.0, lift: 0.8, sq: 0.0 }],
+                    tail: Some(Tail::default()),
+                };
+                let paint = |r: &mut Renderer, accessory: CatAccessory, cat: bool| {
+                    let look = CatLook { mascot: Mascot::Cat, color, accessory, ..CatLook::default() };
+                    r.cat.set(look);
+                    let fig = cat_at((s.x + s.w + 30.0, s.y + s.h + 40.0), 0.0, 1.0, 1.0, &pose, look);
+                    let b = fig.bounds();
+                    let parts = if cat { vec![Part { layer: Layer::Back, draw: fig, alpha: 1.0 }] } else { Vec::new() };
+                    let play = PlayFrame { parts, ..play_frame(0.0) };
+                    let px = with_frame_all(Some(play), None, robot, 1.0, |frame| {
+                        painted(r, dip, |r| r.paint_island(style, s, frame).unwrap())
+                    });
+                    (px, b)
+                };
+                let case = format!("{style:?} {color:?}");
+                for accessory in [CatAccessory::Bow, CatAccessory::None] {
+                    let ((with, b), (without, _)) = (paint(&mut r, accessory, true), paint(&mut r, accessory, false));
+                    let (mut bow, mut ink) = (0, 0);
+                    for y in 0..with.h {
+                        for x in 0..with.w {
+                            let p = pixel(&with, (x, y));
+                            if p == pixel(&without, (x, y)) {
+                                continue;
+                            }
+                            ink += 1;
+                            let (dx, dy) = ((x as f32 + 0.5) / k, (y as f32 + 0.5) / k);
+                            let off = dx < b.x - 0.5 || dx > b.x + b.w + 0.5 || dy < b.y - 0.5 || dy > b.y + b.h + 0.5;
+                            assert!(!off, "{case} {accessory:?}: ink at ({dx}, {dy}) outside {b:?}");
+                            let [blue, green, red, alpha] = p;
+                            if alpha > 240 && red > 180 && green < 100 && (70..140).contains(&blue) {
+                                bow += 1;
+                            }
+                        }
+                    }
+                    assert!(ink > 300, "{case}: the cat drew too little ({ink} px)");
+                    match accessory {
+                        CatAccessory::Bow => assert!(bow > 10, "{case}: the bow did not come along ({bow} px)"),
+                        _ => assert_eq!(bow, 0, "{case}: raspberry without the bow"),
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_falk_with_open_wings_carries_its_accessory_outside_the_island() {
+        // The bird beside the island, wings open, upright and hanging upside
+        // down, with the bow: its head comes from the app's painter, so the
+        // raspberry bow (0xD23F6A) comes along; and no ink leaves the
+        // figure's bounds.
+        use crate::theme::{CatAccessory, FalkColor, Mascot};
+        use crate::ui::mascot::CrestPose;
+        use crate::ui::play::art::falk::{BirdPose, WingPose, bird, bird_at};
+        let mut r = renderer();
+        let k = r.scale;
+        let robot = Some(RobotFrame { expr: Expr::Idle, pose: Pose::default() });
+        let open = WingPose::SPREAD;
+        let pose = BirdPose {
+            wl: open,
+            wr: open,
+            wl_before: WingPose::mix(open, WingPose::FOLD, 0.2),
+            wr_before: open,
+            wl_front: false,
+            wr_front: true,
+            face: MascotShot {
+                dx: 0.0,
+                dy: 0.0,
+                rot_deg: 0.0,
+                sx: 1.0,
+                sy: 1.0,
+                expr: Expr::Idle,
+                crest: CrestPose { rot_deg: 10.0, scale: 1.0 },
+                glance: (0.0, 0.0),
+                blink: false,
+                beak_open: false,
+                bare_octopus: false,
+                flush: 0.0,
+                alpha: 1.0,
+            },
+            tail_rot: 0.0,
+            tail_spread: 0.0,
+            tuck: false,
+        };
+        for style in [Style::Notch, Style::Pill] {
+            for (color, rot) in [(FalkColor::Lutino, 0.0), (FalkColor::Grey, 180.0), (FalkColor::WhiteFace, 30.0)] {
+                let s = shape(style, 190.0, 34.0);
+                let dip = (crate::ui::geometry::WINDOW_W, s.y + s.h + 110.0);
+                let paint = |r: &mut Renderer, accessory: CatAccessory, falk: bool| {
+                    let look = CatLook { mascot: Mascot::Falk, falk: color, accessory, ..CatLook::default() };
+                    r.cat.set(look);
+                    let fig = bird_at((s.x + s.w + 60.0, s.y + s.h + 55.0), rot, 1.0, 1.0, vec![bird(&pose, color)]);
+                    let b = fig.bounds();
+                    let parts = if falk { vec![Part { layer: Layer::Back, draw: fig, alpha: 1.0 }] } else { Vec::new() };
+                    let play = PlayFrame { parts, ..play_frame(0.0) };
+                    let px = with_frame_all(Some(play), None, robot, 1.0, |frame| {
+                        painted(r, dip, |r| r.paint_island(style, s, frame).unwrap())
+                    });
+                    (px, b)
+                };
+                let case = format!("{style:?} {color:?} {rot}");
+                for accessory in [CatAccessory::Bow, CatAccessory::None] {
+                    let ((with, b), (without, _)) = (paint(&mut r, accessory, true), paint(&mut r, accessory, false));
+                    let (mut bow, mut ink) = (0, 0);
+                    for y in 0..with.h {
+                        for x in 0..with.w {
+                            let p = pixel(&with, (x, y));
+                            if p == pixel(&without, (x, y)) {
+                                continue;
+                            }
+                            ink += 1;
+                            let (dx, dy) = ((x as f32 + 0.5) / k, (y as f32 + 0.5) / k);
+                            let off = dx < b.x - 0.5 || dx > b.x + b.w + 0.5 || dy < b.y - 0.5 || dy > b.y + b.h + 0.5;
+                            assert!(!off, "{case} {accessory:?}: ink at ({dx}, {dy}) outside {b:?}");
+                            let [blue, green, red, alpha] = p;
+                            if alpha > 240 && red > 180 && green < 100 && (70..140).contains(&blue) {
+                                bow += 1;
+                            }
+                        }
+                    }
+                    assert!(ink > 1000, "{case}: the falk drew too little ({ink} px)");
+                    // The falk's bow is small at the slot's size: 10 px at 1x.
+                    match accessory {
+                        CatAccessory::Bow => assert!(bow > 5, "{case}: the bow did not come along ({bow} px)"),
+                        _ => assert_eq!(bow, 0, "{case}: raspberry without the bow"),
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_stories_digit_table_is_within_its_slack_of_the_clock() {
+        use crate::ui::play::stories::{DIGIT_X, NEAR_SLACK};
+        // A story aims at a clock character by `DIGIT_X` from the clock box's
+        // centre; DirectWrite places it. Both typefaces, every time and both
+        // box widths: the table is no further off than the bounds allow
+        // (`NEAR_SLACK`). It cannot be within a pixel of both: DM Sans puts
+        // the characters at -15.6, -6.4, 0, 6.4, 15.6 and JetBrains Mono at
+        // -17.4, -8.7, 0, 8.7, 17.4, so a carried digit is placed from its
+        // home (`Draw::Digit`'s `home`), not from the table.
+        let mut r = renderer();
+        for ui in [UiFont::Sans, UiFont::Mono] {
+            r.set_ui_font(ui).unwrap();
+            for scale in [1.0, 1.5, 2.0] {
+                r.scale = scale;
+                for time in TIMES {
+                    for w in [44.0, 61.0] {
+                        let area = clock_area(w);
+                        let wide: Vec<u16> = time.encode_utf16().collect();
+                        let line = r.layout(&wide, &r.fonts.clock, area.w, area.h).unwrap();
+                        for (i, want) in DIGIT_X.iter().enumerate() {
+                            let (_, _, c) = r.clock_char(&line, &wide, i, area, None).unwrap();
+                            let (dx, dy) = (c.0 - (area.x + area.w / 2.0) - want, c.1 - (area.y + area.h / 2.0));
+                            assert!(dx.abs() <= NEAR_SLACK && dy.abs() <= NEAR_SLACK, "{ui:?} x{scale} {time} in {w}, character {i}: off by ({dx}, {dy})");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_carried_digit_starts_where_the_clock_draws_it() {
+        use crate::ui::play::stories::DIGIT_X;
+        // A story reckons a character's home by `DIGIT_X`, off DirectWrite's
+        // by up to 1.8 dip; a digit it carries is placed from where the clock
+        // really draws it, so at its reckoned home it covers the clock's own
+        // character exactly, in either typeface, at any scale.
+        let mut r = renderer();
+        let area = clock_area(44.0);
+        let placing = Placing { clock: Some((area, "14:32")), pose: None };
+        for ui in [UiFont::Sans, UiFont::Mono] {
+            r.set_ui_font(ui).unwrap();
+            for scale in [1.0, 1.5, 2.0] {
+                r.scale = scale;
+                for (i, x) in DIGIT_X.iter().enumerate() {
+                    let home = (area.x + area.w / 2.0 + x, area.y + area.h / 2.0);
+                    for (dx, dy) in [(0.0, 0.0), (-6.0, 6.0)] {
+                        let own = only(&mut r, i, DigitFx { dx, dy, ..DigitFx::IDENTITY });
+                        let part = Draw::Digit { index: i, at: (home.0 + dx, home.1 + dy), rot_deg: 0.0, home };
+                        let prop = painted(&mut r, CLOCK_BOX, |r| r.paint_draw(&part, 1.0, 1.0, &placing));
+                        let (((ox, oy), _), ((px, py), ink)) = (own.centre(), prop.centre());
+                        assert!(ink > 50.0, "{ui:?} x{scale} {i}: the prop drew nothing");
+                        let k = r.scale;
+                        assert!((ox - px).abs() < 0.6 * k && (oy - py).abs() < 0.6 * k, "{ui:?} x{scale} {i} ({dx}, {dy}): {ox},{oy} vs {px},{py}");
+                    }
+                }
+            }
         }
     }
 
@@ -5593,12 +6944,12 @@ mod tests {
         let area = clock_area(44.0);
         let wide: Vec<u16> = "14:32".encode_utf16().collect();
         let line = r.layout(&wide, &r.fonts.clock, area.w, area.h).unwrap();
-        let (_, _, c) = r.clock_char(&line, &wide, 4, area).unwrap();
+        let (_, _, c) = r.clock_char(&line, &wide, 4, area, None).unwrap();
+        let placing = Placing { clock: Some((area, "14:32")), pose: None };
         for (dx, dy) in [(0.0, 0.0), (-20.0, 6.0)] {
             let moved = only(&mut r, 4, DigitFx { dx, dy, ..DigitFx::IDENTITY });
-            let prop = painted(&mut r, CLOCK_BOX, |r| {
-                r.paint_digit_prop("14:32", area, 4, (c.0 + dx, c.1 + dy), 0.0, 1.0)
-            });
+            let part = Draw::Digit { index: 4, at: (c.0 + dx, c.1 + dy), rot_deg: 0.0, home: c };
+            let prop = painted(&mut r, CLOCK_BOX, |r| r.paint_draw(&part, 1.0, 1.0, &placing));
             let ((mx, my), _) = moved.centre();
             let ((px, py), ink) = prop.centre();
             assert!(ink > 100.0, "the prop drew nothing");

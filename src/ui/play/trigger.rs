@@ -78,7 +78,7 @@ impl Story {
     }
 }
 
-const ALL: [Story; 10] = [
+pub(crate) const ALL: [Story; 10] = [
     Story::PetakUmpet,
     Story::BantalAngka,
     Story::PianoEkor,
@@ -108,6 +108,7 @@ fn playable(story: Story, mascot: Mascot, clock_on: bool) -> bool {
 
 /// Every story the mascot owns, ready or not, without the clock ones when
 /// the clock is off.
+#[cfg(test)]
 fn owned(mascot: Mascot, clock_on: bool) -> Vec<Story> {
     ALL.into_iter().filter(|s| owns(*s, mascot, clock_on)).collect()
 }
@@ -206,6 +207,18 @@ mod tests {
     }
 
     #[test]
+    fn with_the_clock_off_every_mascot_keeps_two_stories() {
+        // The real pool, ready stories only: the four clock stories drop out
+        // and each mascot still has two to choose between.
+        for m in [Mascot::Cat, Mascot::Falk, Mascot::Octopus] {
+            let pool = pool(m, false);
+            assert!(pool.len() >= 2, "{m:?}: {pool:?}");
+            assert!(pool.iter().all(|s| !s.needs_clock()), "{m:?}: {pool:?}");
+            assert!(has_ready(m, false), "{m:?}");
+        }
+    }
+
+    #[test]
     fn only_ready_stories_are_in_the_pool() {
         for m in [Mascot::Cat, Mascot::Falk, Mascot::Octopus] {
             for clock_on in [true, false] {
@@ -213,11 +226,16 @@ mod tests {
                 assert_eq!(pool(m, clock_on), want, "{m:?} clock_on={clock_on}");
             }
         }
-        // Part 1 ships the falk's Maling angka alone.
-        assert_eq!(pool(Mascot::Falk, true), vec![Story::MalingAngka]);
-        assert!(pool(Mascot::Falk, false).is_empty(), "Maling angka needs the clock");
-        assert!(pool(Mascot::Cat, true).is_empty(), "no cat story yet");
-        assert!(pool(Mascot::Octopus, true).is_empty(), "no octopus story yet");
+        // Derived, no per-mascot lists (P27): every story is ready, so the
+        // pool is all the mascot owns, never empty and never a clock story
+        // with the clock off.
+        for m in [Mascot::Cat, Mascot::Falk, Mascot::Octopus] {
+            for clock_on in [true, false] {
+                assert_eq!(pool(m, clock_on), owned(m, clock_on), "{m:?} clock_on={clock_on}");
+                assert!(!pool(m, clock_on).is_empty(), "{m:?} clock_on={clock_on}");
+            }
+            assert!(pool(m, false).iter().all(|s| !s.needs_clock()), "{m:?}");
+        }
     }
 
     #[test]
@@ -234,7 +252,7 @@ mod tests {
     fn a_one_story_pool_plays_its_story_again() {
         for moment in [Moment::Idle, Moment::Hour, Moment::Greeting, Moment::Manual] {
             for roll in 0..20 {
-                let s = pick(Mascot::Falk, true, Some(Story::MalingAngka), moment, roll);
+                let s = pick_from(&[Story::MalingAngka], Mascot::Falk, Some(Story::MalingAngka), moment, roll);
                 assert_eq!(s, Story::MalingAngka, "{moment:?} roll={roll}");
             }
         }
