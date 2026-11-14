@@ -14,7 +14,7 @@ use crate::config::Style;
 use crate::ui::geometry::{ROBOT_COMPACT, corner_radius};
 use crate::ui::play::art::cat::{CAT_SC, slim_tail, small_paw, tail};
 use crate::ui::play::art::tube::{along, catmull_rom, curl, plen};
-use crate::ui::play::shape::{Deform, lip_dent};
+use crate::ui::play::shape::{Deform, lip_dent, rigid};
 use crate::ui::play::trigger::Story;
 use crate::ui::robot::{Expr, GRID};
 
@@ -64,15 +64,15 @@ fn figure(layer: Layer, items: Vec<Draw>, alpha: f32) -> Part {
 pub fn shot(stage: &Stage) -> Shot {
     let Stage { style, shape: s, beat, look, .. } = *stage;
     let a = beat.alpha.clamp(0.0, 1.0);
+    let t = beat.cut_at.map_or(beat.t, |c| beat.t.min(c));
     let mut out = Shot::rest(style, s);
-    if beat.t <= 0.0 || beat.t >= Story::PetakUmpet.secs() || a == 0.0 {
+    if t <= 0.0 || t >= Story::PetakUmpet.secs() || a == 0.0 {
         return out;
     }
     // The slot where the renderer puts it (the clock on or off moves it).
     let Some(slot) = stage.room().robot else {
         return out;
     };
-    let t = beat.cut_at.map_or(beat.t, |c| beat.t.min(c));
     let play = ((a - 0.5) * 2.0).clamp(0.0, 1.0);
     let k = slot.w / GRID;
     let (slot_x, slot_y) = (slot.x + slot.w / 2.0, slot.y + HEAD_PIVOT.1 * k);
@@ -119,7 +119,8 @@ pub fn shot(stage: &Stage) -> Shot {
             dents.push(lip_dent(style, s, lerp(x0, x1, ease.at(u)), 9.0, depth * play));
         }
     }
-    let wiggle = if (4.62..5.0).contains(&t) { 0.8 * (TAU * 14.0 * t).sin() } else { 0.0 };
+    // The wiggle grows over its first 40 ms, so it starts from still.
+    let wiggle = if (4.62..5.0).contains(&t) { 0.8 * ((t - 4.62) / 0.04).min(1.0) * (TAU * 14.0 * t).sin() } else { 0.0 };
     let rock = if t < 5.05 {
         0.0
     } else if t < 5.28 {
@@ -136,8 +137,11 @@ pub fn shot(stage: &Stage) -> Shot {
 
     // The peeks round the ends: the head is cut to outside the island (what
     // is behind it is clipped away, not covered); its paw grips the rim just
-    // below the chin, in front.
+    // below the chin, in front, moving and turning with the island.
     let unit = CAT_SC * ROBOT_COMPACT / GRID;
+    let m = rigid(style, s, &out.deform);
+    let on_island = |(x, y): (f32, f32)| (x * m.M11 + y * m.M21 + m.M31 + out.deform.jolt, x * m.M12 + y * m.M22 + m.M32);
+    let turn = m.M12.atan2(m.M11).to_degrees();
     let mid = s.y + s.h / 2.0;
     let end = |d: f32| s.x + s.w + d;
     let peek_x = |side: f32, k: f32| s.x + s.w / 2.0 + side * lerp(s.w / 2.0 - 14.0, s.w / 2.0 + 4.0, k);
@@ -154,8 +158,8 @@ pub fn shot(stage: &Stage) -> Shot {
         let grip = ((k - 0.4) / 0.6).clamp(0.0, 1.0);
         if grip > 0.02 {
             let draw = Draw::Group {
-                at: rim_pt(style, s, side, 0.73, 0.4),
-                rot_deg: side * 70.0,
+                at: on_island(rim_pt(style, s, side, 0.73, 0.4)),
+                rot_deg: side * 70.0 + turn,
                 scale: (grip * unit, grip * unit),
                 pivot: (0.0, 0.0),
                 items: vec![small_paw(look)],
@@ -311,9 +315,22 @@ mod tests {
                 let q = apply(rigid(Style::Pill, p, &pill), mid);
                 assert!((q.0 - mid.0).abs() < 1e-3 && (q.1 - mid.1 - pill.shift.1).abs() < 1e-3, "{case}: {q:?}");
             }
-            // The floating pill is knocked off its height too, a little.
+            // The pounce tips it left first (the mockup's -2.4 degrees), and
+            // knocks the floating pill down off its height a little.
+            for style in [Style::Notch, Style::Pill] {
+                let rock = at(style, w, h, 5.25, 1.0).deform.swing_deg;
+                assert!(rock < -2.0, "{style:?} {w}x{h}: {rock}");
+            }
             let dy = at(Style::Pill, w, h, 5.45, 1.0).deform.shift.1;
-            assert!(dy.abs() > 0.5 && dy.abs() < 2.0, "{w}x{h}: {dy}");
+            assert!(dy > 0.5 && dy < 2.0, "{w}x{h}: {dy}");
+            // The wiggle starts from still, not with a step.
+            for style in [Style::Notch, Style::Pill] {
+                let jolt = |t: f32| at(style, w, h, t, 1.0).deform.jolt;
+                assert_eq!(jolt(4.619), 0.0, "{style:?} {w}x{h}");
+                assert!(jolt(4.621).abs() < 0.05, "{style:?} {w}x{h}: {}", jolt(4.621));
+                let full = (0..40).map(|i| jolt(4.7 + i as f32 * 0.002).abs()).fold(0.0, f32::max);
+                assert!(full > 0.75, "{style:?} {w}x{h}: {full}");
+            }
             // Still before the pounce, the island only shakes.
             for style in [Style::Notch, Style::Pill] {
                 let d = at(style, w, h, 4.9, 1.0).deform;
@@ -356,21 +373,30 @@ mod tests {
 
     #[test]
     fn its_paw_grips_the_rim_in_front_while_it_peeks() {
+        // On the island as it moves: shaken by the wiggle, rocked and (the
+        // Pill) lifted by the pounce, the paw stays on its rim, turned with it.
+        let times = [(2.0, -1.0), (3.4, 1.0), (4.6, -1.0), (4.7, -1.0), (4.85, -1.0), (4.95, -1.0), (5.4, 1.0), (5.45, 1.0), (5.5, 1.0), (5.6, 1.0), (5.7, 1.0), (5.8, 1.0), (6.0, 1.0)];
         for style in [Style::Notch, Style::Pill] {
             for (w, h) in SIZES {
                 let s = shape(style, w, h);
-                let edge: Vec<_> = (0..=2000).map(|i| rim(style, s, i as f32 / 2000.0)).collect();
-                for (t, side) in [(2.0, -1.0), (3.4, 1.0), (4.6, -1.0), (6.0, 1.0)] {
+                for (t, side) in times {
                     let case = format!("{style:?} {w}x{h} t={t}");
                     let shot = at(style, w, h, t, 1.0);
+                    let m = rigid(style, s, &shot.deform);
+                    let jolt = shot.deform.jolt;
+                    let moved = |x: f32, y: f32| (x * m.M11 + y * m.M21 + m.M31 + jolt, x * m.M12 + y * m.M22 + m.M32);
+                    let edge: Vec<_> = (0..=2000).map(|i| rim(style, s, i as f32 / 2000.0)).map(|p| moved(p.x, p.y)).collect();
                     let paws: Vec<_> = shot.parts.iter().filter(|p| p.layer == Layer::Front).collect();
                     assert_eq!(paws.len(), 1, "{case}");
-                    let Draw::Group { at: g, .. } = paws[0].draw else { panic!("{case}: {:?}", paws[0].draw) };
-                    // Just outside the edge, low on its end's corner.
-                    let d = edge.iter().map(|e| (e.x - g.0).hypot(e.y - g.1)).fold(f32::MAX, f32::min);
+                    let Draw::Group { at: g, rot_deg, .. } = paws[0].draw else { panic!("{case}: {:?}", paws[0].draw) };
+                    // Just outside the moved edge, low on its end's corner.
+                    let d = edge.iter().map(|e| (e.0 - g.0).hypot(e.1 - g.1)).fold(f32::MAX, f32::min);
                     assert!((d - 0.4).abs() < 0.2, "{case}: {d} off the edge");
-                    assert!(g.1 > s.y + s.h / 2.0, "{case}: {g:?}");
-                    let end = if side < 0.0 { g.0 < s.x + s.h / 2.0 } else { g.0 > s.x + s.w - s.h / 2.0 };
+                    let turn = m.M12.atan2(m.M11).to_degrees();
+                    assert!((rot_deg - (side * 70.0 + turn)).abs() < 1e-3, "{case}: turned {rot_deg}, the island {turn}");
+                    let (lx, ly) = { let i = m; let (x, y) = (g.0 - jolt - i.M31, g.1 - i.M32); (x * i.M11 + y * i.M12, -x * i.M12 + y * i.M11) };
+                    assert!(ly > s.y + s.h / 2.0, "{case}: {g:?}");
+                    let end = if side < 0.0 { lx < s.x + s.h / 2.0 } else { lx > s.x + s.w - s.h / 2.0 };
                     assert!(end, "{case}: {g:?}");
                 }
                 // None while the cat hides.
@@ -494,6 +520,50 @@ mod tests {
                     let rest = shot(&stage(style, w, h, Beat { spread: 0.0, alpha: 0.0, t: 2.0, cut_at: Some(2.0) }, clock));
                     assert_eq!(rest, Shot::rest(style, s), "{case}");
                 }
+            }
+        }
+    }
+
+    /// Every 60 Hz frame of a real wind-down cut at `cut_s` seconds.
+    fn wind_down(style: Style, cut_s: f32) -> Vec<(f32, Beat, Shot)> {
+        let t0 = Instant::now();
+        let mut play = Play::start(Story::PetakUmpet, t0);
+        let cut = t0 + Duration::from_secs_f32(cut_s);
+        play.end(cut);
+        let mut out = Vec::new();
+        let mut ms = 0.0;
+        while ms <= 220.0 {
+            let beat = play.beat(cut + Duration::from_secs_f32(ms / 1000.0));
+            out.push((ms, beat, shot(&stage(style, 190.0, 34.0, beat, true))));
+            ms += 1000.0 / 60.0;
+        }
+        out
+    }
+
+    #[test]
+    fn a_cut_just_before_the_wiggle_or_the_pounce_never_starts_it() {
+        for style in [Style::Notch, Style::Pill] {
+            for (ms, beat, shot) in wind_down(style, 4.55) {
+                assert_eq!(shot.deform.jolt, 0.0, "{style:?} +{ms} ms (t={})", beat.t);
+            }
+            for (ms, beat, shot) in wind_down(style, 4.95) {
+                let d = &shot.deform;
+                assert!(d.swing_deg == 0.0 && d.shift == (0.0, 0.0) && d.dents.is_empty(), "{style:?} +{ms} ms (t={}): {d:?}", beat.t);
+            }
+        }
+    }
+
+    #[test]
+    fn a_cut_near_the_end_eases_home_without_snapping_to_rest() {
+        // Cut at 7.65 s the wind-down runs past the story's 7.8 s: the slot
+        // head keeps its happy, blinking face to the last frame before rest.
+        for (ms, beat, shot) in wind_down(Style::Notch, 7.65) {
+            if beat.alpha == 0.0 {
+                continue;
+            }
+            match shot.slot {
+                Slot::Story(m) => assert!(m.expr == Expr::Happy && m.blink, "+{ms} ms (t={}): {m:?}", beat.t),
+                other => panic!("+{ms} ms (t={}, alpha {}): {other:?}", beat.t, beat.alpha),
             }
         }
     }

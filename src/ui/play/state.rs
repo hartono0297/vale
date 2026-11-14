@@ -79,6 +79,18 @@ impl Play {
     }
 }
 
+/// How far a wind-down has come in time, 0 at the cut to 1 at rest, read back
+/// from the `alpha` it gives (the inverse of its ease). Alpha crosses its
+/// middle in a few ms; a fade that must last some frames is paced by this.
+pub fn wind_progress(alpha: f32) -> f32 {
+    let e = (1.0 - alpha).clamp(0.0, 1.0);
+    if e < 0.5 {
+        (e / 4.0).cbrt()
+    } else {
+        1.0 - (2.0 * (1.0 - e)).cbrt() / 2.0
+    }
+}
+
 /// `layout` with the mascot eased toward the island's left end and the clock
 /// toward its right end by `spread` (0 leaves it untouched). A clock that
 /// filled the island shrinks to its own width on the way.
@@ -205,6 +217,20 @@ mod tests {
         let secs = Story::SyalEkor.secs();
         let late = q.beat(t0 + Duration::from_secs_f32(secs + 0.1));
         assert!((late.cut_at.unwrap() - secs).abs() < 1e-4, "{:?}", late.cut_at);
+    }
+
+    #[test]
+    fn wind_progress_reads_the_wind_downs_time_back_from_its_alpha() {
+        // Alpha eases; the time behind it runs evenly, 0 at the cut, 1 at rest.
+        let t0 = Instant::now();
+        let mut p = Play::start(Story::SyalEkor, t0);
+        p.end(t0 + MS(1000));
+        for ms in 0..=200 {
+            let a = p.beat(t0 + MS(1000 + ms)).alpha;
+            let w = wind_progress(a);
+            assert!((w - ms as f32 / 200.0).abs() < 2e-3, "{ms} ms: alpha {a} read back as {w}");
+        }
+        assert_eq!((wind_progress(1.0), wind_progress(0.0)), (0.0, 1.0));
     }
 
     #[test]

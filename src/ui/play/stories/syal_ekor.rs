@@ -13,6 +13,7 @@ use crate::ui::geometry::{ROBOT_COMPACT, ShapeRect, corner_radius};
 use crate::ui::play::art::cat::{CAT_SC, CatPose, Paw, SEAT, cat_at, tail};
 use crate::ui::play::art::tube::{LimbStyle, Stripes, along, catmull_rom, curl, plen};
 use crate::ui::play::shape::{Deform, lip_dent};
+use crate::ui::play::state::wind_progress;
 use crate::ui::play::trigger::Story;
 use crate::ui::robot::{Expr, GRID};
 
@@ -22,6 +23,8 @@ use Ease::{Io, Lin, O, Sio};
 /// faded in over it, has taken over by `SHOWN` (its hop starts at 0.46).
 const DUCKED: f32 = 0.35;
 const SHOWN: f32 = 0.45;
+/// The crouched cat holds still until its hop's squash begins here.
+const STILL: f32 = 0.46;
 /// The cat, crouched again (its hop back ends at 8.0), fades out over the
 /// slot head from `LEAVING`; the slot head is alone by `LEFT` and rises home
 /// by the end.
@@ -122,7 +125,9 @@ fn scarf_width(s: f32) -> f32 {
 /// and with `alpha` 0.
 pub fn shot(stage: &Stage) -> Shot {
     let Stage { style, shape: s, beat, look, .. } = *stage;
-    let (t, a) = (beat.t, beat.alpha.clamp(0.0, 1.0));
+    // Cut short, the story holds where the cut found it and eases home from
+    // there, so nothing it had not brought out shows.
+    let (t, a) = (beat.cut_at.map_or(beat.t, |c| beat.t.min(c)), beat.alpha.clamp(0.0, 1.0));
     let mut out = Shot::rest(style, s);
     let secs = Story::SyalEkor.secs();
     if t <= 0.0 || t >= secs || a == 0.0 {
@@ -141,16 +146,19 @@ pub fn shot(stage: &Stage) -> Shot {
     // size, so the hand-over shows nothing.
     let crouch_y = bottom - (SEAT.1 - HEAD_PIVOT.1 - CROUCH_DROP) * CROUCH * unit;
     let crouch_k = CROUCH * unit / k;
-    let duck = kf(t, &[(0.0, 0.0, Lin), (DUCKED, 1.0, Sio), (LEFT, 1.0, Lin), (secs, 0.0, Sio)]) * (2.0 * a).min(1.0);
-    // Never brought out inside a wind-down: cut before the hand-over, the
-    // slot head goes home alone, however far the story's time runs on.
-    let seen = beat.cut_at.map_or(t, |c| c.min(t));
-    let show = if a < 1.0 && seen < SHOWN {
-        0.0
+    // Cut while the cat still crouches over the slot head, fading in, it
+    // fades out from what it showed over the first 0.6 of the wind-down's
+    // time and the slot head rises after it: paced by alpha, that fade would
+    // fall in one frame.
+    let (fade, home) = if t < STILL {
+        let w = wind_progress(a);
+        ((1.0 - w / 0.6).clamp(0.0, 1.0), ((1.0 - w) / 0.4).clamp(0.0, 1.0))
     } else {
-        kf(t, &[(DUCKED, 0.0, Lin), (SHOWN, 1.0, Lin), (LEAVING, 1.0, Lin), (LEFT, 0.0, Lin)])
-            * ((a - 0.5) * 4.0).clamp(0.0, 1.0)
+        (((a - 0.5) * 4.0).clamp(0.0, 1.0), (2.0 * a).min(1.0))
     };
+    let duck = kf(t, &[(0.0, 0.0, Lin), (DUCKED, 1.0, Sio), (LEFT, 1.0, Lin), (secs, 0.0, Sio)]) * home;
+    let show = kf(t, &[(DUCKED, 0.0, Lin), (SHOWN, 1.0, Lin), (LEAVING, 1.0, Lin), (LEFT, 0.0, Lin)])
+        * fade;
     out.halo = 1.0 - show;
     out.slot = if show < 1.0 {
         Slot::Story(MascotShot {
@@ -555,37 +563,60 @@ mod tests {
         assert_eq!(Shot::rest(Style::Pill, shape(Style::Pill, 190.0, 34.0)).halo, 1.0);
     }
 
+    /// Every frame of a real wind-down cut at `cut_s` seconds, at 60 Hz with
+    /// the frames `phase_ms` after the cut: (ms into it, stage, shot).
+    fn wind_down(cut_s: f32, phase_ms: f32) -> Vec<(f32, Stage, Shot)> {
+        use crate::ui::play::state::Play;
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let mut play = Play::start(Story::SyalEkor, t0);
+        let cut = t0 + Duration::from_secs_f32(cut_s);
+        play.end(cut);
+        let mut out = Vec::new();
+        let mut ms = phase_ms;
+        while ms <= 220.0 {
+            let beat = play.beat(cut + Duration::from_secs_f32(ms / 1000.0));
+            let st = stage(Style::Notch, 190.0, 34.0, beat, true);
+            out.push((ms, st, shot(&st)));
+            ms += 1000.0 / 60.0;
+        }
+        out
+    }
+
     #[test]
-    fn a_cut_before_the_hand_over_never_brings_the_cat_out() {
-        // Wound down before the figure has taken over, the slot head goes
-        // home alone: no ghost of the crouched body.
-        for t in [0.2, 0.3, 0.36, 0.4, 0.44] {
-            for a in [0.99, 0.8, 0.6] {
-                let shot = at(Style::Notch, 190.0, 34.0, t, a);
-                assert!(shot.parts.is_empty(), "t={t} alpha={a}: {:?}", shot.parts.len());
-                assert!(matches!(shot.slot, Slot::Story(_)), "t={t} alpha={a}");
+    fn a_cut_before_the_slot_head_has_ducked_never_brings_the_cat_out() {
+        // The figure had not begun to show: the slot head goes home alone.
+        for cut_s in [0.2, 0.3, 0.34] {
+            for (ms, _, shot) in wind_down(cut_s, 0.0) {
+                assert!(shot.parts.is_empty(), "cut {cut_s} +{ms} ms: {} parts", shot.parts.len());
+                assert!(matches!(shot.slot, Slot::Story(_) | Slot::App), "cut {cut_s} +{ms} ms: {:?}", shot.slot);
             }
         }
     }
 
     #[test]
-    fn a_cut_just_before_the_hand_over_never_flashes_the_cat_in_the_wind_down() {
-        // A real wind-down from a cut at 0.40 s: the story's time runs on past
-        // the hand-over (0.45 s) while alpha falls, and the figure, not shown
-        // at the cut, never shows.
-        use crate::ui::play::state::Play;
-        use std::time::{Duration, Instant};
-        let t0 = Instant::now();
-        let mut play = Play::start(Story::SyalEkor, t0);
-        let cut = t0 + Duration::from_millis(400);
-        play.end(cut);
-        let mut last = f32::INFINITY;
-        for ms in 0..=200 {
-            let beat = play.beat(cut + Duration::from_millis(ms));
-            let shot = shot(&stage(Style::Notch, 190.0, 34.0, beat, true));
-            let alpha = figure_head(&shot).map_or(0.0, |(_, _, a)| a);
-            assert!(alpha <= last, "{ms} ms into the wind-down (t={}, alpha {}): the figure at {alpha}", beat.t, beat.alpha);
-            last = alpha;
+    fn a_cut_mid_hand_over_fades_the_cat_out_frame_by_frame() {
+        // Cut while the figure fades in over the slot head, the story's time
+        // running on past the hand-over: the figure keeps what it showed at
+        // the cut and fades from there, never rising, never jumping more than
+        // 0.15 in a 60 Hz frame, its halo giving way to it, the two heads one.
+        for cut_s in [0.36, 0.40, 0.44, 0.449] {
+            for phase in 0..17 {
+                let frames = wind_down(cut_s, phase as f32);
+                let at_cut = at(Style::Notch, 190.0, 34.0, cut_s, 1.0);
+                let mut last = figure_head(&at_cut).map_or(0.0, |(_, _, a)| a);
+                for (ms, st, shot) in frames {
+                    let case = format!("cut {cut_s} +{ms:.1} ms (alpha {})", st.beat.alpha);
+                    let alpha = figure_head(&shot).map_or(0.0, |(_, _, a)| a);
+                    assert!(alpha <= last + 1e-6 && last - alpha < 0.15, "{case}: the figure from {last} to {alpha}");
+                    assert!((shot.halo - (1.0 - alpha)).abs() < 1e-5, "{case}: halo {} with the figure at {alpha}", shot.halo);
+                    if let (Some((p, k, _)), Slot::Story(m)) = (figure_head(&shot), shot.slot) {
+                        let ((q0, q1), j) = slot_head(&st, &m);
+                        assert!((p.0 - q0).abs() < 0.02 && (p.1 - q1).abs() < 0.02 && (k - j).abs() < 1e-3, "{case}: figure {p:?} slot {:?}", (q0, q1));
+                    }
+                    last = alpha;
+                }
+            }
         }
     }
 

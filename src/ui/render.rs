@@ -4103,8 +4103,7 @@ impl Renderer {
     /// join the body to the screen edge, which never swings: they sit on the
     /// edge, meet the body's sides where `d` puts them (`top_corners`, which
     /// follows a swung side), and never turn. At rest the union is the
-    /// resting island, so nothing
-    /// pops when a play starts or ends.
+    /// resting island, so nothing pops when a play starts or ends.
     fn played_path(
         &self,
         style: Style,
