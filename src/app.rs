@@ -614,6 +614,7 @@ pub fn run(media_log_flag: bool, start: Start) {
             last_play_at: None,
             mascot_timer: false,
             greeting_up: false,
+            greeting_pending: false,
             clock_hour: Local::now().hour(),
             play_clock_jumped: false,
             eq_capture: None,
@@ -1121,6 +1122,9 @@ struct App {
     mascot_timer: bool,
     /// A greeting notice was on screen at the last refresh.
     greeting_up: bool,
+    /// The next fire of `TIMER_MASCOT_PLAY` is the greeting's, set for when the
+    /// island's morph ends.
+    greeting_pending: bool,
     /// The hour the idle clock last showed (`TIMER_CLOCK`), to see it roll.
     clock_hour: u32,
     /// The wall clock jumped under a running story (`on_clock_jump`).
@@ -2392,6 +2396,10 @@ impl App {
     /// here (`pointer_near` may be stale with the pointer poll off) and, like
     /// the presence rule and the cooldown, is judged when it fires.
     fn sync_mascot_timer(&mut self, now: Instant) {
+        // The timer is the greeting's for now; its fire checks every gate.
+        if self.greeting_pending {
+            return;
+        }
         let env = self.play_env(now, false);
         let preset = self.config.mascot_play;
         let wanted = mascot_timer_wanted(&env, preset, self.play.is_some());
@@ -2423,8 +2431,45 @@ impl App {
         }
         self.mascot_timer = false;
         let now = Instant::now();
-        self.try_play(Moment::Idle, now);
+        if std::mem::take(&mut self.greeting_pending) {
+            self.greet_play(now);
+        } else {
+            self.try_play(Moment::Idle, now);
+        }
         self.sync_mascot_timer(now);
+    }
+
+    /// The greeting notice ended: its story starts once the island has
+    /// reached its idle shape. While the morph runs, `TIMER_MASCOT_PLAY` is
+    /// set for its remaining time and marked as the greeting's (no new timer).
+    /// Every gate is checked when it starts.
+    fn greet_play(&mut self, now: Instant) {
+        let left = morph_left(self.anim.running, self.anim.start, self.anim.ms, now);
+        let Some(left) = left else {
+            self.try_play(Moment::Greeting, now);
+            return;
+        };
+        let env = Env {
+            pointer_near: false,
+            ..self.play_env(now, false)
+        };
+        let could = self.play.is_none()
+            && may_start(
+                &env,
+                Moment::Greeting,
+                self.config.mascot_play,
+                Duration::ZERO,
+                since_last_play(self.last_play_at, now),
+            );
+        if !could {
+            return;
+        }
+        self.greeting_pending = true;
+        self.mascot_timer = true;
+        let ms = (left + Duration::from_millis(1)).as_millis() as u32;
+        unsafe {
+            SetTimer(Some(self.hwnd), TIMER_MASCOT_PLAY, ms, None);
+        }
     }
 
     /// Starts a story for `moment` if every gate allows it right now.
@@ -2440,7 +2485,7 @@ impl App {
             &env,
             moment,
             self.config.mascot_play,
-            presence_for(moment, idle),
+            idle,
             since_last_play(self.last_play_at, now),
         ) {
             self.start_play(moment, now);
@@ -4317,7 +4362,7 @@ impl App {
         self.sync_timers(now);
         // The greeting notice just ended: the greeting moment.
         if greeting_ended(&mut self.greeting_up, &self.state.view()) {
-            self.try_play(Moment::Greeting, now);
+            self.greet_play(now);
         }
         self.sync_lyrics_card(now);
         // The caption card's colours, font and language; nothing while
@@ -8719,14 +8764,11 @@ fn step_play(
     play.done(now)
 }
 
-/// A greeting plays right after the owner touched the PC, so the presence
-/// rule is waived for it: the time since input it is judged by.
-fn presence_for(moment: Moment, since_input: Duration) -> Duration {
-    if moment == Moment::Greeting {
-        PRESENCE_MIN
-    } else {
-        since_input
-    }
+/// How long the island's morph still has to run at `now`; `None` once it has
+/// reached its shape. A greeting play waits for that.
+fn morph_left(running: bool, start: Instant, ms: u64, now: Instant) -> Option<Duration> {
+    let end = start + Duration::from_millis(ms);
+    (running && now < end).then(|| end - now)
 }
 
 /// The time since the last story ended; a first story has no cooldown.
@@ -11732,22 +11774,17 @@ mod tests {
     }
 
     #[test]
-    fn a_greeting_play_waives_presence_and_is_blocked_by_a_notice_that_took_over() {
-        use crate::theme::MascotPlay::Sesekali;
-        use crate::ui::play::gate::may_start;
-        use crate::ui::play::testing::ok_env;
-        use crate::ui::play::trigger::Moment;
-        let (just_touched, long_ago) = (Duration::from_secs(2), Duration::from_secs(3600));
-        // The owner touched the PC a moment ago: an idle play would wait, the
-        // greeting's does not.
-        assert!(!may_start(&ok_env(), Moment::Idle, Sesekali, presence_for(Moment::Idle, just_touched), long_ago));
-        assert!(may_start(&ok_env(), Moment::Greeting, Sesekali, presence_for(Moment::Greeting, just_touched), long_ago));
-        assert_eq!(presence_for(Moment::Hour, just_touched), just_touched);
-        // Every other gate still binds it, a notice that replaced the greeting included.
-        let notice_up = crate::ui::play::gate::Env { idle_view: false, ..ok_env() };
-        assert!(!may_start(&notice_up, Moment::Greeting, Sesekali, presence_for(Moment::Greeting, just_touched), long_ago));
-        // And the cooldown still binds it.
-        assert!(!may_start(&ok_env(), Moment::Greeting, Sesekali, presence_for(Moment::Greeting, just_touched), Duration::from_secs(60)));
+    fn a_greeting_play_waits_for_the_morph_and_starts_once_the_island_is_idle() {
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        // The notice just ended: a 400 ms morph back to the idle shape starts.
+        assert_eq!(morph_left(true, t0, 400, t0), Some(ms(400)));
+        assert_eq!(morph_left(true, t0, 400, t0 + ms(150)), Some(ms(250)));
+        assert_eq!(morph_left(true, t0, 400, t0 + ms(399)), Some(ms(1)));
+        // Reached its shape: at the end of the morph, or with none running.
+        assert_eq!(morph_left(true, t0, 400, t0 + ms(400)), None);
+        assert_eq!(morph_left(false, t0, 400, t0), None);
+        assert_eq!(morph_left(false, t0, 400, t0 + ms(100)), None);
     }
 
     #[test]
