@@ -1,5 +1,6 @@
 //! Animations the mascot plays around the closed island.
 
+pub mod art;
 // Used by the animations the next tasks add.
 #[cfg_attr(not(test), allow(dead_code))]
 pub mod gate;
