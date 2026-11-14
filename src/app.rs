@@ -8809,7 +8809,7 @@ fn open_note_card_menu(hwnd: HWND, id: &str) {
         return;
     };
     MENU_OPEN.set(true);
-    let chosen = tray::note_card_menu(hwnd, label);
+    let chosen = hold_panel_over_app(|| tray::note_card_menu(hwnd, label));
     MENU_OPEN.set(false);
     // The same path as a click on the card's icon, so the panel redraws.
     if chosen {
@@ -8929,6 +8929,28 @@ fn open_transcript_redo_menu(audio: PathBuf, rows: Vec<crate::ui::menu_pop::Row>
     );
 }
 
+/// Runs a native popup menu (`body`) with the open panel held, as the
+/// dropdowns do: the pointer goes down to the menu, off the island, and the
+/// panel must not close under it. `notify` takes `MenuOpen(true)` before the
+/// menu and `MenuOpen(false)` after it.
+fn hold_panel_over<R>(notify: &mut dyn FnMut(Event), body: impl FnOnce() -> R) -> R {
+    notify(Event::MenuOpen(true));
+    let result = body();
+    notify(Event::MenuOpen(false));
+    result
+}
+
+/// `hold_panel_over` on the app: not while `App` is borrowed further up (the
+/// panel then just is not held).
+fn hold_panel_over_app<R>(body: impl FnOnce() -> R) -> R {
+    hold_panel_over(
+        &mut |event| {
+            with_app(|app| app.apply_now(event));
+        },
+        body,
+    )
+}
+
 /// Shows the tray menu and runs the choice. The menu's modal loop dispatches
 /// timer and mouse messages to `wnd_proc`, so no `APP` borrow is held across it.
 fn open_menu(hwnd: HWND) {
@@ -8949,7 +8971,7 @@ fn open_menu(hwnd: HWND) {
     // Listed now, outside the app borrow, so the Monitor submenu shows the
     // screens as they are.
     let displays = arrange_win::displays();
-    let cmd = tray::show_menu(hwnd, &config, update.as_deref(), &displays);
+    let cmd = hold_panel_over_app(|| tray::show_menu(hwnd, &config, update.as_deref(), &displays));
     MENU_OPEN.set(false);
     let cmd = match cmd {
         Some(MenuChoice::Cmd(cmd)) => Some(cmd),
@@ -9947,6 +9969,36 @@ unsafe extern "system" fn wnd_proc(
 mod tests {
     use super::*;
     use crate::ui::geometry::{LYRIC_RESIZE_MS, lyric_shape, lyric_width};
+
+    #[test]
+    fn a_native_menu_holds_the_open_panel_while_it_is_up() {
+        use crate::config::OpenMode;
+        use std::cell::RefCell;
+        let t0 = Instant::now();
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 14).unwrap();
+        for m in [OpenMode::Hover, OpenMode::HoverStay] {
+            let s = RefCell::new(IslandState::new(today, Default::default()));
+            s.borrow_mut().apply(Event::OpenMode(m), t0);
+            s.borrow_mut().apply(Event::Hover(true), t0);
+            let at = |p: Page| Page::ALL.iter().position(|q| *q == p).unwrap() as i32;
+            let shelf = at(Page::Shelf) - at(s.borrow().page());
+            s.borrow_mut().apply(Event::Wheel(-120 * shelf), t0);
+            assert_eq!(s.borrow().view(), View::Panel(Page::Shelf), "{m:?}");
+            hold_panel_over(
+                &mut |e| {
+                    s.borrow_mut().apply(e, t0);
+                },
+                || {
+                    // The menu took the pointer off the island for a long time.
+                    s.borrow_mut().apply(Event::Hover(false), t0);
+                    s.borrow_mut().apply(Event::Tick, t0 + Duration::from_secs(30));
+                    assert_eq!(s.borrow().view(), View::Panel(Page::Shelf), "{m:?}");
+                },
+            );
+            // The menu went: the panel lingers a moment, then closes as usual.
+            assert_eq!(s.borrow().view(), View::Panel(Page::Shelf), "{m:?}");
+        }
+    }
 
     #[test]
     fn eq_key_keeps_progress_for_the_compact_view_only() {
