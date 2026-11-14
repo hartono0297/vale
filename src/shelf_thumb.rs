@@ -107,6 +107,14 @@ mod tests {
         assert_eq!((thumb.w, thumb.h), (192, 144));
         assert_eq!(thumb.bgra.len(), 192 * 144 * 4);
         assert!(thumb.bgra.chunks_exact(4).all(|p| p[3] == 255));
+        // Channel order and orientation: the gradient is B = y, G = x, R = 255 - x,
+        // top-down, so the top-left is red and the bottom-right is blue-green.
+        let near = |got: u8, want: u8| got.abs_diff(want) <= 4;
+        let px = |x: usize, y: usize| &thumb.bgra[(y * 192 + x) * 4..][..3];
+        let tl = px(0, 0);
+        assert!(near(tl[0], 0) && near(tl[1], 0) && near(tl[2], 255), "{tl:?}");
+        let br = px(191, 143);
+        assert!(near(br[0], 255) && near(br[1], 255) && near(br[2], 0), "{br:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
