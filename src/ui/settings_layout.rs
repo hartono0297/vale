@@ -8546,7 +8546,9 @@ mod tests {
                 let enabled = l.controls.iter().any(|c| {
                     matches!(c, Control::Segmented { group: Group::MascotPlay, enabled: true, .. })
                 });
-                let ready = mascot != Mascot::Octopus;
+                // Every mascot has a ready story now (the octopus's needs
+                // the clock; the row asks with it on).
+                let ready = true;
                 assert_eq!(enabled, ready, "{lang:?} {mascot:?}");
                 let key = if ready { Key::MascotPlayDesc } else { Key::MascotPlayComing };
                 assert_eq!(desc, text(lang, key), "{lang:?} {mascot:?}");
