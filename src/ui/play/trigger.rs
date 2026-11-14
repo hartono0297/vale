@@ -108,6 +108,7 @@ fn playable(story: Story, mascot: Mascot, clock_on: bool) -> bool {
 
 /// Every story the mascot owns, ready or not, without the clock ones when
 /// the clock is off.
+#[cfg(test)]
 fn owned(mascot: Mascot, clock_on: bool) -> Vec<Story> {
     ALL.into_iter().filter(|s| owns(*s, mascot, clock_on)).collect()
 }

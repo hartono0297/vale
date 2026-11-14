@@ -144,8 +144,6 @@ pub enum Slot {
 /// Where a part is painted, as the mockup's `compose` stacks it (see
 /// `PAINT_ORDER`). Nothing leans on the island's fill being opaque: what
 /// must not show is clipped away.
-// `Dark` and `Wrap` wait for the stories that use them.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Layer {
     /// Behind the island: clipped to the window without the played island

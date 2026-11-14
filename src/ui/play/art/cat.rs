@@ -86,6 +86,7 @@ pub struct CatPose {
 
 /// The seated cat on its 64-unit grid: a `Group` that leaves the grid as it
 /// is (its pivot and `at` both `SEAT`).
+#[cfg(test)]
 pub fn cat(pose: &CatPose, look: CatLook) -> Draw {
     Draw::Group { at: SEAT, rot_deg: 0.0, scale: (1.0, 1.0), pivot: SEAT, items: figure(pose, look) }
 }

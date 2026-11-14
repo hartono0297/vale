@@ -225,25 +225,6 @@ pub fn chain(x: f32, y: f32, a: f32, len: f32, n: usize, k: impl Fn(f32) -> f32)
     p
 }
 
-/// The joint (knee, elbow) of two bones `l1`, `l2` long from `a` toward
-/// `b`; `bend` (+1 or -1) picks the side. Only a target too far stretches
-/// the limb straight; a target too near is clamped by `acos`, as in the
-/// mockup.
-pub fn ik(a: Pt, b: Pt, l1: f32, l2: f32, bend: f32) -> Pt {
-    if l1 <= 0.0 {
-        return a;
-    }
-    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
-    let mut d = dx.hypot(dy).min(l1 + l2 - 0.01);
-    if d == 0.0 || d.is_nan() {
-        d = 0.01;
-    }
-    let ang = dy.atan2(dx);
-    let c = ((l1 * l1 + d * d - l2 * l2) / (2.0 * l1 * d)).clamp(-1.0, 1.0);
-    let g = ang - bend * c.acos();
-    (a.0 + g.cos() * l1, a.1 + g.sin() * l1)
-}
-
 /// Rings around the tube: bands `w` long, one every `every` from `start`
 /// back from the tip, none within `skip_base` of the base.
 #[derive(Clone, Copy, Debug)]
@@ -466,16 +447,6 @@ mod tests {
     }
 
     #[test]
-    fn ik_keeps_both_bone_lengths() {
-        let (a, b) = ((0.0, 0.0), (6.0, 3.0));
-        for bend in [1.0, -1.0] {
-            let k = ik(a, b, 5.0, 4.0, bend);
-            assert!(close(k.0.hypot(k.1), 5.0, 1e-3));
-            assert!(close((b.0 - k.0).hypot(b.1 - k.1), 4.0, 1e-3));
-        }
-    }
-
-    #[test]
     fn a_limb_has_no_nan_for_a_degenerate_path() {
         let st = LimbStyle {
             tip: Some((2.0, 0x101010)),
@@ -494,8 +465,6 @@ mod tests {
             assert!(along(&pts, 5.0, 4).iter().all(|p| p.0.is_finite() && p.1.is_finite()));
             assert!(curl(&pts, 1.0, 3.0, 8, 0.0).iter().all(|p| p.0.is_finite() && p.1.is_finite()));
         }
-        let k = ik((1.0, 1.0), (1.0, 1.0), 3.0, 3.0, 1.0);
-        assert!(k.0.is_finite() && k.1.is_finite());
     }
 
     /// A straight horizontal path `0..len` in half-unit steps, so its normal is +y.
@@ -524,15 +493,6 @@ mod tests {
                 _ => None,
             })
             .expect("a point there")
-    }
-
-    #[test]
-    fn ik_bend_sign_follows_the_mockup() {
-        // g = angle - bend * acos(c): bend +1 turns the knee to -y (up on screen).
-        let up = ik((0.0, 0.0), (10.0, 0.0), 6.0, 6.0, 1.0);
-        let down = ik((0.0, 0.0), (10.0, 0.0), 6.0, 6.0, -1.0);
-        assert!(up.1 < -1.0 && down.1 > 1.0, "{up:?} {down:?}");
-        assert!(close(up.1, -down.1, 1e-4));
     }
 
     #[test]

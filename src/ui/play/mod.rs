@@ -1,17 +1,11 @@
 //! Animations the mascot plays around the closed island.
 
 pub mod art;
-// Used by the animations the next tasks add.
-#[cfg_attr(not(test), allow(dead_code))]
 pub mod gate;
-#[cfg_attr(not(test), allow(dead_code))]
 pub mod rim;
-#[cfg_attr(not(test), allow(dead_code))]
 pub mod shape;
-#[cfg_attr(not(test), allow(dead_code))]
 pub mod state;
 pub mod stories;
-#[cfg_attr(not(test), allow(dead_code))]
 pub mod trigger;
 
 use crate::config::Style;

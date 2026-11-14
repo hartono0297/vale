@@ -47,6 +47,7 @@ pub struct Deform {
 /// or no width counts as none.
 ///
 /// Shift and tilt do nothing on the Notch, as in `outline`.
+#[cfg(test)]
 pub fn is_rest(style: Style, d: &Deform) -> bool {
     let pill = style == Style::Pill;
     d.squeeze == 0.0
