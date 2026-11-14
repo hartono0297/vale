@@ -1,7 +1,7 @@
 use windows::Win32::Foundation::{COLORREF, D2DERR_RECREATE_TARGET, POINT, RECT, SIZE};
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D_RECT_F, D2D_SIZE_F, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_FIGURE_BEGIN_FILLED,
-    D2D1_FIGURE_END_CLOSED, D2D1_GRADIENT_STOP, D2D1_PIXEL_FORMAT,
+    D2D1_FIGURE_END_CLOSED, D2D1_FILL_MODE_ALTERNATE, D2D1_GRADIENT_STOP, D2D1_PIXEL_FORMAT,
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1_ANTIALIAS_MODE_ALIASED, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_ARC_SEGMENT, D2D1_ARC_SIZE_SMALL, D2D1_CAP_STYLE_ROUND,
@@ -53,7 +53,7 @@ use super::dirty::{self, Drawn, Plan, ViewKind};
 use super::dock::{DockFrame, DockZone};
 use super::fonts::{self, Face, Role};
 use super::geometry::{
-    BAR_COUNT, BAR_GAP, BAR_W, HitRegions, LYRIC_FADE_W, NOTICE_CLOSE_DISC, NOTICE_CLOSE_GLYPH,
+    BAR_COUNT, BAR_GAP, BAR_W, HitRegions, IdleLayout, LYRIC_FADE_W, NOTICE_CLOSE_DISC, NOTICE_CLOSE_GLYPH,
     NoticeLayout, Rect, SHOT_BUTTON_PAD, SHOT_THUMB_RADIUS, ShapeRect, Under, badge_letter,
     badge_style, compact_layout, compact_layout_robot, corner_radius, equalizer_heights,
     idle_layout_lead, lyric_layout, lyric_layout_robot, lyric_overflow, notice_action,
@@ -65,6 +65,8 @@ use super::geometry::{
 use super::icons::{Icon, IconSet};
 use super::motion::{StripFrame, Transit};
 use super::panel_layout::Region;
+use super::play::shape::{Deform, outline};
+use super::play::state::{Beat, spread_offsets};
 use super::robot::{Expr, EyesPose, Pose, RobotPainter, eyes_area, eyes_centre, eyes_offset_in};
 use super::shelf_motion::ShelfMotion;
 use super::window::IslandWindow;
@@ -295,6 +297,34 @@ pub struct Frame<'a> {
     /// fade, a strip): the whole surface is redrawn and presented, not just
     /// what the shape covers (`ui::dirty`).
     pub full_redraw: bool,
+    /// A play runs: the island is drawn from its deformed outline and the
+    /// mascot and the clock move apart. `None` (always, at rest) draws the
+    /// island as ever, and costs nothing.
+    pub play: Option<PlayFrame>,
+}
+
+/// What a running play asks of the renderer this frame: how the island is
+/// deformed and where the play stands (`Beat::spread` moves the mascot and
+/// the clock, `Beat::t` is the story's own time).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlayFrame {
+    pub deform: Deform,
+    pub beat: Beat,
+}
+
+/// The play this frame draws. Only the idle island plays, and never the one
+/// shrunk to the eyes; any other frame keeps the island's own shape.
+fn playing<'a>(play: Option<&'a PlayFrame>, view: &View, eyes: bool) -> Option<&'a PlayFrame> {
+    play.filter(|_| *view == View::Idle && !eyes)
+}
+
+/// The idle layout as a play puts it: the mascot and the clock pushed to the
+/// island's ends by the beat's spread. Untouched without a play.
+fn play_layout(layout: IdleLayout, shape: ShapeRect, play: Option<&PlayFrame>) -> IdleLayout {
+    match play {
+        Some(p) => spread_offsets(layout, shape, p.beat.spread),
+        None => layout,
+    }
 }
 
 /// The notice's ✕ this frame: its fade and whether the pointer is on it.
@@ -1272,6 +1302,7 @@ impl Renderer {
             style,
             halo: self.halo,
             force_full,
+            play: frame.play.is_some(),
             bounds,
         }
     }
@@ -2262,6 +2293,16 @@ impl Renderer {
     fn paint_island(&mut self, style: Style, shape: ShapeRect, frame: &Frame) -> Result<()> {
         let view = frame.view;
         let radius = corner_radius(style, shape);
+        // A play draws the island from its deformed outline. Built before
+        // anything is pushed, so a failure here leaves nothing to undo.
+        let play = playing(frame.play.as_ref(), view, frame.eyes);
+        let played = match play {
+            Some(p) => {
+                let pts = outline(style, shape, &p.deform);
+                Some(self.island_geometry(style, shape, Some(&pts))?)
+            }
+            None => None,
+        };
         let target = self.target.as_ref().expect("target ensured by paint");
         unsafe {
             // A nearly invisible margin around and above the small island:
@@ -2284,8 +2325,13 @@ impl Renderer {
                 self.palette.surface,
                 frame.fill_alpha.clamp(0.0, 1.0),
             ));
-            match style {
-                Style::Pill => target.rt.FillRoundedRectangle(
+            // A play paints in this order, and nothing counts on the island
+            // being opaque (its fill can be see-through): what is behind it
+            // is clipped to `outside_island`, what reads as inside the dark
+            // to the island's own geometry, and the fill comes last, here.
+            match (&played, style) {
+                (Some(island), _) => target.rt.FillGeometry(island, &target.brush, None),
+                (None, Style::Pill) => target.rt.FillRoundedRectangle(
                     &D2D1_ROUNDED_RECT {
                         rect: d2d_rect(shape_rect(shape)),
                         radiusX: radius,
@@ -2293,7 +2339,7 @@ impl Renderer {
                     },
                     &target.brush,
                 ),
-                Style::Notch => {
+                (None, Style::Notch) => {
                     let path = self.notch_path(shape, radius)?;
                     target.rt.FillGeometry(&path, &target.brush, None);
                 }
@@ -2314,11 +2360,16 @@ impl Renderer {
             self.paint_eyes_pill(style, shape, frame.transit.content_alpha, frame.eyes_pose);
             return Ok(());
         }
-        unsafe {
-            target.rt.PushAxisAlignedClip(
-                &d2d_rect(shape_rect(shape)),
-                D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
-            );
+        // The content stays inside the island: a play's deformed outline cuts
+        // the mascot where the Pill's rounded end curves away.
+        match &played {
+            Some(island) => self.push_mask(island, 1.0),
+            None => unsafe {
+                target.rt.PushAxisAlignedClip(
+                    &d2d_rect(shape_rect(shape)),
+                    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                );
+            },
         }
         // The panel that is closing fades out as its shape shrinks, while the
         // compact view or notice that follows fades in with the morph.
@@ -2401,6 +2452,7 @@ impl Renderer {
                     frame.clock.is_some(),
                     frame.idle_lead,
                 );
+                let l = play_layout(l, shape, play);
                 if let (Some(area), Some(r)) = (l.robot, robot) {
                     self.paint_robot(area, r);
                 }
@@ -2497,7 +2549,11 @@ impl Renderer {
         }
         self.legible.set(0.0);
         let target = self.target.as_ref().expect("target ensured by paint");
-        unsafe { target.rt.PopAxisAlignedClip() };
+        if played.is_some() {
+            unsafe { target.rt.PopLayer() };
+        } else {
+            unsafe { target.rt.PopAxisAlignedClip() };
+        }
         leaving.and(content)
     }
 
@@ -3489,6 +3545,71 @@ impl Renderer {
         }
     }
 
+    /// A play's outline (`play::outline`) as a closed path: its points joined
+    /// by straight lines, the last back to the first. A swinging Notch has
+    /// more points than a resting one, so the list's length is not fixed.
+    fn played_path(&self, pts: &[(f32, f32)]) -> Result<ID2D1PathGeometry> {
+        let points: Vec<Vector2> = pts.iter().map(|&(x, y)| Vector2::new(x, y)).collect();
+        unsafe {
+            let path = self.d2d.CreatePathGeometry()?;
+            let sink = path.Open()?;
+            if let Some((first, rest)) = points.split_first() {
+                sink.BeginFigure(*first, D2D1_FIGURE_BEGIN_FILLED);
+                sink.AddLines(rest);
+                sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+            }
+            sink.Close()?;
+            Ok(path)
+        }
+    }
+
+    /// The island as a geometry: the play's outline when `pts` is given,
+    /// the resting shape otherwise.
+    fn island_geometry(
+        &self,
+        style: Style,
+        s: ShapeRect,
+        pts: Option<&[(f32, f32)]>,
+    ) -> Result<ID2D1Geometry> {
+        match pts {
+            Some(pts) => self.played_path(pts)?.cast(),
+            None => self.shape_geometry(style, s),
+        }
+    }
+
+    /// The window without the island: what is drawn behind the island is
+    /// clipped to it, so the island's own fill never has to hide anything.
+    // Used by the story art the next tasks add.
+    #[allow(dead_code)]
+    fn outside_island(
+        &self,
+        style: Style,
+        s: ShapeRect,
+        pts: Option<&[(f32, f32)]>,
+    ) -> Result<ID2D1Geometry> {
+        let size = self.target.as_ref().expect("target ensured by paint").size;
+        let window = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: size.cx as f32 / self.scale,
+            h: size.cy as f32 / self.scale,
+        };
+        self.cut_out(window, &self.island_geometry(style, s, pts)?)
+    }
+
+    /// `window` with `island` cut out: the alternate fill rule counts the
+    /// island's inside twice, so it is left empty.
+    fn cut_out(&self, window: Rect, island: &ID2D1Geometry) -> Result<ID2D1Geometry> {
+        unsafe {
+            let window = self.d2d.CreateRectangleGeometry(&d2d_rect(window))?;
+            let group = self.d2d.CreateGeometryGroup(
+                D2D1_FILL_MODE_ALTERNATE,
+                &[Some(window.cast()?), Some(island.clone())],
+            )?;
+            group.cast()
+        }
+    }
+
     /// Fills the union of two rounded rects (rect, radius) once with the
     /// shared brush's current color, so a translucent fill is not doubled
     /// where they overlap.
@@ -4309,5 +4430,154 @@ mod tests {
         // An empty rect is not a copy.
         let none = dirty::RectI { left: 3, top: 3, right: 3, bottom: 5 };
         assert!(!copy_rect(&src, 56, &mut dst, 40, none));
+    }
+
+    // The play's painting needs a window and a surface, which a test has
+    // not; what it decides and the geometry it clips with need neither.
+    use crate::config::Style;
+    use crate::ui::geometry::idle_layout_lead;
+    use crate::ui::play::shape::Dent;
+    use crate::ui::play::testing::shape;
+    use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
+
+    const SIZES: [(f32, f32); 2] = [(160.0, 28.0), (300.0, 44.0)];
+
+    fn renderer() -> Renderer {
+        // Each test runs on its own thread.
+        let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+        Renderer::new().expect("a renderer needs only COM, no window")
+    }
+
+    fn contains(g: &ID2D1Geometry, x: f32, y: f32) -> bool {
+        unsafe { g.FillContainsPoint(Vector2::new(x, y), None, 0.1) }
+            .expect("contains")
+            .as_bool()
+    }
+
+    /// A deep dent pulled up into the middle of the lip, plus a squeeze.
+    fn dented() -> Deform {
+        Deform {
+            dents: vec![Dent { u: 0.5, depth: -0.25, width: 0.6 }],
+            squeeze: 0.06,
+            ..Deform::default()
+        }
+    }
+
+    fn play_frame(spread: f32) -> PlayFrame {
+        PlayFrame {
+            deform: Deform::default(),
+            beat: Beat { spread, alpha: 1.0, t: 0.0 },
+        }
+    }
+
+    #[test]
+    fn a_played_island_is_the_deformed_outline_and_not_the_resting_shape() {
+        let r = renderer();
+        for style in [Style::Notch, Style::Pill] {
+            for (w, h) in SIZES {
+                let s = shape(style, w, h);
+                let cx = s.x + s.w / 2.0;
+                let pts = outline(style, s, &dented());
+                let played = r.island_geometry(style, s, Some(&pts)).unwrap();
+                let rest = r.island_geometry(style, s, None).unwrap();
+                let case = format!("{style:?} {w}x{h}");
+                // Just above the lip's middle: inside the resting island,
+                // and in the hole the dent pulled up.
+                let dent_hole = (cx, s.y + s.h - 1.0);
+                assert!(contains(&rest, dent_hole.0, dent_hole.1), "{case}: rest");
+                assert!(!contains(&played, dent_hole.0, dent_hole.1), "{case}: dent");
+                // The path is filled, not hollow, and the dent stays near the lip.
+                assert!(contains(&played, cx, s.y + 3.0), "{case}: body");
+                assert!(contains(&played, s.x + 0.2 * s.w, s.y + s.h - 4.0), "{case}: off the dent");
+                // And it ends at the outline.
+                assert!(!contains(&played, cx, s.y + s.h + 3.0), "{case}: below");
+                assert!(!contains(&played, s.x - 20.0, s.y + s.h / 2.0), "{case}: beside");
+            }
+        }
+    }
+
+    #[test]
+    fn a_swinging_notch_still_fills_the_screen_edge_from_end_to_end() {
+        // The outline holds extra points above the edge when it swings; a path
+        // that stopped at the usual count would leave a hole there.
+        let r = renderer();
+        for swing_deg in [-12.0, 12.0] {
+            let s = shape(Style::Notch, 190.0, 34.0);
+            let pts = outline(Style::Notch, s, &Deform { swing_deg, ..Deform::default() });
+            assert!(pts.len() > crate::ui::play::shape::OUTLINE_PTS, "the premise");
+            let played = r.island_geometry(Style::Notch, s, Some(&pts)).unwrap();
+            for x in [s.x + 3.0, s.x + s.w / 2.0, s.x + s.w - 3.0] {
+                assert!(contains(&played, x, 0.5), "swing {swing_deg}, x {x}");
+            }
+        }
+    }
+
+    #[test]
+    fn outside_the_island_is_the_window_less_the_island_as_it_is_deformed() {
+        let r = renderer();
+        for style in [Style::Notch, Style::Pill] {
+            for (w, h) in SIZES {
+                let s = shape(style, w, h);
+                let cx = s.x + s.w / 2.0;
+                let window = Rect { x: s.x - 40.0, y: 0.0, w: s.w + 80.0, h: 150.0 };
+                let pts = outline(style, s, &dented());
+                let island = r.island_geometry(style, s, Some(&pts)).unwrap();
+                let out = r.cut_out(window, &island).unwrap();
+                let case = format!("{style:?} {w}x{h}");
+                assert!(!contains(&out, cx, s.y + 3.0), "{case}: inside the island");
+                assert!(contains(&out, cx, s.y + s.h + 3.0), "{case}: below it");
+                assert!(contains(&out, s.x - 20.0, s.y + s.h / 2.0), "{case}: beside it");
+                // The dent opens the clip up where the resting island was.
+                assert!(contains(&out, cx, s.y + s.h - 1.0), "{case}: in the dent");
+                // And nothing beyond the window.
+                assert!(!contains(&out, s.x - 60.0, 20.0), "{case}: outside the window");
+                // However the outline winds: the same outline listed the other
+                // way round leaves the same island out.
+                let backwards: Vec<_> = pts.iter().rev().copied().collect();
+                let island = r.island_geometry(style, s, Some(&backwards)).unwrap();
+                let out = r.cut_out(window, &island).unwrap();
+                assert!(!contains(&out, cx, s.y + 3.0), "{case}: wound the other way");
+                // At rest it is the resting shape that is left out.
+                let rest = r.island_geometry(style, s, None).unwrap();
+                let out = r.cut_out(window, &rest).unwrap();
+                assert!(!contains(&out, cx, s.y + s.h - 1.0), "{case}: rest");
+            }
+        }
+    }
+
+    #[test]
+    fn only_the_idle_island_plays() {
+        let p = play_frame(1.0);
+        assert!(playing(Some(&p), &View::Idle, false).is_some());
+        assert!(playing(None, &View::Idle, false).is_none(), "no play, no play");
+        assert!(playing(Some(&p), &View::Idle, true).is_none(), "shrunk to the eyes");
+        assert!(playing(Some(&p), &View::MediaCompact, false).is_none());
+        assert!(playing(Some(&p), &View::Hidden, false).is_none());
+    }
+
+    #[test]
+    fn a_play_moves_the_mascot_and_the_clock_apart_by_its_spread() {
+        for style in [Style::Notch, Style::Pill] {
+            for (w, h) in SIZES {
+                let s = shape(style, w, h);
+                let rest = idle_layout_lead(s, true, true, 0.0);
+                let at = |spread: f32| play_layout(rest, s, Some(&play_frame(spread)));
+                let case = format!("{style:?} {w}x{h}");
+                assert_eq!(play_layout(rest, s, None), rest, "{case}: no play");
+                assert_eq!(at(0.0), rest, "{case}: no spread");
+                let (half, full) = (at(0.5), at(1.0));
+                let (rest_robot, rest_clock) = (rest.robot.unwrap(), rest.clock.unwrap());
+                assert!(full.robot.unwrap().x < rest_robot.x, "{case}: the mascot goes left");
+                assert!(full.clock.unwrap().x > rest_clock.x, "{case}: the clock goes right");
+                // The spread is the beat's, not a fixed one.
+                assert!(half.robot.unwrap().x < rest_robot.x, "{case}");
+                assert!(half.robot.unwrap().x > full.robot.unwrap().x, "{case}");
+                assert!(half.clock.unwrap().x > rest_clock.x, "{case}");
+                assert!(half.clock.unwrap().x < full.clock.unwrap().x, "{case}");
+                // Both stay inside the island's width.
+                assert!(full.robot.unwrap().x >= s.x, "{case}");
+                assert!(full.clock.unwrap().right() <= s.x + s.w, "{case}");
+            }
+        }
     }
 }

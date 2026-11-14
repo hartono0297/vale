@@ -222,9 +222,11 @@ use super::motion::{
 use super::notch_fill::{self, fill_alpha};
 use super::render::{
     CleanerView, CliView, ClipNoticeView, ClipView, DevicesView, FolderMenuView, Frame, MoleView, RecFrame, RecordView, VideoThumbView,
-    NoticeCloseView, NotifView, Progress, Renderer, RobotFrame, SearchView, SheetKind, ShotView,
+    NoticeCloseView, NotifView, PlayFrame, Progress, Renderer, RobotFrame, SearchView, SheetKind, ShotView,
     SystemView, ToastBadgeView, ToastLogoView,
 };
+use super::play::shape::{Deform, Dent};
+use super::play::state::Beat;
 use super::robot::{Expr, EyesPose, Motion, PAW_LIFT, Pose};
 use super::shelf_motion::{SHELF_ENTER_MS, SHELF_MOVE_MS, SHELF_STAGGER_MS, ShelfMotion};
 use super::window::IslandWindow;
@@ -405,6 +407,9 @@ struct Scene {
     /// The notice's ✕ is drawn (at `DI_DEMO_CLOSE`'s alpha, else fully); the
     /// flag says the pointer is on it. A notice that is not closable draws none.
     close: Option<bool>,
+    /// A mid-play frame, frozen: the island dented in its lip and squeezed, the
+    /// mascot and the clock at its ends (`demo_play`). Nothing is captured.
+    play: bool,
 }
 
 /// The cleaner's states (deepclean-opsi-d.html p10 and d1).
@@ -697,6 +702,7 @@ const BASE: Scene = Scene {
     offer_strip: false,
     dot: false,
     close: None,
+    play: false,
 };
 
 const fn clipboard(name: &'static str, which: ClipDemo) -> Scene {
@@ -979,6 +985,27 @@ const fn rec_hot_scene(name: &'static str, muted: [bool; 2], hot: Source) -> Sce
 }
 
 /// A scene of Bata in the notch (studio-robot.html p3).
+/// The frozen frame of `bata-play-island`: one clear dent in the lip, a small
+/// squeeze, and the mascot and the clock spread to the island's ends.
+fn demo_play() -> PlayFrame {
+    PlayFrame {
+        deform: Deform {
+            dents: vec![Dent {
+                u: 0.5,
+                depth: -0.25,
+                width: 0.6,
+            }],
+            squeeze: 0.06,
+            ..Deform::default()
+        },
+        beat: Beat {
+            spread: 1.0,
+            alpha: 1.0,
+            t: 0.0,
+        },
+    }
+}
+
 const fn bata(name: &'static str, kind: ShapeKind, view: View0, expr: Expr) -> Scene {
     Scene {
         name,
@@ -1170,7 +1197,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 210] = [
+const SCENES: [Scene; 211] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -1784,6 +1811,10 @@ const SCENES: [Scene; 210] = [
         ..BASE
     },
     bata("bata-kosong", ShapeKind::Idle, View0::Idle, Expr::Idle),
+    Scene {
+        play: true,
+        ..bata("bata-play-island", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
     Scene {
         clock: Some("23:48"),
         ..bata("bata-tidur", ShapeKind::Idle, View0::Idle, Expr::Sleep)
@@ -3022,6 +3053,7 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                     || slide != 0.0
                     || scene.reveal.is_some()
                     || scene.fade_from.is_some(),
+                play: scene.play.then(demo_play),
             };
             if let Err(error) = renderer.draw(&win, style, shape, &frame, opacity) {
                 eprintln!("demo: draw failed: {error}");

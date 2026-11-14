@@ -5558,7 +5558,7 @@ impl Renderer {
     }
 
     /// Everything drawn until `PopLayer` is clipped to `mask` at `opacity`.
-    fn push_mask(&self, mask: &ID2D1Geometry, opacity: f32) {
+    pub(super) fn push_mask(&self, mask: &ID2D1Geometry, opacity: f32) {
         let target = self.target.as_ref().expect("target ensured by paint");
         let params = D2D1_LAYER_PARAMETERS {
             contentBounds: D2D_RECT_F {

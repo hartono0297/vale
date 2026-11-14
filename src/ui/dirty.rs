@@ -177,6 +177,10 @@ pub struct Drawn {
     /// The frame moves content outside its bounds (a morph, a slide, a fade)
     /// or is a panel: it is drawn in full, and so is the one after it.
     pub force_full: bool,
+    /// A play runs: it paints far outside the island's bounds (a dent, a
+    /// swing, the story's art), so this frame is drawn in full, and so is
+    /// the one after it.
+    pub play: bool,
     /// Where the frame paints, in device pixels with the margin; `None` when
     /// the bounds cannot be trusted.
     pub bounds: Option<RectI>,
@@ -196,6 +200,10 @@ pub fn plan(prev: Option<&Drawn>, cur: &Drawn) -> Plan {
     // A frame that forced a full redraw may have painted past its bounds, so
     // the frame after it cannot trust them either.
     if cur.force_full || prev.force_full {
+        return Plan::Full;
+    }
+    // A play paints outside any bounds; the frame after it clears what it left.
+    if cur.play || prev.play {
         return Plan::Full;
     }
     let (Some(a), Some(b)) = (prev.bounds, cur.bounds) else {
@@ -302,6 +310,7 @@ mod tests {
             style: Style::Notch,
             halo: false,
             force_full: false,
+            play: false,
             bounds,
         }
     }
@@ -432,6 +441,30 @@ mod tests {
         assert_eq!(plan(Some(&a), &forced), Plan::Full);
         // The frame after a forced one is full too.
         assert_eq!(plan(Some(&forced), &a), Plan::Full);
+    }
+
+    /// Two frames on the same surface that differ only in the play: `cur`
+    /// runs one, `prev` does not.
+    fn two_frames_differing_only_by_play() -> (Drawn, Drawn) {
+        let prev = drawn(Some(rect_i(20, 0, 120, 40)));
+        let mut cur = prev.clone();
+        cur.play = true;
+        (prev, cur)
+    }
+
+    #[test]
+    fn a_running_play_forces_a_full_frame() {
+        let (prev, cur) = two_frames_differing_only_by_play();
+        // Without the play the same two frames are a dirty redraw, so the
+        // full frame below is the play's doing and nothing else's.
+        assert_eq!(
+            plan(Some(&prev), &prev.clone()),
+            Plan::Dirty(rect_i(20, 0, 120, 40))
+        );
+        assert_eq!(plan(Some(&prev), &cur), Plan::Full, "the play starts");
+        assert_eq!(plan(Some(&cur), &cur.clone()), Plan::Full, "the play runs");
+        // It painted far past its bounds, so the frame after it clears them.
+        assert_eq!(plan(Some(&cur), &prev), Plan::Full, "the play ended");
     }
 
     #[test]

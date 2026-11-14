@@ -7399,6 +7399,7 @@ impl App {
             notice_close: self.notice_close_view(now),
             transit,
             full_redraw,
+            play: None,
         };
         let key = eq_key(self.draw_gen, &frame, shape, opacity);
         if eq_tick && !dirty::eq_draw_needed(self.eq_key.as_ref(), &key) {
