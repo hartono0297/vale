@@ -2179,6 +2179,13 @@ impl IslandState {
                     effects.push(Effect::ShelfClear);
                 }
             }
+            // The image preview is `App`'s: its back button and the image
+            // only ask it to close, on the shelf, with the panel staying.
+            Hit::ShelfPreviewBack | Hit::ShelfPreviewImage => {
+                if self.view() == View::Panel(Page::Shelf) {
+                    effects.push(Effect::ShelfPreviewClose);
+                }
+            }
             // The phone link's controls count only while their view shows
             // (the "HP" pill on the shelf itself, without a stage).
             Hit::ShelfPhone => {
@@ -9969,6 +9976,26 @@ mod tests {
             vec![Effect::ShelfOpen(1)]
         );
         assert!(!s.panel_is_open());
+    }
+
+    #[test]
+    fn a_click_on_the_preview_back_or_image_asks_to_close_it_on_the_shelf_only() {
+        let t0 = Instant::now();
+        let mut s = st();
+        open_on(&mut s, Page::Notes, t0);
+        for hit in [Hit::ShelfPreviewBack, Hit::ShelfPreviewImage] {
+            assert!(s.apply(Event::Click(hit), t0).is_empty());
+        }
+        open_on(&mut s, Page::Shelf, t0);
+        for hit in [Hit::ShelfPreviewBack, Hit::ShelfPreviewImage] {
+            assert_eq!(
+                s.apply(Event::Click(hit), t0),
+                vec![Effect::ShelfPreviewClose]
+            );
+            // The panel stays: the cards come back, nothing collapses.
+            assert!(s.panel_is_open());
+            assert_eq!(s.view(), View::Panel(Page::Shelf));
+        }
     }
 
     // ---- The phone link over the shelf ----

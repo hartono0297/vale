@@ -545,6 +545,9 @@ keys! {
         "Drag files to the notch, take them out later";
     ShelfPhone => "HP", "Phone";
     ShelfFromPhone => "dari HP", "phone";
+    ShelfPreview => "Pratinjau gambar", "Preview image";
+    ShelfPreviewFailed => "Tidak bisa menampilkan gambar", "Can't show this image";
+    ShelfPreviewLoading => "Memuat\u{2026}", "Loading\u{2026}";
     PhoneStarting => "Mencari jaringan\u{2026}", "Finding the network\u{2026}";
     PhoneStep1 => "Scan pakai kamera HP", "Scan with the phone's camera";
     PhoneStep1Sub => "iPhone: Kamera \u{b7} Android: Kamera / Google Lens",
@@ -5262,5 +5265,31 @@ mod copy_preview_tests {
         ] {
             assert_ne!(text(Lang::Id, key), text(Lang::En, key), "{key:?}");
         }
+    }
+
+    #[test]
+    fn the_preview_strings_exist_in_both_languages() {
+        for key in [
+            Key::ShelfPreview,
+            Key::ShelfPreviewFailed,
+            Key::ShelfPreviewLoading,
+        ] {
+            for lang in [Lang::Id, Lang::En] {
+                assert!(!text(lang, key).is_empty(), "{key:?} {lang:?}");
+            }
+            assert_ne!(text(Lang::Id, key), text(Lang::En, key), "{key:?}");
+        }
+        assert_eq!(text(Lang::Id, Key::ShelfPreview), "Pratinjau gambar");
+        assert_eq!(text(Lang::En, Key::ShelfPreview), "Preview image");
+        assert_eq!(
+            text(Lang::Id, Key::ShelfPreviewFailed),
+            "Tidak bisa menampilkan gambar"
+        );
+        assert_eq!(
+            text(Lang::En, Key::ShelfPreviewFailed),
+            "Can't show this image"
+        );
+        assert_eq!(text(Lang::Id, Key::ShelfPreviewLoading), "Memuat\u{2026}");
+        assert_eq!(text(Lang::En, Key::ShelfPreviewLoading), "Loading\u{2026}");
     }
 }

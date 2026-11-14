@@ -2809,6 +2809,7 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                 shelf_motion: &shelf_motion,
                 phone: phone_view.as_ref(),
                 phone_on: scene.phone != PhoneDemo::No,
+                shelf_preview: None,
                 record: RecordView {
                     sources: rec_idle_sources(&name("DI_REC_SOURCES")),
                     recent: &rec_recent,

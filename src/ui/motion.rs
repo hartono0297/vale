@@ -608,6 +608,8 @@ pub struct SubView {
     pub cli_menu: bool,
     /// The phone link over the Shelf page and its stage.
     pub phone: Option<PhoneStage>,
+    /// The shelf's image preview shows over its cards.
+    pub shelf_preview: bool,
 }
 
 /// Mole's stage without its payload: a new dry-run with other options
@@ -714,11 +716,16 @@ pub fn reveal_dir(before: &SubView, after: &SubView, page: Page) -> Option<Revea
         },
         // The phone link comes and goes over the shelf like the cleaner over
         // System, and each stage change inside it reveals the new view.
+        // The image preview comes and goes the same way.
         Page::Shelf => match (before.phone, after.phone) {
             (None, Some(_)) => Some(RevealDir::Open),
             (Some(_), None) => Some(RevealDir::Close),
             (Some(a), Some(b)) if a != b => Some(RevealDir::Open),
-            _ => None,
+            _ => match (before.shelf_preview, after.shelf_preview) {
+                (false, true) => Some(RevealDir::Open),
+                (true, false) => Some(RevealDir::Close),
+                _ => None,
+            },
         },
         Page::Cli => match (before.cli_menu, after.cli_menu) {
             // Only the menu appearing reveals; it closes at once.
@@ -746,6 +753,7 @@ mod tests {
             mole_log: false,
             cli_menu: false,
             phone: None,
+            shelf_preview: false,
         }
     }
 
@@ -792,6 +800,26 @@ mod tests {
             transition(&a, &b, true),
             Transition::Reveal(RevealDir::Open)
         );
+        assert_eq!(transition(&a, &b, false), Transition::None);
+    }
+
+    #[test]
+    fn the_shelf_preview_reveals_over_the_shelf_and_nowhere_else() {
+        let with = |shelf_preview| SubView {
+            shelf_preview,
+            ..sub()
+        };
+        let shelf = |a, b| reveal_dir(&with(a), &with(b), Page::Shelf);
+        assert_eq!(shelf(false, true), Some(RevealDir::Open));
+        assert_eq!(shelf(true, false), Some(RevealDir::Close));
+        assert_eq!(shelf(true, true), None);
+        assert_eq!(shelf(false, false), None);
+        assert_eq!(reveal_dir(&with(false), &with(true), Page::Notes), None);
+        let (a, b) = (
+            snap(true, Page::Shelf, with(false)),
+            snap(true, Page::Shelf, with(true)),
+        );
+        assert_eq!(transition(&a, &b, true), Transition::Reveal(RevealDir::Open));
         assert_eq!(transition(&a, &b, false), Transition::None);
     }
 

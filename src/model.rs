@@ -815,6 +815,9 @@ pub enum Hit {
     PhoneShowQr,
     PhoneCancel,
     PhoneDone,
+    /// The shelf's image preview: its back button and the image itself.
+    ShelfPreviewBack,
+    ShelfPreviewImage,
     /// The Devices page, by the card's place in the list as last drawn:
     /// "Eject" (and "Coba lagi", which asks the same again), the folder
     /// button, the info button, and "Eject semua".
@@ -1042,6 +1045,9 @@ pub enum Effect {
     PhoneCancel,
     PhoneStop,
     PhoneBack,
+    /// The shelf's image preview closes (its back button or the image was
+    /// clicked); `App` keeps the preview.
+    ShelfPreviewClose,
     /// Devices page: eject card `i`'s device / open Explorer on its first
     /// drive (the panel has collapsed) / expand or fold its details / eject
     /// every listed device. `App` keeps the list.

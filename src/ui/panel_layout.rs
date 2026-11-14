@@ -904,6 +904,8 @@ pub enum PageLayout {
     PhoneQr(PhoneQrLayout),
     PhoneWarn(PhoneWarnLayout),
     PhoneRecv(PhoneRecvLayout),
+    /// The image preview over the Shelf page.
+    ShelfPreview(ShelfPreviewLayout),
     Devices(DevicesLayout),
     Arrange(ArrangeLayout),
     Record(RecordLayout),
@@ -3497,6 +3499,29 @@ pub fn phone_page_layout(s: ShapeRect, strip: bool, v: &PhoneView) -> PageLayout
     }
 }
 
+/// The shelf's image preview: the back button and the file name in the
+/// header row (as the phone link's receiving view), the image's box under it
+/// down to the dots.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShelfPreviewLayout {
+    pub back: Rect,
+    /// The file name, widened to the Settings button's gap.
+    pub title: Rect,
+    /// Where the image is contained, and where the loading or failed text is
+    /// centred. A click anywhere in it closes the preview.
+    pub image: Rect,
+}
+
+/// The preview view in `s`.
+pub fn shelf_preview_layout(s: ShapeRect, strip: bool) -> ShelfPreviewLayout {
+    let (top, back, title) = phone_head(s, strip);
+    let title = title_until(title, header_right(s));
+    let body = top + PHONE_HEAD_H + 8.0;
+    let (l, r) = (left(s), right(s));
+    let image = rect(l, body, r - l, (content_bottom(s) - body).max(0.0));
+    ShelfPreviewLayout { back, title, image }
+}
+
 /// The Mixer page for `n` rows (at least one): rows of up to
 /// `MIXER_ROW_MAX_H`, shrinking so that they all fit above the dots.
 pub fn mixer_layout(s: ShapeRect, strip: bool, n: usize) -> MixerLayout {
@@ -4893,6 +4918,10 @@ pub fn regions(s: ShapeRect, layout: &PageLayout, strip: impl Into<StripKind>) -
             add(l.cancel, Hit::PhoneCancel);
             add(l.done, Hit::PhoneDone);
         }
+        PageLayout::ShelfPreview(l) => {
+            add(l.back, Hit::ShelfPreviewBack);
+            add(l.image, Hit::ShelfPreviewImage);
+        }
         PageLayout::Arrange(l) => {
             for (i, r) in l.chips.iter().enumerate() {
                 add(*r, Hit::ArrangeMonitor(i));
@@ -5345,6 +5374,10 @@ mod tests {
                 PageLayout::PhoneRecv(phone_recv_layout(s, strip, n)),
             ));
         }
+        out.push((
+            "shelf preview".into(),
+            PageLayout::ShelfPreview(shelf_preview_layout(s, strip)),
+        ));
         for n in [0, 1, 3, crate::search::MAX_RESULTS] {
             out.push((
                 format!("search {n}"),
@@ -7584,6 +7617,43 @@ mod tests {
     }
 
     #[test]
+    fn the_preview_back_button_and_image_fit_the_panel() {
+        for style in [Style::Pill, Style::Notch] {
+            let s = panel(style);
+            for strip in [false, true] {
+                let l = shelf_preview_layout(s, strip);
+                let tag = format!("{style:?} strip={strip}");
+                assert!(l.back.right() < l.title.x, "{tag}: the title is after the back button");
+                assert!(l.title.right() <= header_right(s), "{tag}: the title ends before Settings");
+                assert!(disjoint(l.title, settings_button(s, strip)), "{tag}");
+                assert!(disjoint(l.back, settings_button(s, strip)), "{tag}");
+                assert!(l.image.x >= left(s) && l.image.right() <= right(s), "{tag}");
+                assert!(l.image.y >= l.back.bottom() && l.image.y >= l.title.bottom(), "{tag}");
+                assert!(l.image.bottom() <= content_bottom(s) + 0.01, "{tag}");
+                assert!(l.image.w >= 200.0, "{tag}: {:?}", l.image);
+                assert!(l.image.h >= 100.0, "{tag}: {:?}", l.image);
+            }
+        }
+    }
+
+    #[test]
+    fn the_preview_view_has_a_back_hit_and_an_image_hit() {
+        for style in [Style::Pill, Style::Notch] {
+            let s = panel(style);
+            for strip in [false, true] {
+                let layout = PageLayout::ShelfPreview(shelf_preview_layout(s, strip));
+                let hits: Vec<Hit> = regions(s, &layout, strip)
+                    .into_iter()
+                    .map(|r| r.hit)
+                    .filter(|h| !matches!(h, Hit::Strip | Hit::OpenSettings))
+                    .collect();
+                assert_eq!(hits, [Hit::ShelfPreviewBack, Hit::ShelfPreviewImage]);
+                assert!(!hits.iter().any(|h| matches!(h, Hit::ShelfCard(_))));
+            }
+        }
+    }
+
+    #[test]
     fn the_net_switch_sits_between_back_and_chip() {
         for style in [Style::Pill, Style::Notch] {
             let s = panel(style);
@@ -8190,6 +8260,7 @@ mod tests {
                     drawn.extend([r.row, r.icon, r.name, r.size, r.status]);
                 }
             }
+            PageLayout::ShelfPreview(l) => drawn.extend([l.back, l.title, l.image]),
             PageLayout::Shelf(l) => {
                 drawn.push(l.header);
                 drawn.push(l.phone);

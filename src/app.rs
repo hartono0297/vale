@@ -127,7 +127,7 @@ use crate::ui::panel_tips::{self, TipCtx};
 use crate::ui::tooltip;
 use crate::ui::render::{
     CleanerView, CliView, DevicesView, FolderMenuView, Frame, MoleView, NoticeCloseView, Progress,
-    RecFrame, RecordView, Renderer, RobotFrame, SearchView, SystemView,
+    RecFrame, RecordView, Renderer, RobotFrame, SearchView, ShelfPreviewView, SystemView,
 };
 use crate::ui::settings_layout::{CardId, MonitorRow};
 use crate::ui::robot::{
@@ -2447,6 +2447,7 @@ impl App {
             Effect::ShelfOpen(i) => self.shelf_open(i),
             Effect::ShelfRemove(i) => self.shelf_remove(i),
             Effect::ShelfClear => self.shelf_clear(),
+            Effect::ShelfPreviewClose => self.shelf_preview_close(),
             Effect::PhoneStart => return self.phone_pill(),
             Effect::PhoneNewQr => self.phone_new_qr(),
             Effect::PhoneNet(n) => self.phone_switch(n),
@@ -2630,6 +2631,7 @@ impl App {
                 mole_log: cleaner.is_some_and(|c| c.mole_log),
                 cli_menu: s.cli_menu(),
                 phone: s.phone_stage(),
+                shelf_preview: self.shelf.preview.is_some(),
             },
         }
     }
@@ -7224,6 +7226,21 @@ impl App {
                 .or_else(|| self.strip_motion.as_ref().and_then(|m| m.leaving.as_ref())),
         };
         let phone_view = App::phone_view(state, &self.phone, self.config.phone_net, now);
+        // The image preview, while the Shelf page is the page (it stays
+        // while the panel fades out, as the phone link does).
+        let shelf_preview = self
+            .shelf
+            .preview
+            .as_ref()
+            .filter(|_| state.page() == Page::Shelf)
+            .and_then(|p| {
+                let card = self.shelf.cards.iter().find(|c| c.key == p.key)?;
+                Some(ShelfPreviewView {
+                    name: &card.name,
+                    state: &p.state,
+                    key: &p.key,
+                })
+            });
         // Anything that moves outside the shape, or the shape itself: the
         // renderer redraws the whole surface (`ui::dirty`).
         let full_redraw = self.anim.running
@@ -7271,6 +7288,7 @@ impl App {
             shelf_motion: &self.shelf.motion,
             phone: phone_view.as_ref(),
             phone_on: self.phone.running(),
+            shelf_preview,
             arrange: App::arrange_view(&self.arrange, &self.config, self.search_input.as_ref()),
             record: RecordView {
                 sources: self.rec_sources,

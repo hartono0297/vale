@@ -24,8 +24,8 @@ use windows_numerics::{Matrix3x2, Vector2};
 
 use super::{
     CleanerView, CliView, ClipView, DevicesView, FolderMenuView, Frame, GroupShown, NotifView,
-    Progress, Renderer, RobotFrame, RowSize, SearchView, SystemView, ToastBadgeView, color,
-    d2d_rect, mix,
+    Progress, Renderer, RobotFrame, RowSize, SearchView, ShelfPreviewView, SystemView,
+    ToastBadgeView, color, d2d_rect, mix,
 };
 use crate::audio::{self, MixerRow, Target};
 use crate::calendar::{CalEvent, CalStatus, EventTime, events_on, range_for};
@@ -50,7 +50,7 @@ use crate::pomodoro::{Phase, PomoStatus, Pomodoro};
 use crate::reminders::{Reminder, Repeat, local_time};
 use crate::search::Kind as SearchKind;
 use crate::shelf::ShelfCard;
-use crate::shelf_thumbs::{ShelfThumbs, Slot, cover_source};
+use crate::shelf_thumbs::{PreviewState, ShelfThumbs, Slot, cover_source, fit_contain};
 use crate::shortcuts;
 use crate::state::MolePhase;
 use crate::system::{self, SystemSample};
@@ -70,13 +70,15 @@ use crate::ui::panel_layout::{
     DevicesLayout, HOUR_GUTTER, ListLayout, MENU_RADIUS, MENU_ROW_RADIUS, MIXER_TRACK_H,
     MOLE_LOG_LINE_H, MOLE_LOG_PAD, MenuLayout, MeterLayout, MixerLayout, MoleFoot, MoleLayout,
     NOTE_PIN, NOTIF_DOT, NOTIF_RADIUS, NOTIF_TIME_W, note_pin_rect, NotifHead, NotifLayout, PageLayout, PomodoroLayout, RING_STROKE,
-    SEG_PAD, SYS_RING_STROKE, SearchLayout, ShelfLayout, ShortcutsLayout, SystemHead, SystemLayout,
+    SEG_PAD, SYS_RING_STROKE, SearchLayout, ShelfLayout, ShelfPreviewLayout, ShortcutsLayout,
+    SystemHead, SystemLayout,
     VOLUME_HUD_H, WEEK_HEAD_H, arrange_layout, calendar_layout, cleaner_layout, cli_folder_menu,
     cli_layout, cli_suggestions, clipboard_layout, device_shapes, devices_layout,
     media_hits_for, media_panel_layout, media_progress_layout, mixer_layout, mole_layout, mole_log_rows,
     mole_log_skip, notes_layout, notif_layout, page_dots, pomodoro_compact_layout,
     pomodoro_compact_layout_robot, pomodoro_layout, caption_compact_layout, record_compact_layout, tail_fit, rec_meter_heights, rec_mute_regions, REC_BAR_REST, REC_SRC_BARS, REC_SRC_METER_H, REC_WELL, rec_word_slot, record_layout, rec_new_days, rec_group_day, screen_compact_sources, screen_label_slot, RecListInput, RecordHead, RecordLayout, regions, REC_BAR_GAP, REC_BAR_W, reminders_layout, search_layout,
-    settings_button, shelf_card_layout, shelf_layout, shelf_phone_tag, shortcuts_layout,
+    settings_button, shelf_card_layout, shelf_layout, shelf_phone_tag, shelf_preview_layout,
+    shortcuts_layout,
     system_layout, tile_parts, update_strip_parts, volume_hud_layout, waiting_strip,
 };
 use crate::ui::robot::{Expr, Pose};
@@ -860,6 +862,11 @@ impl Renderer {
             Page::Shelf if page == frame.page && frame.phone.is_some() => {
                 crate::ui::panel_layout::phone_page_layout(s, strip, frame.phone.expect("checked above"))
             }
+            // The image preview takes it over the same way (the phone link
+            // wins when both are on).
+            Page::Shelf if page == frame.page && frame.shelf_preview.is_some() => {
+                PageLayout::ShelfPreview(shelf_preview_layout(s, strip))
+            }
             Page::Shelf => PageLayout::Shelf(shelf_layout(s, strip, frame.shelf.len())),
             Page::Devices => {
                 let d = &frame.devices;
@@ -957,6 +964,12 @@ impl Renderer {
             }
             PageLayout::Shelf(l) => {
                 self.paint_shelf(l, frame);
+                Ok(())
+            }
+            PageLayout::ShelfPreview(l) => {
+                if let Some(view) = frame.shelf_preview {
+                    self.paint_shelf_preview(l, view);
+                }
                 Ok(())
             }
             PageLayout::Search(l) => {
@@ -3726,6 +3739,8 @@ impl Renderer {
         let (cards, dragging) = (frame.shelf, frame.shelf_drag);
         let thumbs = frame.shelf_thumbs;
         let (motion, now) = (frame.shelf_motion, frame.now);
+        // The cards are showing: the preview's big bitmap is not needed.
+        *self.shelf_preview_bm.borrow_mut() = None;
         // Cards on their way out still count, and keep the empty hint away,
         // until the last of them is gone.
         let leaving = motion.ghost_count(now);
@@ -3914,6 +3929,66 @@ impl Renderer {
         if moved {
             unsafe { target.rt.SetTransform(&at) };
         }
+    }
+
+    /// The preview's image as a bitmap of this target, made once per card
+    /// key; a new key replaces it, so only one big bitmap is ever held.
+    fn shelf_preview_bitmap(&self, key: &str, thumb: &Thumb) -> Result<Option<ID2D1Bitmap>> {
+        if let Some((k, b)) = self.shelf_preview_bm.borrow().as_ref()
+            && k == key
+        {
+            return Ok(Some(b.clone()));
+        }
+        let Some(bitmap) = self.thumb_bitmap(thumb)? else {
+            return Ok(None);
+        };
+        *self.shelf_preview_bm.borrow_mut() = Some((key.to_owned(), bitmap.clone()));
+        Ok(Some(bitmap))
+    }
+
+    /// The shelf's image preview: the back button and the file's name in the
+    /// header, the image contained in the body, or "Memuat..." / "Tidak bisa
+    /// menampilkan gambar" centred in its place. Per-draw alpha only: no
+    /// layer in here, so it is safe inside a page cross-fade or reveal.
+    fn paint_shelf_preview(&self, l: &ShelfPreviewLayout, view: ShelfPreviewView) {
+        let lang = i18n::lang();
+        self.paint_phone_back(l.back);
+        self.heading(view.name, l.title);
+        let bitmap = match view.state {
+            PreviewState::Ready(thumb) => self
+                .shelf_preview_bitmap(view.key, thumb)
+                .ok()
+                .flatten()
+                .map(|b| (thumb, b)),
+            _ => None,
+        };
+        if let Some((thumb, bitmap)) = bitmap {
+            let at = fit_contain(thumb.w as f32, thumb.h as f32, l.image);
+            let target = self.target.as_ref().expect("target ensured by paint");
+            unsafe {
+                target.rt.DrawBitmap(
+                    &bitmap,
+                    Some(&d2d_rect(at)),
+                    1.0,
+                    D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+                    None,
+                );
+            }
+            return;
+        }
+        let key = match view.state {
+            PreviewState::Loading => Key::ShelfPreviewLoading,
+            // A decode that finished but whose bitmap could not be made says
+            // the same as one that failed.
+            PreviewState::Failed | PreviewState::Ready(_) => Key::ShelfPreviewFailed,
+        };
+        self.text_colored(
+            text(lang, key),
+            &self.fonts.small_center,
+            l.image,
+            self.palette.secondary,
+            1.0,
+        );
     }
 
     /// The round back button every phone view starts with.
@@ -7127,6 +7202,88 @@ mod tests {
             }
         }
         assert!(checked > 500, "only {checked} strings checked");
+        cut.dedup();
+        assert!(cut.is_empty(), "cut:\n{}", cut.join("\n"));
+    }
+
+    /// The preview's file name (the heading) and its loading and failed text,
+    /// in their real boxes, in DM Sans and in JetBrains Mono, both languages,
+    /// both styles, with and without the strip. A long name is cut with an
+    /// ellipsis (the heading format trims) and never reaches past the title
+    /// box; a short one is whole; the two messages fit the image box.
+    #[test]
+    fn the_preview_strings_hold_their_boxes_in_both_fonts() {
+        use crate::config::Style;
+        use crate::ui::fonts;
+        use crate::ui::panel_layout::shelf_preview_layout;
+        use windows::Win32::Graphics::DirectWrite::{
+            DWRITE_TEXT_METRICS, DWRITE_TRIMMING, DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+        };
+        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+
+        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let mut r = Renderer::new().expect("renderer");
+        if !fonts::embedded(&r.dwrite).loaded.jetbrains_mono {
+            eprintln!("skipped: the embedded fonts are not in this binary");
+            return;
+        }
+        let long = "IMG_20261114_a-very-long-holiday-photo-name-that-never-ends-final-v2.jpeg";
+        let mut cut = Vec::new();
+        let mut checked = 0usize;
+        for ui in [UiFont::Sans, UiFont::Mono] {
+            r.set_ui_font(ui).expect("font");
+            // What does not fit is cut with "...", never clipped mid-letter.
+            let mut trimming = DWRITE_TRIMMING::default();
+            let mut sign = None;
+            unsafe { r.fonts.heading.GetTrimming(&mut trimming, &mut sign) }.expect("trimming");
+            assert_eq!(trimming.granularity, DWRITE_TRIMMING_GRANULARITY_CHARACTER);
+            assert!(sign.is_some(), "{ui:?}: the heading has an ellipsis sign");
+            for style in [Style::Pill, Style::Notch] {
+                let s = shape_for(style, ShapeKind::Panel);
+                for strip in [false, true] {
+                    let l = shelf_preview_layout(s, strip);
+                    let tag = format!("{ui:?} {style:?} strip={strip}");
+                    // The title as `heading` draws it.
+                    let area = Rect {
+                        y: l.title.y - HEADING_BLEED,
+                        h: l.title.h + 2.0 * HEADING_BLEED,
+                        ..l.title
+                    };
+                    assert!(
+                        r.text_width(long, &r.fonts.heading) > area.w,
+                        "{tag}: the long name really is longer than its box"
+                    );
+                    let wide: Vec<u16> = long.encode_utf16().collect();
+                    let layout = r.layout(&wide, &r.fonts.heading, area.w, area.h).expect("layout");
+                    let mut m = DWRITE_TEXT_METRICS::default();
+                    unsafe { layout.GetMetrics(&mut m) }.expect("metrics");
+                    checked += 1;
+                    if m.width > area.w + 0.5 || m.lineCount != 1 {
+                        cut.push(format!(
+                            "{tag}: the long name is {} px over {} lines in a {} px box",
+                            m.width, m.lineCount, area.w
+                        ));
+                    }
+                    for name in ["a.png", "Screenshot 2026-11-14.png"] {
+                        checked += 1;
+                        if let Err(why) = ink_check(&r, name, &r.fonts.heading, area) {
+                            cut.push(format!("{tag}: {why}"));
+                        }
+                    }
+                    for lang in [Lang::Id, Lang::En] {
+                        for key in [Key::ShelfPreviewLoading, Key::ShelfPreviewFailed] {
+                            checked += 1;
+                            if let Err(why) =
+                                ink_check(&r, text(lang, key), &r.fonts.small_center, l.image)
+                            {
+                                cut.push(format!("{tag} {lang:?}: {why}"));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 40, "only {checked} strings checked");
         cut.dedup();
         assert!(cut.is_empty(), "cut:\n{}", cut.join("\n"));
     }

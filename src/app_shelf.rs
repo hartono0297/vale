@@ -312,6 +312,12 @@ impl App {
         }
     }
 
+    /// The preview's back button or its image was clicked: the cards come
+    /// back (and the decoded image goes with the preview).
+    pub(super) fn shelf_preview_close(&mut self) {
+        self.shelf.preview = None;
+    }
+
     /// A left press: on a card whose file is there, it may become a drag.
     pub(super) fn shelf_press(
         &mut self,
