@@ -167,6 +167,10 @@ pub enum NoticeKind {
     /// "Vale sudah versi terbaru", "Diperbarui ke X.Y.Z", the debug-build
     /// note: temporary, a click dismisses.
     UpdateInfo,
+    /// "Diperbarui ke X.Y.Z · klik untuk lihat apa yang baru" after a version
+    /// change: a click on the body opens Settings at the "Apa yang baru"
+    /// card (`Effect::OpenWhatsNew`).
+    WhatsNew,
     /// A sticky note's reminder went off: the note's title over its time,
     /// with the chips "Tunda 10 mnt" and "Buka". Sticky like `Reminder` (one
     /// slot per note `id`, hidden in fullscreen, no close button); a click on
@@ -1060,6 +1064,8 @@ pub enum Effect {
     OpenTranscript(PathBuf),
     /// Settings, at the Transkrip card.
     OpenTranscriptSettings,
+    /// Settings, at the "Apa yang baru" card of Tentang.
+    OpenWhatsNew,
     /// The file picker for a transcript of any audio or video file, opening
     /// in the folder of that kind of recording.
     RecPickFile(RecKind),

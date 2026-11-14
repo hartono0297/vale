@@ -622,6 +622,7 @@ enum DemoNotice {
     UpdateProgress,
     UpdateFailed,
     UpdateDone,
+    WhatsNew,
 }
 
 /// The history entry the demo's copy previews name (`DemoNotice::Clip*`).
@@ -1236,7 +1237,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 213] = [
+const SCENES: [Scene; 214] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -1649,6 +1650,7 @@ const SCENES: [Scene; 213] = [
     notice("update-progress", DemoNotice::UpdateProgress),
     notice("update-failed", DemoNotice::UpdateFailed),
     notice("update-done", DemoNotice::UpdateDone),
+    notice("whats-new", DemoNotice::WhatsNew),
     // The page dots hovered: icons, magnified around the pointer.
     Scene {
         dock: Some(3),
@@ -3796,6 +3798,15 @@ fn demo_notice(which: DemoNotice, renderer: &Renderer) -> Notice {
             &crate::i18n::update_done(crate::i18n::lang(), "9.9.9"),
             "9.9.8 \u{2192} 9.9.9".into(),
             NoticeKind::UpdateInfo,
+        ),
+        DemoNotice::WhatsNew => notice(
+            "Vale",
+            &crate::i18n::update_done(crate::i18n::lang(), "9.9.9"),
+            format!(
+                "9.9.8 \u{2192} 9.9.9 \u{b7} {}",
+                tr(Key::WhatsNewHint)
+            ),
+            NoticeKind::WhatsNew,
         ),
         DemoNotice::DeviceSafe => {
             devices::safe_notice(crate::i18n::lang(), &["SanDisk Ultra".to_owned()])

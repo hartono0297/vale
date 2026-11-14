@@ -58,7 +58,7 @@ fn duration_of(notice: &Notice) -> Duration {
         NoticeKind::Screenshot { secs, .. } => Duration::from_secs(u64::from(secs)),
         NoticeKind::ShotSaved { .. } | NoticeKind::ShotDeleted => SHOT_DONE_DURATION,
         NoticeKind::Arranged { .. } => ARRANGE_NOTICE_DURATION,
-        NoticeKind::UpdateFailed => UPDATE_NOTICE_DURATION,
+        NoticeKind::UpdateFailed | NoticeKind::WhatsNew => UPDATE_NOTICE_DURATION,
         NoticeKind::UpdateProgress { .. } => UPDATE_PROGRESS_DURATION,
         _ => NOTICE_DURATION,
     }
@@ -119,6 +119,7 @@ fn notice_has_action(notice: &Notice) -> bool {
             | NoticeKind::ClipPreview { .. }
             | NoticeKind::Arranged { .. }
             | NoticeKind::UpdateFailed
+            | NoticeKind::WhatsNew
             | NoticeKind::ShotSaved { path: Some(_) }
             | NoticeKind::RecSaved { .. }
             | NoticeKind::RecMicDenied
@@ -699,6 +700,7 @@ impl IslandState {
                 | NoticeKind::DeviceSafe
                 | NoticeKind::Arranged { .. }
                 | NoticeKind::UpdateInfo
+                | NoticeKind::WhatsNew
                 | NoticeKind::Pomodoro => self.queue.push_back(notice),
                 // The download's percent: one notice, replaced where it
                 // stands (current or queued) so it never re-enters, and
@@ -3066,6 +3068,7 @@ impl IslandState {
                 Some(Effect::OpenTranscript(audio))
             }
             NoticeKind::TranscriptSettings => Some(Effect::OpenTranscriptSettings),
+            NoticeKind::WhatsNew => Some(Effect::OpenWhatsNew),
             NoticeKind::ClaudeWaiting { .. }
             | NoticeKind::Reminder { .. }
             | NoticeKind::StickyReminder { .. }
@@ -10701,6 +10704,24 @@ mod tests {
         let fx = s.apply(Event::Click(Hit::Body), t0 + secs(1));
         assert_eq!(fx, vec![Effect::OpenTranscriptSettings]);
         assert_eq!(s.view(), View::Idle);
+    }
+
+    #[test]
+    fn whats_new_notice_click_opens_the_card() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Notice(rec_notice(NoticeKind::WhatsNew)), t0);
+        let fx = s.apply(Event::Click(Hit::Body), t0 + secs(1));
+        assert_eq!(fx, vec![Effect::OpenWhatsNew]);
+        assert_eq!(s.view(), View::Idle);
+    }
+
+    #[test]
+    fn whats_new_notice_is_actionable_and_lasts_8_seconds() {
+        let n = rec_notice(NoticeKind::WhatsNew);
+        assert!(notice_has_action(&n));
+        assert!(notice_closable(&n));
+        assert_eq!(duration_of(&n), UPDATE_NOTICE_DURATION);
     }
 
     #[test]

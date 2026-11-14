@@ -182,6 +182,11 @@ pub struct Config {
     /// still loads and `merge_owned` keeps working; nothing reads or writes it.
     #[serde(deserialize_with = "lenient_string")]
     pub update_offered: String,
+    /// The last version whose "What's new" was shown (or skipped on a fresh
+    /// install), X.Y.Z; empty before the first one. Owned by the island and
+    /// never exported: it describes this PC's install.
+    #[serde(deserialize_with = "lenient_string")]
+    pub whats_new_seen: String,
     /// Where the Settings window was last (screen coordinates), so it opens
     /// there again. Not part of `merge_owned`: it comes from the file on every
     /// save and only `save_config_with` writes it, so a hand edit survives.
@@ -840,6 +845,7 @@ impl Default for Config {
             update_check: true,
             hotkeys: crate::hotkey::Hotkeys::default(),
             update_offered: String::new(),
+            whats_new_seen: String::new(),
             font: UiFont::Sans,
             phone_net: PhoneNet::Wifi,
             notch_monitor: NotchMonitor::Primary,
@@ -994,6 +1000,7 @@ pub fn merge_owned(disk: Config, mem: &Config) -> Config {
         update_check: mem.update_check,
         hotkeys: mem.hotkeys,
         update_offered: mem.update_offered.clone(),
+        whats_new_seen: mem.whats_new_seen.clone(),
         font: mem.font,
         phone_net: mem.phone_net,
         notch_monitor: mem.notch_monitor.clone(),
@@ -1391,6 +1398,7 @@ mod tests {
             },
             update_check: false,
             update_offered: "3.11.0".into(),
+            whats_new_seen: "5.3.1".into(),
             hotkeys: crate::hotkey::Hotkeys {
                 search: None,
                 clipboard: crate::hotkey::parse("Win+Alt+V").unwrap(),
@@ -1628,6 +1636,23 @@ mod tests {
         let merged = merge_owned(mem, &Config::default());
         assert!(merged.update_check);
         assert_eq!(merged.update_offered, "");
+    }
+
+    #[test]
+    fn whats_new_seen_defaults_empty_reads_leniently_and_belongs_to_the_island() {
+        assert_eq!(Config::default().whats_new_seen, "");
+        assert_eq!(parse(r#"{"style":"Notch"}"#).whats_new_seen, "");
+        for junk in [r#"7"#, "null", "[]", "true"] {
+            let c = parse(&format!(r#"{{"style":"Notch","whats_new_seen":{junk}}}"#));
+            assert_eq!(c.whats_new_seen, "", "{junk}");
+            assert_eq!(c.style, Style::Notch);
+        }
+        assert_eq!(parse(r#"{"whats_new_seen":"5.3.1"}"#).whats_new_seen, "5.3.1");
+        let mem = Config {
+            whats_new_seen: "5.3.1".into(),
+            ..Config::default()
+        };
+        assert_eq!(merge_owned(Config::default(), &mem).whats_new_seen, "5.3.1");
     }
 
     #[test]
