@@ -621,9 +621,22 @@ impl App {
         }
     }
 
+    /// Every entry not pinned goes, from memory and the file: the settings
+    /// button and the page's "Hapus semua".
+    fn clip_clear_unpinned(&mut self) {
+        if self.clip.history.clear_unpinned() {
+            self.clip_schedule_packing();
+            self.clip.selected = None;
+            self.clip.scroll = 0;
+            self.write_clip_file_now();
+            self.clip_drag_forget_missing();
+        }
+    }
+
     /// A card's click or button, from the reducer.
     pub(super) fn perform_clip(&mut self, action: ClipAction) -> Option<Event> {
         match action {
+            ClipAction::ClearUnpinned => self.clip_clear_unpinned(),
             ClipAction::Copy(id) => return self.copy_clip(id, false),
             ClipAction::CopyPlain(id) => return self.copy_clip(id, true),
             ClipAction::TogglePin(id) => {
@@ -1104,13 +1117,7 @@ impl App {
             ClipSetting::FeedbackAll(on) => cfg.copied_feedback_all = on,
             ClipSetting::CopyNotice(on) => cfg.copy_notice = on,
             ClipSetting::Clear => {
-                if self.clip.history.clear_unpinned() {
-                    self.clip_schedule_packing();
-                    self.clip.selected = None;
-                    self.clip.scroll = 0;
-                    self.write_clip_file_now();
-                    self.clip_drag_forget_missing();
-                }
+                self.clip_clear_unpinned();
                 self.redraw_clip();
                 return;
             }
