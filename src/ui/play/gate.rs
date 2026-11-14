@@ -48,7 +48,7 @@ fn transient_ok(env: &Env) -> bool {
 }
 
 /// Whether a play may begin. `Manual` skips the presence rule, the cooldown and
-/// the transient gates, nothing else.
+/// the transient gates, nothing else. `Greeting` skips the presence rule only.
 pub fn may_start(
     env: &Env,
     moment: Moment,
@@ -67,7 +67,10 @@ pub fn may_start(
         MascotPlay::Sapaan => matches!(moment, Moment::Greeting | Moment::Hour),
         _ => true,
     };
-    allowed && transient_ok(env) && presence_ok(since_input) && since_last >= cooldown(preset)
+    // A greeting fires just after the owner touched the PC: it stands in for
+    // the presence rule. The cooldown and every gate still bind it.
+    let present = moment == Moment::Greeting || presence_ok(since_input);
+    allowed && transient_ok(env) && present && since_last >= cooldown(preset)
 }
 
 /// Whether a running play has to end. It winds down unless `instant_stop`.
@@ -195,6 +198,20 @@ mod tests {
         assert!(!may_start(&env, Moment::Idle, p, Duration::from_secs(5), ok.1), "mid-keystroke");
         assert!(!may_start(&env, Moment::Idle, p, Duration::from_secs(600), ok.1), "away");
         assert!(!may_start(&env, Moment::Idle, p, ok.0, ok.1 - Duration::from_secs(1)), "cooling down");
+    }
+
+    #[test]
+    fn a_greeting_stands_in_for_presence_but_not_for_the_cooldown() {
+        let p = MascotPlay::Sesekali;
+        let cooled = Duration::from_secs(12 * 60);
+        for since_input in [Duration::ZERO, Duration::from_secs(5), Duration::from_secs(600)] {
+            assert!(may_start(&ok_env(), Moment::Greeting, p, since_input, cooled), "{since_input:?}");
+            assert!(!may_start(&ok_env(), Moment::Idle, p, since_input, cooled), "{since_input:?}");
+        }
+        assert!(!may_start(&ok_env(), Moment::Greeting, p, Duration::ZERO, cooled - Duration::from_secs(1)));
+        for (name, env) in off_by_one_envs() {
+            assert!(!may_start(&env, Moment::Greeting, p, Duration::ZERO, cooled), "{name}");
+        }
     }
 
     #[test]
