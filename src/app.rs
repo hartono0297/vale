@@ -2551,12 +2551,15 @@ impl App {
         if self.play.is_none() {
             return;
         }
-        // Input tick first, cursor second. Input landing between the two reads
-        // moves the cursor but not the tick we hold, so it can only show as a
-        // moved pointer (no key ends the play) and the tick catches up next
-        // frame. The other order could pair a new tick with a pointer that
-        // has not moved yet, and read a mouse move as a key.
-        // A failed read counts as no new input; the first frame only records.
+        // Input tick first, cursor second. A key or wheel that lands between
+        // the two reads leaves this frame's tick old, so it is judged next
+        // frame, as a key. A mouse move that lands between them shows as a
+        // moved pointer; its own tick may still be missing from the first
+        // read, so on a moved frame the tick is read again before it is kept
+        // (`tick_to_keep`) and never surfaces later as a key. A key pressed in
+        // the same frame as a mouse move is seen as the move, and the next
+        // key ends the play. A failed read counts as no new input; the first
+        // frame only records.
         let tick_now = last_input_tick();
         // The one pointer reading of this frame feeds the presence gate and
         // the click-through test.
@@ -2583,7 +2586,8 @@ impl App {
         let prev = self.play_input;
         let tick = tick_now.or(prev.map(|p| p.0)).unwrap_or(0);
         let (tick0, seen0) = prev.unwrap_or((tick, seen));
-        self.play_input = Some((tick, seen));
+        let kept = tick_to_keep(tick, prev.is_some() && seen0 != seen, last_input_tick);
+        self.play_input = Some((kept, seen));
         let age = self.play.as_ref().map_or(Duration::ZERO, |a| now.saturating_duration_since(a.started));
         let ends = input_ends_play((tick0, tick), (seen0, seen), buttons, age);
         let out = advance_slot(&mut self.play, &env, shape, jumped, ends, inside, now);
@@ -8893,6 +8897,14 @@ fn step_play(
     play.done(now)
 }
 
+/// The input tick to remember after a frame. When the pointer moved this
+/// frame, the move's own tick may have landed after the first read, so it is
+/// read again (`again`) and kept, or the next frame would see that tick next
+/// to a pointer that now holds still and call it a key.
+fn tick_to_keep(first: u32, pointer_moved: bool, again: impl FnOnce() -> Option<u32>) -> u32 {
+    if pointer_moved { again().unwrap_or(first) } else { first }
+}
+
 /// A key in the first moments of a play does not end it: the Enter that picks
 /// "Mainkan maskot" from the menu is still going up when the play starts.
 const KEY_GRACE: Duration = Duration::from_millis(250);
@@ -12118,6 +12130,22 @@ mod tests {
         for (tick, cursor, buttons, ends, name) in cases {
             assert_eq!(input_ends_play(tick, cursor, buttons, Duration::from_secs(5)), ends, "{name}");
         }
+    }
+
+    #[test]
+    fn a_mouse_moves_own_tick_never_shows_up_later_as_a_key() {
+        let (c0, c1) = (Some((10, 20)), Some((11, 20)));
+        let ms = Duration::from_secs(5);
+        // Frame N: tick T0 read, the mouse moves (tick T1), cursor read moved.
+        let (t0, t1) = (5, 9);
+        let kept = tick_to_keep(t0, true, || Some(t1));
+        assert!(!input_ends_play((t0, t0), (c0, c1), false, ms), "frame N: a move");
+        // Frame N+1: the mouse stopped, the tick is still T1.
+        assert!(!input_ends_play((kept, t1), (c1, c1), false, ms), "frame N+1: no key");
+        // A real key afterwards still ends it.
+        assert!(input_ends_play((kept, 12), (c1, c1), false, ms), "a later key ends it");
+        assert_eq!(tick_to_keep(t0, false, || unreachable!()), t0, "no move: no second read");
+        assert_eq!(tick_to_keep(t0, true, || None), t0, "a failed second read keeps the first");
     }
 
     #[test]
