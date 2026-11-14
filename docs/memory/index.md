@@ -131,6 +131,7 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[mp4-silent-audio-track]]: an `.mp4` whose audio track never got a sample cannot be read back (0xC00D36C4); fill silence until the first sample
 - [[config-parse-default-fallback]]: `config::parse` gives `Config::default()` when one non-lenient field is bad; build configs from outside data key by key and finish with `try_parse`
 - [[tray-dark-menu]]: the tray menu follows the Windows app mode via uxtheme ordinals 135/136/104 (AllowDark), not Vale's window theme
+- [[native-menu-holds-panel]]: the tray menu and the Notes card menu are modal native popups; they must run inside `hold_panel_over_app` (`MenuOpen`) or the hover panel collapses under them
 
 ## Conventions
 
