@@ -618,6 +618,7 @@ pub fn run(media_log_flag: bool, start: Start) {
             pending: None,
             clock_hour: Local::now().hour(),
             play_clock_jumped: false,
+            play_input: None,
             eq_capture: None,
             eq_capture_on: false,
             dance_anchor: Instant::now(),
@@ -1130,6 +1131,9 @@ struct App {
     clock_hour: u32,
     /// The wall clock jumped under a running story (`on_clock_jump`).
     play_clock_jumped: bool,
+    /// The last-input tick and the pointer at the running story's previous
+    /// frame (`input_ends_play`); `None` before its first frame.
+    play_input: Option<(u32, Option<(i32, i32)>)>,
     /// The loopback capture behind the equalizer bars (`eq_audio`), created
     /// the first time it is wanted; `eq_capture_on` is the last
     /// `set_running` sent to it.
@@ -2524,6 +2528,7 @@ impl App {
             shape: play_shape_of(self.config.style, self.notch_size(), self.config.mascot),
         });
         self.play_clock_jumped = false;
+        self.play_input = None;
         self.ensure_clock();
         // The timer that may have started it is spent.
         self.sync_mascot_timer(now);
@@ -2554,7 +2559,16 @@ impl App {
         let buttons = [VK_LBUTTON, VK_RBUTTON, VK_MBUTTON]
             .into_iter()
             .any(|vk| (unsafe { GetAsyncKeyState(i32::from(vk.0)) }) as u16 & 0x8000 != 0);
-        let out = advance_slot(&mut self.play, &env, shape, jumped, buttons, inside, now);
+        // Read after the pointer: input that lands between the two readings
+        // then shows as a moved pointer at the next frame, never as a key.
+        // A failed read counts as no new input; the first frame only records.
+        let seen = cursor.map(|p| (p.x, p.y));
+        let prev = self.play_input;
+        let tick = last_input_tick().or(prev.map(|p| p.0)).unwrap_or(0);
+        let (tick0, seen0) = prev.unwrap_or((tick, seen));
+        self.play_input = Some((tick, seen));
+        let ends = input_ends_play((tick0, tick), (seen0, seen), buttons);
+        let out = advance_slot(&mut self.play, &env, shape, jumped, ends, inside, now);
         if let Some(story) = out.finished {
             self.last_story = Some(story);
             self.last_play_at = Some(now);
@@ -7914,15 +7928,19 @@ fn outside_poll_ms(input_idle_ms: u32) -> u32 {
 /// Milliseconds since the last keyboard or mouse input in this session;
 /// `None` when Windows cannot say.
 fn input_idle() -> Option<u32> {
+    last_input_tick().map(|at| unsafe { GetTickCount() }.wrapping_sub(at))
+}
+
+/// The tick count of the last keyboard or mouse input in this session;
+/// `None` when Windows cannot say.
+fn last_input_tick() -> Option<u32> {
     let mut info = LASTINPUTINFO {
         cbSize: size_of::<LASTINPUTINFO>() as u32,
         dwTime: 0,
     };
-    if unsafe { GetLastInputInfo(&mut info) }.as_bool() {
-        Some(unsafe { GetTickCount() }.wrapping_sub(info.dwTime))
-    } else {
-        None
-    }
+    unsafe { GetLastInputInfo(&mut info) }
+        .as_bool()
+        .then_some(info.dwTime)
 }
 
 /// `input_idle`, with 0 (just now) when it cannot be read: the outside poll
@@ -8820,6 +8838,18 @@ fn step_play(
     play.done(now)
 }
 
+/// Between two frames of a story, the owner did something that ends it: a
+/// mouse button is down, or input arrived (the last-input tick moved) while
+/// the pointer stayed where it was, which is a key, a hotkey or the wheel.
+/// Moving the mouse alone does not end it.
+fn input_ends_play(
+    tick: (u32, u32),
+    cursor: (Option<(i32, i32)>, Option<(i32, i32)>),
+    buttons: bool,
+) -> bool {
+    buttons || (tick.0 != tick.1 && cursor.0 == cursor.1)
+}
+
 /// What one frame of a running story leaves behind.
 struct Advance {
     /// The story that was just dropped.
@@ -8828,7 +8858,8 @@ struct Advance {
     click_through: bool,
 }
 
-/// One frame of the story in `slot`: a mouse button down ends it, `step_play`
+/// One frame of the story in `slot`: `clicked` (a button or a key,
+/// `input_ends_play`) ends it, `step_play`
 /// runs, and a finished story is dropped. The click-through state is derived
 /// from the slot after all that, so the frame that drops a story, by any path,
 /// is the frame that clears it.
@@ -11928,6 +11959,25 @@ mod tests {
         let mut none = None;
         let out = advance_slot(&mut none, &ok_env(), shape, false, true, false, t0);
         assert!(none.is_none() && out.finished.is_none() && !out.click_through);
+    }
+
+    #[test]
+    fn a_key_or_a_button_ends_a_play_and_moving_the_mouse_does_not() {
+        let (at, moved) = (Some((10, 20)), Some((11, 20)));
+        // (tick before, tick now, cursor before, cursor now, buttons) -> ends
+        let cases = [
+            ((5, 5), (at, at), false, false, "nothing happened"),
+            ((5, 9), (at, at), false, true, "input with a still pointer: a key or the wheel"),
+            ((5, 9), (at, moved), false, false, "the mouse moved"),
+            ((5, 5), (at, moved), false, false, "the pointer moved, no newer input"),
+            ((5, 5), (at, at), true, true, "a button is down"),
+            ((5, 9), (at, moved), true, true, "a button is down while the mouse moves"),
+            ((u32::MAX, 2), (at, at), false, true, "the tick count wrapped"),
+            ((5, 9), (None, None), false, true, "no pointer to read either time"),
+        ];
+        for (tick, cursor, buttons, ends, name) in cases {
+            assert_eq!(input_ends_play(tick, cursor, buttons), ends, "{name}");
+        }
     }
 
     #[test]
