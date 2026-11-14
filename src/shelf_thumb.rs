@@ -9,7 +9,7 @@ use std::os::windows::fs::OpenOptionsExt;
 use std::path::Path;
 
 use windows::Win32::Graphics::Imaging::{
-    CLSID_WICImagingFactory, GUID_WICPixelFormat32bppBGR, IWICImagingFactory,
+    CLSID_WICImagingFactory, GUID_WICPixelFormat32bppPBGRA, IWICImagingFactory,
     WICBitmapDitherTypeNone, WICBitmapInterpolationModeFant, WICBitmapPaletteTypeCustom,
     WICRect,
 };
@@ -25,9 +25,17 @@ pub const CARD_SIDE: u32 = 192;
 /// The long side of the large preview, in pixels.
 pub const PREVIEW_SIDE: u32 = 1024;
 
+/// The most pixels an image may declare (WIC decodes them before scaling, so
+/// a small, highly compressed file can still ask for gigabytes).
+const MAX_PIXELS: u64 = 250_000_000;
+
+fn too_many_pixels(w: u32, h: u32) -> bool {
+    u64::from(w) * u64::from(h) > MAX_PIXELS
+}
+
 /// The image at `path` scaled to `max_side` on its long side (never
-/// enlarged), as top-down BGRA with every alpha 255, or `None` (not a file,
-/// empty, over `MAX_BYTES`, not an image WIC can decode).
+/// enlarged), as top-down premultiplied BGRA (alpha kept), or `None` (not a file,
+/// empty, over `MAX_BYTES`, over `MAX_PIXELS`, not an image WIC can decode).
 pub fn decode(path: &Path, max_side: u32) -> Option<Thumb> {
     // Share read, write and delete so a file another program has open, or
     // is about to move, still opens.
@@ -55,7 +63,7 @@ unsafe fn decode_file(file: &std::fs::File, max_side: u32) -> Option<Thumb> {
         let source = oriented_source(&wic, file)?;
         let (mut w, mut h) = (0u32, 0u32);
         source.GetSize(&mut w, &mut h).ok()?;
-        if w == 0 || h == 0 {
+        if w == 0 || h == 0 || too_many_pixels(w, h) {
             return None;
         }
         let (tw, th) = scaled_to(w, h, max_side);
@@ -67,7 +75,7 @@ unsafe fn decode_file(file: &std::fs::File, max_side: u32) -> Option<Thumb> {
         converter
             .Initialize(
                 &scaler,
-                &GUID_WICPixelFormat32bppBGR,
+                &GUID_WICPixelFormat32bppPBGRA,
                 WICBitmapDitherTypeNone,
                 None,
                 0.0,
@@ -83,11 +91,6 @@ unsafe fn decode_file(file: &std::fs::File, max_side: u32) -> Option<Thumb> {
             Height: i32::try_from(th).ok()?,
         };
         converter.CopyPixels(&rect, stride, &mut bgra).ok()?;
-        // The 32bpp BGR format leaves the fourth byte unspecified (transparent
-        // areas come out dark; accepted), so make every pixel opaque.
-        for pixel in bgra.chunks_exact_mut(4) {
-            pixel[3] = 255;
-        }
         Some(Thumb { w: tw, h: th, bgra })
     }
 }
@@ -130,6 +133,37 @@ mod tests {
         let thumb = decode(&small, PREVIEW_SIDE).expect("a thumb");
         assert_eq!((thumb.w, thumb.h), (50, 40));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_transparent_png_keeps_its_alpha_and_comes_out_premultiplied() {
+        let dir = temp_dir("shelf-thumb-alpha");
+        let path = dir.join("alpha.png");
+        // Straight BGRA: fully transparent with a colour in it, opaque red,
+        // and a half-transparent red.
+        let bgra = [10, 200, 30, 0, 0, 0, 255, 255, 0, 0, 200, 128];
+        let joined = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
+        let png = crate::screenshot::win::encode_png(3, 1, &bgra).expect("a png");
+        if joined {
+            unsafe { CoUninitialize() };
+        }
+        std::fs::write(&path, png).expect("write");
+        let thumb = decode(&path, CARD_SIDE).expect("a thumb");
+        assert_eq!((thumb.w, thumb.h), (3, 1));
+        assert_eq!(&thumb.bgra[0..4], [0, 0, 0, 0], "transparent: zeroed colour");
+        assert_eq!(&thumb.bgra[4..8], [0, 0, 255, 255], "opaque is unchanged");
+        let half = &thumb.bgra[8..12];
+        assert_eq!((half[0], half[1], half[3]), (0, 0, 128), "{half:?}");
+        assert!(half[2].abs_diff(100) <= 2, "premultiplied red: {half:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_declared_size_over_the_pixel_cap_is_refused() {
+        assert!(!too_many_pixels(16_000, 15_625)); // 250 M exactly
+        assert!(too_many_pixels(16_000, 15_626));
+        assert!(too_many_pixels(u32::MAX, u32::MAX));
+        assert!(!too_many_pixels(640, 480));
     }
 
     #[test]
