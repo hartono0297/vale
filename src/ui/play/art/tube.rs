@@ -1,6 +1,8 @@
 //! Tapered tubes, ported line for line from `docs/design/maskot-notch-v3.html`
 //! (`normals` ... `limb`). Pure: points in, `Seg` paths and `Draw`s out, in
-//! the units of the input points.
+//! the units of the input points. Those are the mascot's 64-unit grid: the
+//! constants here (0.3 minimum width, 0.28 smallest sucker, 0.6 shortest
+//! limb, 1.2 sucker margin) are tuned to it.
 
 use crate::ui::play::stories::Draw;
 use crate::ui::robot::Seg;
@@ -151,6 +153,9 @@ pub fn along(d: &[Pt], len: f32, n: usize) -> Vec<Pt> {
     if d.is_empty() {
         return Vec::new();
     }
+    if n == 0 {
+        return vec![d[0]];
+    }
     let c = measure(d);
     let e = len.min(c[c.len() - 1]);
     (0..=n).map(|k| sample_at(d, &c, e * k as f32 / n as f32)).collect()
@@ -221,7 +226,9 @@ pub fn chain(x: f32, y: f32, a: f32, len: f32, n: usize, k: impl Fn(f32) -> f32)
 }
 
 /// The joint (knee, elbow) of two bones `l1`, `l2` long from `a` toward
-/// `b`; `bend` (+1 or -1) picks the side. Out of reach, it stretches.
+/// `b`; `bend` (+1 or -1) picks the side. Only a target too far stretches
+/// the limb straight; a target too near is clamped by `acos`, as in the
+/// mockup.
 pub fn ik(a: Pt, b: Pt, l1: f32, l2: f32, bend: f32) -> Pt {
     if l1 <= 0.0 {
         return a;
@@ -263,7 +270,7 @@ pub struct Suckers {
 /// `wf(s)`, or `w0` to `w1` along `s^pow`, times `wm`, with `fluff`
 /// ripples toward the tip; `cap` rounds the base too. `side_shade` is the
 /// side (+1 or -1) and depth (fraction of the width) of the volume band,
-/// darkened by `shade_op` (the mockup's `sop`). `tip` is the dark tip's
+/// black at `shade_op` alpha (the mockup's `sop`). `tip` is the dark tip's
 /// length and colour.
 #[derive(Clone, Copy, Debug)]
 pub struct LimbStyle {
@@ -300,17 +307,9 @@ impl Default for LimbStyle {
     }
 }
 
-/// `rgb` darkened toward black by `op`: black at `op` alpha over `rgb`.
-fn darken(rgb: u32, op: f32) -> u32 {
-    let ch = |sh: u32| {
-        let v = ((rgb >> sh) & 0xFF) as f32 * (1.0 - op.clamp(0.0, 1.0));
-        (v.round() as u32).min(255) << sh
-    };
-    ch(16) | ch(8) | ch(0)
-}
-
 /// One limb about the centreline `p`: the body, stripes, dark tip, suckers,
-/// then a thin shade band for volume, as the mockup draws them. Nothing
+/// then a thin translucent black band (a `Tint`) for volume, last, as the
+/// mockup draws them. Nothing
 /// for fewer than two points or a path shorter than 0.6.
 pub fn limb(p: &[Pt], st: &LimbStyle, rgb: u32) -> Vec<Draw> {
     if p.len() < 2 {
@@ -387,10 +386,7 @@ pub fn limb(p: &[Pt], st: &LimbStyle, rgb: u32) -> Vec<Draw> {
         }
     }
     if let Some((side, frac)) = st.side_shade {
-        out.push(Draw::Fill {
-            path: strip_path(p, &w, &nm, side as f32, frac),
-            rgb: darken(rgb, st.shade_op),
-        });
+        out.push(Draw::Tint { path: strip_path(p, &w, &nm, side as f32, frac), rgb: 0, alpha: st.shade_op });
     }
     out
 }
@@ -500,5 +496,150 @@ mod tests {
         }
         let k = ik((1.0, 1.0), (1.0, 1.0), 3.0, 3.0, 1.0);
         assert!(k.0.is_finite() && k.1.is_finite());
+    }
+
+    /// A straight horizontal path `0..len` in half-unit steps, so its normal is +y.
+    fn flat(len: f32) -> Vec<Pt> {
+        along(&[(0.0, 0.0), (len, 0.0)], len, (len * 2.0) as usize)
+    }
+
+    fn body(out: &[Draw]) -> &[Seg] {
+        let Draw::Fill { path, .. } = &out[0] else { panic!("no body") };
+        path
+    }
+
+    fn fills_with(out: &[Draw], want: u32) -> Vec<&[Seg]> {
+        out.iter()
+            .filter_map(|d| match d {
+                Draw::Fill { path, rgb } if *rgb == want => Some(path.as_slice()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn mid_y(segs: &[Seg], x: f32) -> f32 {
+        segs.iter()
+            .find_map(|s| match *s {
+                Seg::Quad(cx, cy, ..) if close(cx, x, 1e-3) => Some(cy),
+                _ => None,
+            })
+            .expect("a point there")
+    }
+
+    #[test]
+    fn ik_bend_sign_follows_the_mockup() {
+        // g = angle - bend * acos(c): bend +1 turns the knee to -y (up on screen).
+        let up = ik((0.0, 0.0), (10.0, 0.0), 6.0, 6.0, 1.0);
+        let down = ik((0.0, 0.0), (10.0, 0.0), 6.0, 6.0, -1.0);
+        assert!(up.1 < -1.0 && down.1 > 1.0, "{up:?} {down:?}");
+        assert!(close(up.1, -down.1, 1e-4));
+    }
+
+    #[test]
+    fn the_width_law_takes_pow_and_wm() {
+        let path = flat(10.0);
+        let st = LimbStyle { w0: 4.0, w1: 2.0, pow: 2.0, side_shade: None, ..LimbStyle::default() };
+        // lerp(4, 2, 0.5^2) = 3.5 wide at the middle.
+        let out = limb(&path, &st, 0x808080);
+        assert!(close(mid_y(body(&out), 5.0), 1.75, 0.02));
+        let out = limb(&path, &LimbStyle { wm: 0.5, ..st }, 0x808080);
+        assert!(close(mid_y(body(&out), 5.0), 0.875, 0.02));
+    }
+
+    #[test]
+    fn stripes_are_counted_and_placed_from_the_tip() {
+        let path = flat(20.0);
+        let q = Stripes { start: 2.0, every: 5.0, w: 1.0, skip_base: 3.0, rgb: 0x123456 };
+        let st = LimbStyle { stripes: Some(q), side_shade: None, ..LimbStyle::default() };
+        let out = limb(&path, &st, 0x808080);
+        // d = 2, 7, 12 (17 is not < 20 - 1 - 3), each centred at 20 - d.
+        let bands = fills_with(&out, 0x123456);
+        assert_eq!(bands.len(), 3);
+        let (Seg::Move(x0, _), Seg::Line(x1, _)) = (bands[0][0], bands[0][1]) else { panic!() };
+        assert!(close(x0, 17.5, 1e-3) && close(x1, 18.5, 1e-3), "{x0} {x1}");
+    }
+
+    #[test]
+    fn the_shade_band_is_the_last_tint_on_its_side() {
+        for side in [1i8, -1] {
+            let st = LimbStyle { w0: 4.0, w1: 4.0, side_shade: Some((side, 0.3)), ..LimbStyle::default() };
+            let out = limb(&flat(10.0), &st, 0x808080);
+            let Some(Draw::Tint { path, rgb, alpha }) = out.last() else { panic!("no tint last") };
+            assert_eq!((*rgb, *alpha), (0, 0.17));
+            let Seg::Move(_, outer) = path[0] else { panic!() };
+            assert!(close(outer, side as f32 * 2.0, 1e-3), "outer {outer}");
+            let inner = path.iter().find_map(|s| match *s { Seg::Line(_, y) if !close(y, outer, 1e-3) => Some(y), _ => None });
+            assert!(close(inner.unwrap(), side as f32 * 0.8, 1e-3));
+        }
+    }
+
+    #[test]
+    fn the_tip_starts_its_length_from_the_end() {
+        let st = LimbStyle { tip: Some((4.0, 0x111111)), side_shade: None, ..LimbStyle::default() };
+        let out = limb(&flat(20.0), &st, 0x808080);
+        let tip = fills_with(&out, 0x111111);
+        assert_eq!(tip.len(), 1);
+        let Seg::Move(x, _) = tip[0][0] else { panic!() };
+        assert!(close(x, 16.0, 0.51), "{x}");
+    }
+
+    #[test]
+    fn suckers_sit_on_their_side_every_so_often_and_skip_the_small_ones() {
+        let q = Suckers { start: 1.0, every: 4.0, side: -1.0, rgb: 0xAA0000, inner: 0x00AA00 };
+        let at = |w: f32| {
+            let st = LimbStyle { w0: w, w1: w, suckers: Some(q), side_shade: None, ..LimbStyle::default() };
+            limb(&flat(20.0), &st, 0x808080)
+        };
+        let out = at(4.0);
+        let rims: Vec<_> = out
+            .iter()
+            .filter_map(|d| match d {
+                Draw::Ellipse { c, r, rgb: 0xAA0000 } => Some((*c, *r)),
+                _ => None,
+            })
+            .collect();
+        // d = 1, 5, 9, 13, 17 (< 20 - 1.2), centred 0.33 w off the line on side -1.
+        assert_eq!(rims.len(), 5);
+        for (k, (c, r)) in rims.iter().enumerate() {
+            assert!(close(c.1, -1.32, 1e-3) && close(r.0, 1.0, 1e-3), "{c:?} {r:?}");
+            assert!(close(c.0, 19.0 - 4.0 * k as f32, 0.51), "{k}: {c:?}");
+        }
+        assert_eq!(out.iter().filter(|d| matches!(d, Draw::Ellipse { rgb: 0x00AA00, .. })).count(), 5);
+        // r = w / 4 under 0.28: none drawn at w = 1, some at w = 1.2.
+        assert!(!at(1.0).iter().any(|d| matches!(d, Draw::Ellipse { .. })));
+        assert!(at(1.2).iter().any(|d| matches!(d, Draw::Ellipse { .. })));
+    }
+
+    #[test]
+    fn curl_turns_by_ang_from_the_heading_plus_sway() {
+        let (ang, sway, m) = (2.0f32, 0.3f32, 10usize);
+        let out = curl(&[(0.0, 0.0), (1.0, 0.0)], ang, 10.0, m, sway);
+        assert_eq!(out.len(), 2 + m);
+        let dir = |i: usize| (out[i + 1].1 - out[i].1).atan2(out[i + 1].0 - out[i].0);
+        let step = 2.0 / (m * (m + 1)) as f32;
+        assert!(close(dir(1), sway + ang * step, 1e-4), "first {}", dir(1));
+        assert!(close(dir(m), sway + ang, 1e-4), "last {}", dir(m));
+    }
+
+    #[test]
+    fn along_takes_a_len_longer_or_shorter_than_the_path() {
+        let path = [(0.0, 0.0), (10.0, 0.0)];
+        assert_eq!(along(&path, 100.0, 4).last(), Some(&(10.0, 0.0)));
+        let short = along(&path, 4.0, 4);
+        assert_eq!((short.len(), short[4]), (5, (4.0, 0.0)));
+        let one = along(&path, 5.0, 0);
+        assert_eq!(one, vec![(0.0, 0.0)]);
+    }
+
+    #[test]
+    fn a_degenerate_path_with_real_length_and_a_long_tip_are_finite() {
+        let st = LimbStyle {
+            tip: Some((50.0, 0x111111)),
+            stripes: Some(Stripes { start: 0.0, every: 1.0, w: 0.5, skip_base: 0.0, rgb: 1 }),
+            suckers: Some(Suckers { start: 0.0, every: 1.0, side: 1.0, rgb: 2, inner: 3 }),
+            ..LimbStyle::default()
+        };
+        let out = limb(&[(0.0, 0.0), (0.0, 0.0), (5.0, 0.0)], &st, 0x808080);
+        assert!(out.len() > 2 && all_finite(&out));
     }
 }

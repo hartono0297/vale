@@ -138,6 +138,10 @@ pub enum Draw {
     /// mockup's SVG fills: figures drawn the same way round fill where they
     /// overlap.
     Fill { path: Vec<Seg>, rgb: u32 },
+    /// `Fill`, translucent: the brush at `alpha` (times the part's), drawn
+    /// straight over what is under it, no layer. A limb's shade band is
+    /// black at 0.17.
+    Tint { path: Vec<Seg>, rgb: u32, alpha: f32 },
     /// `path`'s lines, `width` wide with round caps. A ring is a stroke of
     /// `circle_segs`.
     Stroke { path: Vec<Seg>, rgb: u32, width: f32 },
@@ -188,7 +192,7 @@ impl Draw {
     #[cfg_attr(not(test), allow(dead_code))]
     fn bounds_at(&self, unit: f32) -> Rect {
         match self {
-            Draw::Fill { path, .. } => path_box(path, 0.0),
+            Draw::Fill { path, .. } | Draw::Tint { path, .. } => path_box(path, 0.0),
             Draw::Stroke { path, width, .. } => path_box(path, width / 2.0),
             Draw::Ellipse { c, r, .. } => Rect {
                 x: c.0 - r.0,

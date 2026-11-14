@@ -2902,6 +2902,13 @@ impl Renderer {
                     unsafe { target.rt.FillGeometry(&p, &target.brush, None) };
                 }
             }
+            Draw::Tint { path: segs, rgb, alpha: a } => {
+                let filled = super::robot::path_filled(&self.d2d, segs, D2D1_FILL_MODE_WINDING);
+                if let Ok(p) = filled {
+                    self.set_color(*rgb, alpha * a);
+                    unsafe { target.rt.FillGeometry(&p, &target.brush, None) };
+                }
+            }
             Draw::Stroke { path: segs, rgb, width } => {
                 if let Some(p) = path(segs) {
                     self.set_color(*rgb, alpha);
@@ -5972,6 +5979,33 @@ mod tests {
         let at = |x: f32| ((x * k) as usize, ((below + 5.0) * k) as usize);
         assert!(green(pixel(&px, at(105.0))), "{:?}", pixel(&px, at(105.0)));
         assert!(green(pixel(&px, at(115.0))), "a hole where they overlap: {:?}", pixel(&px, at(115.0)));
+    }
+
+    #[test]
+    fn a_tint_darkens_what_is_under_it_instead_of_covering_it() {
+        // The limb's shade band is translucent black: over red it leaves half
+        // red, over a blue stripe a darker blue (not the body's colour).
+        use crate::ui::robot::Seg::{Close, Line, Move};
+        let rect = |x: f32, y: f32, w: f32| vec![Move(x, y), Line(x + w, y), Line(x + w, y + 10.0), Line(x, y + 10.0), Close];
+        let mut r = renderer();
+        let s = shape(Style::Pill, 190.0, 34.0);
+        let below = s.y + s.h + 20.0;
+        let part = |draw| Part { layer: Layer::Front, draw, alpha: 1.0 };
+        let parts = vec![
+            part(Draw::Fill { path: rect(100.0, below, 60.0), rgb: 0xFF0000 }),
+            part(Draw::Fill { path: rect(130.0, below, 10.0), rgb: 0x0000FF }),
+            part(Draw::Tint { path: rect(100.0, below, 60.0), rgb: 0x000000, alpha: 0.5 }),
+        ];
+        let play = PlayFrame { parts, ..play_frame(1.0) };
+        let px = with_frame_all(Some(play), None, None, 1.0, |frame| {
+            painted(&mut r, (crate::ui::geometry::WINDOW_W, below + 20.0), |r| r.paint_island(Style::Pill, s, frame).unwrap())
+        });
+        let k = r.scale;
+        let at = |x: f32| pixel(&px, ((x * k) as usize, ((below + 5.0) * k) as usize));
+        let red = at(110.0);
+        assert!(red[2].abs_diff(128) <= 3 && red[0] < 3 && red[1] < 3, "red half dark: {red:?}");
+        let blue = at(135.0);
+        assert!(blue[0].abs_diff(128) <= 3 && blue[2] < 3, "blue darkened, not replaced: {blue:?}");
     }
 
     #[test]
