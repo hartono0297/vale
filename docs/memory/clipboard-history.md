@@ -94,6 +94,36 @@ Run 7 of the v3.1 plan (Keputusan #5). Code in `src/clipboard/` (pure:
   `SystemLow`, `CleanDone`, `MoleDone` and `MoleFailed`; a newer "Disalin"
   replaces only an older "Disalin", never a cleaner or system notice.
 
+## "Hapus semua" in the panel (2026-11-14)
+
+A button in the Clipboard page's title row, left of the search field: first
+click arms it ("Yakin?" for `CLEAN_CONFIRM`, 4 s), the second clears every
+unpinned entry, same as Settings' "Hapus riwayat". Copy of the Notifikasi
+page's armed button: `State.clip_armed`, `Hit::ClipClear`,
+`ClipAction::ClearUnpinned`, disarmed by any other click, a page change, the
+panel closing or the deadline (no new timer). Design and plan in
+`docs/superpowers/specs/2026-11-14-clipboard-clear-all-design.md`.
+
+- **Shared clear.** `App::clip_clear_unpinned` (`app_clip.rs`) holds what
+  Settings' clear did (packing, selection and scroll reset, file rewritten,
+  dragged-out temp files forgotten); Settings and the button both call it. The
+  lock clear is separate and unchanged.
+- **When it shows.** `clip_clearable`: history on, search field empty, at
+  least one unpinned entry. With a search typed it hides, so "semua" never
+  means "only what matches". Armed and then hidden, it comes back as "Yakin?"
+  until the deadline (accepted).
+- **Layout.** `clipboard_layout(.., clear_w, ..)`: the width is the renderer's
+  (max of "Hapus semua" and "Yakin?" plus padding, so arming moves nothing);
+  `clip_frame` shrinks the search by it and keeps the title at least 108 dip.
+  Text reuses `Key::NotifClearAll` / `Key::NotifSure` (no new key). Demo scenes
+  `clipboard` and `clipboard-long` show it, `clipboard-armed` the "Yakin?" pill.
+- **Not verified by eye** (the screen was locked during the demo run): the
+  one-row fit at 560 px, JetBrains Mono, English. The layout tests cover the
+  geometry at button widths 60, 120 and 200, for Pill and Notch with no strip.
+- **Left as cleanup:** the paint block and the width measure repeat
+  `notif_head` / the Notifikasi paint (a shared helper would remove both
+  copies); one `Some(120.0)` case in the layout no-overlap sweep.
+
 ## Verify pass (2026-10-28)
 
 - The newest image always keeps its full-size original, even past
