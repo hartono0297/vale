@@ -126,6 +126,18 @@ pub fn shelf_jobs(
         .collect()
 }
 
+/// A bitmap cached for `cached_key` and built from `cached` is still the one
+/// to draw for `key` and `thumb`: same card and the very same decode. A card
+/// taken off and re-added keeps its key but gets a new decode.
+pub fn bitmap_is_current(
+    cached_key: &str,
+    cached: &Arc<Thumb>,
+    key: &str,
+    thumb: &Arc<Thumb>,
+) -> bool {
+    cached_key == key && Arc::ptr_eq(cached, thumb)
+}
+
 /// The largest rect of the picture's ratio inside `bx`, centred, never
 /// above 1:1.
 pub fn fit_contain(w: f32, h: f32, bx: Rect) -> Rect {
@@ -281,6 +293,15 @@ mod tests {
                 ("a".to_string(), PathBuf::from("p0.png"), CARD_SIDE, false),
             ]
         );
+    }
+
+    #[test]
+    fn a_cached_bitmap_matches_only_the_same_key_and_the_same_decoded_pixels() {
+        let (a, b) = (thumb(), thumb());
+        assert!(bitmap_is_current("k", &a, "k", &a));
+        // A card taken off and re-added keeps its key but has a new decode.
+        assert!(!bitmap_is_current("k", &a, "k", &b));
+        assert!(!bitmap_is_current("k", &a, "other", &a));
     }
 
     #[test]

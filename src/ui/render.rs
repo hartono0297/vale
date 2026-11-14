@@ -44,6 +44,7 @@ use windows::core::{Interface, Result};
 use windows_numerics::{Matrix3x2, Vector2};
 
 use std::mem::ManuallyDrop;
+use std::sync::Arc;
 use std::time::Instant;
 
 use chrono::{DateTime, Local, NaiveDate, NaiveDateTime};
@@ -856,11 +857,11 @@ pub struct Renderer {
     /// entries no longer drawn are dropped each frame.
     clip_thumbs: std::cell::RefCell<Vec<(u64, ID2D1Bitmap)>>,
     /// The shelf's card thumbnails as bitmaps of the current target, by card
-    /// key: at most `SHELF_THUMB_CACHE`, the oldest dropped.
-    shelf_thumbs: std::cell::RefCell<Vec<(String, ID2D1Bitmap)>>,
+    /// key and decode: at most `SHELF_THUMB_CACHE`, the oldest dropped.
+    shelf_thumbs: std::cell::RefCell<Vec<(String, Arc<Thumb>, ID2D1Bitmap)>>,
     /// The shelf preview's image as a bitmap of the current target, by card
-    /// key: one, replaced when the key changes.
-    shelf_preview_bm: std::cell::RefCell<Option<(String, ID2D1Bitmap)>>,
+    /// key and decode: one, replaced when either changes.
+    shelf_preview_bm: std::cell::RefCell<Option<(String, Arc<Thumb>, ID2D1Bitmap)>>,
     /// App logos of the Notifikasi page as bitmaps of the current target, by
     /// logo key; keys no longer drawn are dropped each frame.
     notif_logos: std::cell::RefCell<Vec<(String, ID2D1Bitmap)>>,

@@ -5,6 +5,7 @@
 
 use std::f32::consts::{FRAC_PI_2, TAU};
 use std::mem::ManuallyDrop;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Datelike, Local, NaiveDate, NaiveDateTime};
@@ -50,7 +51,9 @@ use crate::pomodoro::{Phase, PomoStatus, Pomodoro};
 use crate::reminders::{Reminder, Repeat, local_time};
 use crate::search::Kind as SearchKind;
 use crate::shelf::ShelfCard;
-use crate::shelf_thumbs::{PreviewState, ShelfThumbs, Slot, cover_source, fit_contain};
+use crate::shelf_thumbs::{
+    PreviewState, ShelfThumbs, Slot, bitmap_is_current, cover_source, fit_contain,
+};
 use crate::shortcuts;
 use crate::state::MolePhase;
 use crate::system::{self, SystemSample};
@@ -3696,19 +3699,27 @@ impl Renderer {
     }
 
     /// The thumbnail of shelf card `key` as a bitmap of this target, made
-    /// once; the oldest of `SHELF_THUMB_CACHE` goes when a new one comes.
-    pub(super) fn shelf_thumb(&self, key: &str, thumb: &Thumb) -> Result<Option<ID2D1Bitmap>> {
-        if let Some((_, b)) = self.shelf_thumbs.borrow().iter().find(|(k, _)| k == key) {
-            return Ok(Some(b.clone()));
+    /// once per decode (a card re-added with the same key has a new one); the
+    /// oldest of `SHELF_THUMB_CACHE` goes when a new one comes.
+    pub(super) fn shelf_thumb(&self, key: &str, thumb: &Arc<Thumb>) -> Result<Option<ID2D1Bitmap>> {
+        let hit = self
+            .shelf_thumbs
+            .borrow()
+            .iter()
+            .position(|(k, t, _)| bitmap_is_current(k, t, key, thumb));
+        if let Some(i) = hit {
+            return Ok(Some(self.shelf_thumbs.borrow()[i].2.clone()));
         }
         let Some(bitmap) = self.thumb_bitmap(thumb)? else {
             return Ok(None);
         };
         let mut cache = self.shelf_thumbs.borrow_mut();
+        // The key's older bitmap (a previous decode) is stale: replace it.
+        cache.retain(|(k, _, _)| k != key);
         if cache.len() >= SHELF_THUMB_CACHE {
             cache.remove(0);
         }
-        cache.push((key.to_owned(), bitmap.clone()));
+        cache.push((key.to_owned(), Arc::clone(thumb), bitmap.clone()));
         Ok(Some(bitmap))
     }
 
@@ -3932,17 +3943,19 @@ impl Renderer {
     }
 
     /// The preview's image as a bitmap of this target, made once per card
-    /// key; a new key replaces it, so only one big bitmap is ever held.
-    fn shelf_preview_bitmap(&self, key: &str, thumb: &Thumb) -> Result<Option<ID2D1Bitmap>> {
-        if let Some((k, b)) = self.shelf_preview_bm.borrow().as_ref()
-            && k == key
+    /// key and decode; a new key or a new decode replaces it, so only one big
+    /// bitmap is ever held.
+    fn shelf_preview_bitmap(&self, key: &str, thumb: &Arc<Thumb>) -> Result<Option<ID2D1Bitmap>> {
+        if let Some((k, t, b)) = self.shelf_preview_bm.borrow().as_ref()
+            && bitmap_is_current(k, t, key, thumb)
         {
             return Ok(Some(b.clone()));
         }
         let Some(bitmap) = self.thumb_bitmap(thumb)? else {
             return Ok(None);
         };
-        *self.shelf_preview_bm.borrow_mut() = Some((key.to_owned(), bitmap.clone()));
+        *self.shelf_preview_bm.borrow_mut() =
+            Some((key.to_owned(), Arc::clone(thumb), bitmap.clone()));
         Ok(Some(bitmap))
     }
 
