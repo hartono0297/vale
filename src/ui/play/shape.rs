@@ -100,7 +100,7 @@ fn matrix(m: &Motion) -> Matrix3x2 {
 
 /// The island's rigid motion as one matrix: the swing (plus the Pill's tilt)
 /// about the style's pivot, and the Pill's shift. Not the squeeze, the dents,
-/// the bulge or the jolt. `outline` places every point with it, and whatever sits on the
+/// the bulge, the jolt or the stretch. `outline` places every point with it, and whatever sits on the
 /// island (the clock) draws under it, so the two cannot drift apart.
 pub fn rigid(style: Style, s: ShapeRect, d: &Deform) -> Matrix3x2 {
     matrix(&motion(style, s, d))

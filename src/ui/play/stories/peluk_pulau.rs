@@ -64,8 +64,8 @@ pub fn long_arm_path(style: Style, s: ShapeRect, side: f32, from: (f32, f32), sa
 /// One moment of the story on `stage`, the octopus in the coat of its look.
 /// `beat.alpha` eases it home, paced by the wind-down's time (`kept`): over
 /// its first 0.58 the glints, the mantle and its arms fade and the island
-/// settles; from 0.3 to 0.88 the slot head comes back out of the dark where
-/// it sank, and from 0.6 it rises home. Cut short, the story holds where the
+/// settles; from 0.3 to 0.88 the slot head comes back out of the dark and
+/// rises home from where it sank. Cut short, the story holds where the
 /// cut found it, so nothing it had not brought out shows. Exactly at rest at
 /// 0 s, at the end and with `alpha` 0.
 pub fn shot(stage: &Stage) -> Shot {
@@ -91,7 +91,7 @@ pub fn shot(stage: &Stage) -> Shot {
     let dep = kf(t, &[(1.0, 0.0, Lin), (1.3, 1.0, I), (6.95, 1.0, Lin), (7.3, 0.0, Ob)]);
     let sy0 = kf(t, &[(0.7, 1.0, Lin), (1.0, 0.86, O), (1.15, 1.1, Io), (1.3, 1.0, Io), (6.95, 1.0, Lin), (7.15, 1.15, O), (7.3, 0.88, O), (7.6, 1.0, Io)]);
     let ly = kf(t, &[(0.4, 0.0, Lin), (0.6, 1.0, Io), (1.2, 1.0, Io), (7.3, 1.0, Lin), (7.6, 0.0, Io)]);
-    let home = kept(a, 0.6, 1.0);
+    let home = kept(a, 0.3, 0.88);
     // Its fade, eased in and out: over the sink, and back over the rise's
     // first 0.25 s (whole by the overshoot). The sink's own ease would take
     // it 0.16 in a frame, the rise's 0.22.
@@ -270,6 +270,31 @@ mod tests {
         }
     }
 
+    /// `p` lies inside the figures of `path`, by crossings of its outline
+    /// (each point and control point joined straight: a tube's are dense).
+    fn inside(path: &[Seg], p: (f32, f32)) -> bool {
+        let mut figures: Vec<Vec<(f32, f32)>> = Vec::new();
+        for seg in path {
+            match *seg {
+                Seg::Move(x, y) => figures.push(vec![(x, y)]),
+                Seg::Line(x, y) => figures.last_mut().unwrap().push((x, y)),
+                Seg::Quad(a, b, x, y) => figures.last_mut().unwrap().extend([(a, b), (x, y)]),
+                Seg::Cubic(a, b, c, d, x, y) => figures.last_mut().unwrap().extend([(a, b), (c, d), (x, y)]),
+                Seg::Close => {}
+            }
+        }
+        let mut crossings = 0;
+        for f in &figures {
+            for i in 0..f.len() {
+                let (a, b) = (f[i], f[(i + 1) % f.len()]);
+                if (a.1 > p.1) != (b.1 > p.1) && p.0 < a.0 + (p.1 - a.1) / (b.1 - a.1) * (b.0 - a.0) {
+                    crossings += 1;
+                }
+            }
+        }
+        crossings % 2 == 1
+    }
+
     /// The first fill's colour of an arm (its body).
     fn body_rgb(p: &Part) -> Option<u32> {
         match &p.draw {
@@ -349,9 +374,14 @@ mod tests {
                     for (fi, bi) in [(0, 1), (1, 2), (2, 4), (3, 5)] {
                         assert_eq!(f[fi].draw, b[bi].draw, "{case}: the face's copy {fi}");
                     }
-                    // Each long arm runs round its end and up to its tip on the rim.
+                    // Each long arm runs round its end and up to its tip on the
+                    // rim: the arm as drawn covers that point (it lies within
+                    // half the arm's width of its centre line).
                     for (fi, side) in [(0, -1.0), (2, 1.0)] {
                         let tip = rim_pt(style, s, side, TIP_U, 3.4);
+                        let Draw::Group { items, .. } = &f[fi].draw else { unreachable!() };
+                        let Some(Draw::Fill { path, .. }) = items.first() else { panic!("{case}: no arm body") };
+                        assert!(inside(path, tip), "{case} side {side}: the drawn arm misses {tip:?}");
                         let r = f[fi].draw.bounds();
                         assert!(tip.0 >= r.x - 0.5 && tip.0 <= r.x + r.w + 0.5 && tip.1 >= r.y - 0.5 && tip.1 <= r.y + r.h + 0.5, "{case}: {tip:?} {r:?}");
                         let round = if side < 0.0 { r.x < s.x - 3.0 } else { r.x + r.w > s.x + s.w + 3.0 };
@@ -360,6 +390,7 @@ mod tests {
                 }
                 // The long arm's line ends on the rim at `TIP_U`: the Notch's
                 // straight side, above the Pill's middle.
+                assert_eq!(TIP_U, 0.25);
                 for side in [-1.0, 1.0] {
                     let p = long_arm_path(style, s, side, (s.x + s.w / 2.0, s.y + s.h + 20.0), 0.0);
                     let (end, tip) = (*p.last().unwrap(), rim_pt(style, s, side, TIP_U, 3.4));
@@ -578,6 +609,39 @@ mod tests {
                     // Part way, the slot head is back out of the dark.
                     let (_, _, part) = frames.iter().find(|(_, b, _)| b.alpha < 0.3).unwrap();
                     assert!(slot_head(part).alpha > 0.0, "{case}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_wind_down_brings_the_slot_head_home_at_a_frames_pace() {
+        // Its place and size come home over 0.3 to 0.88 of the wind-down's
+        // time, as its fade does: at rest from 0.88 on, with no quick grow in
+        // the last 80 ms, and a frame's share of its shrink at a time.
+        use crate::ui::play::state::wind_progress;
+        use crate::ui::play::stories::near_rest;
+        for style in [Style::Notch, Style::Pill] {
+            for (w, h) in SIZES {
+                for clock in [true, false] {
+                    for cut in [2.0, 4.3, 6.0] {
+                        let case = format!("{style:?} {w}x{h} clock={clock} cut {cut}");
+                        let frames = wind_down_frames(Story::PelukPulau, cut, 0.0, |beat| shot(&stage(style, w, h, beat, clock)));
+                        let mut last: Option<MascotShot> = None;
+                        for (ms, beat, shot) in &frames {
+                            let case = format!("{case} +{ms:.1} ms (alpha {})", beat.alpha);
+                            let m = if shot.slot == Slot::App { MascotShot::REST } else { slot_head(shot) };
+                            if wind_progress(beat.alpha) >= 0.88 + 1e-3 {
+                                if let Err(why) = near_rest(shot, 1e-4) {
+                                    panic!("{case}: {why}");
+                                }
+                            }
+                            if let Some(n) = last {
+                                assert!((m.sx - n.sx).abs() <= 0.07 && (m.sy - n.sy).abs() <= 0.07, "{case}: {n:?} to {m:?}");
+                            }
+                            last = Some(m);
+                        }
+                    }
                 }
             }
         }
