@@ -108,7 +108,7 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[whats-new]]: "What's new" per patch (2026-11-13): a hand-written table in `src/whats_new.rs` (ID + EN, a test fails when `Cargo.toml`'s version has no entry), `config.whats_new_seen`, the "Diperbarui" notice becomes a link (`NoticeKind::WhatsNew`) that opens the Tentang card, fresh install silent
 - [[fresh-install-layout]]: a first run (no, empty or BOM-only `config.json`) loads `Config::fresh()`: Notch, 9 shown and 6 hidden pages, 12 tiles, Pintasan first; `Config::default()` untouched (corrupt file still gets it); `State::show_first_page()` at startup; not verified on a clean profile (2026-11-14)
 - [[lyrics-lookup]]: LRCLIB 503 + Retry-After retry (30 s budget), step order (field search, get, free-text search), None vs transient, the Artist - Title split, tight-window consensus pick of the best-synced version, intro shift for a longer video, `.lrc2` / `.none4`
-- [[mascot-play]]: mascot stories around the island, part 1 (2026-11-14): `src/ui/play/` engine (rim, Deform, gates, triggers, one module per story, clipped to the island), `mascot_play` preset (Settings → Maskot → Otomatis), right-click "Mainkan maskot", ends on pointer/button/key, one one-shot timer; only the falk's "Maling angka" is ready, cat and octopus wait for part 2
+- [[mascot-play]]: mascot stories around the island (parts 1-2, 2026-11-15): ten stories (four cat, three octopus, three falk), the mockup's layer stack and pure drawables, art in `src/ui/play/art/`, `Stage` real layout, no-pop rules (wind-down paced by time, `cut_at`), `mascot_play` preset, right-click "Mainkan maskot", one one-shot timer; not yet looked at on screen
 
 ## Gotchas
 
@@ -144,4 +144,5 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[screenshot-capture-script]]
 - [[settings-spacing]]: one spacing rule and one button size on every Settings page (2026-11-12): text buttons label + 16 each side, min 64, 30 high; fields 30; list rows divided; 24 above a section title, 8 to its card; footnotes 12/12; blocks 16 under; 8 px fade under the title while scrolled; the tests that hold it
 - [[logo]]: the cat head is the logo (icon, tray, Settings, README); Windows icon caches
+- [[parallel-worktrees-shared-target]]: six parallel story agents shared one CARGO_TARGET_DIR (disk); its lock serialises builds, so agents run focused tests and the full suite runs once after merging
 - [[repo-not-rustfmt-clean]]: never run `cargo fmt` on the repo (it reformats ~156 files); format new code by hand
