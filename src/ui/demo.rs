@@ -1050,7 +1050,7 @@ fn octopus_arms(style: Style, shape: ShapeRect, coat: OctopusColor) -> Vec<Part>
         let way: Vec<_> = way.iter().map(|&(u, off)| hug(u, off)).collect();
         let d = catmull_rom(&way, 8);
         let path = curl(&along(&d, plen(&d), 30), ang, 9.0, 12, 0.0);
-        for draw in octopus::arm(&path, coat, side, wm) {
+        for draw in octopus::arm(&path, coat, side, wm, 0.0) {
             parts.push(Part { layer: Layer::Back, draw, alpha: 1.0 });
         }
     }
@@ -1090,6 +1090,7 @@ fn demo_play(which: DemoPlay, style: Style, shape: ShapeRect, cat: CatLook) -> P
                     blink: false,
                     beak_open: false,
                     bare_octopus: false,
+                    flush: 0.0,
                 },
                 paws: [Paw::default(), Paw { dx: 1.5, dy: -6.0, lift: 0.8, sq: 0.0 }],
                 tail: Some(Tail::default()),
@@ -1119,6 +1120,7 @@ fn demo_play(which: DemoPlay, style: Style, shape: ShapeRect, cat: CatLook) -> P
                 blink: false,
                 beak_open: false,
                 bare_octopus: true,
+                flush: 0.0,
             });
             shot.parts = octopus_arms(style, shape, cat.octopus);
             return PlayFrame::of(shot, beat);

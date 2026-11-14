@@ -13,13 +13,14 @@
 //! `sucker_rgb`), so every coat matches it exactly. The mockup's `octCols`
 //! differ a little: its shade is the coat 20 % toward black where the app's
 //! `shade` is 18 % (0.82 of its brightness), and its suckers are 58 % toward
-//! white where the app's are 55 %. The flush (the mockup mixes the whole
-//! coat toward #D2304C) is not here: the app flushes the mantle toward
-//! #D63A55 through the pose and keeps the spots and suckers unflushed.
+//! white where the app's are 55 %. The flush is the app's colour (#D63A55,
+//! the mockup's #D2304C): `arm` mixes the coat toward it as the painter does
+//! the mantle's (`MascotShot::flush`). On the mantle the app keeps its spots
+//! and suckers unflushed; on the arm they follow the flush, as the mockup's.
 
 use crate::theme::OctopusColor;
 use crate::ui::geometry::ROBOT_COMPACT;
-use crate::ui::mascot::{octopus_rgb, shade, sucker_rgb};
+use crate::ui::mascot::{FLUSH_RGB, mix, octopus_rgb, shade, sucker_rgb};
 use crate::ui::play::art::tube::{LimbStyle, Suckers, limb};
 use crate::ui::play::stories::{Draw, HEAD_PIVOT, MascotShot};
 use crate::ui::robot::GRID;
@@ -36,10 +37,13 @@ const OROOT: [(f32, f32); 6] = [(-5.2, 4.9), (-3.3, 6.0), (-1.2, 6.4), (1.2, 6.4
 /// The mockup's `octArm`: a long arm about the centre line `path` (root
 /// first), 4.3 wide at the root narrowing to 0.9 at the tip (along `s^0.75`)
 /// times `wm`, with suckers every 2.3 back from the tip from 1.5, on `side`
-/// (+1 or -1) of the arm; the volume band takes the other. Nothing for a
-/// path shorter than 0.6.
-pub fn arm(path: &[(f32, f32)], coat: OctopusColor, side: i8, wm: f32) -> Vec<Draw> {
-    let col = octopus_rgb(coat);
+/// (+1 or -1) of the arm; the volume band takes the other. `flush` (0 to 1,
+/// clamped) mixes the coat toward the app's flush colour as the painter does
+/// the mantle's (`MascotShot::flush`), the shade and the suckers with it
+/// as the mockup mixes its whole `octCols`. Nothing for a path shorter than
+/// 0.6.
+pub fn arm(path: &[(f32, f32)], coat: OctopusColor, side: i8, wm: f32, flush: f32) -> Vec<Draw> {
+    let col = mix(octopus_rgb(coat), FLUSH_RGB, flush.clamp(0.0, 1.0));
     let style = LimbStyle {
         w0: 4.3,
         w1: 0.9,
@@ -86,7 +90,7 @@ pub fn mantle(at: (f32, f32), rot_deg: f32, sx: f32, sy: f32, face: &MascotShot)
 mod tests {
     use super::*;
     use crate::theme::OctopusColor;
-    use crate::ui::mascot::{CrestPose, octopus_rgb, shade, sucker_rgb};
+    use crate::ui::mascot::{CrestPose, FLUSH_RGB, mix, octopus_rgb, shade, sucker_rgb};
     use crate::ui::play::stories::head_matrix;
     use crate::ui::robot::{Expr, Seg};
 
@@ -107,6 +111,7 @@ mod tests {
             blink: false,
             beak_open: false,
             bare_octopus: false,
+            flush: 0.0,
         }
     }
 
@@ -144,16 +149,16 @@ mod tests {
     #[test]
     fn an_arm_tapers_from_root_to_tip() {
         let p = line(41, 20.0);
-        let half = half_widths(&arm(&p, OctopusColor::Coral, 1, 1.0));
+        let half = half_widths(&arm(&p, OctopusColor::Coral, 1, 1.0, 0.0));
         // 4.3 wide at the root, 0.9 at the tip, narrowing all the way between.
         assert!((half[0] * 2.0 - 4.3).abs() < 1e-3, "{half:?}");
         assert!((half[half.len() - 1] * 2.0 - 0.9).abs() < 1e-3, "{half:?}");
         assert!(half.windows(2).all(|w| w[1] < w[0]), "{half:?}");
         // `wm` scales it whole.
-        let slim = half_widths(&arm(&p, OctopusColor::Coral, 1, 0.5));
+        let slim = half_widths(&arm(&p, OctopusColor::Coral, 1, 0.5, 0.0));
         assert!((slim[0] * 2.0 - 2.15).abs() < 1e-3 && (slim[slim.len() - 1] * 2.0 - 0.45).abs() < 1e-3, "{slim:?}");
         // Nothing is built from a path too short to be an arm.
-        assert!(arm(&[(0.0, 0.0), (0.2, 0.0)], OctopusColor::Coral, 1, 1.0).is_empty());
+        assert!(arm(&[(0.0, 0.0), (0.2, 0.0)], OctopusColor::Coral, 1, 1.0, 0.0).is_empty());
     }
 
     #[test]
@@ -164,7 +169,7 @@ mod tests {
         // below the centre line, side -1 above; the volume band takes the
         // other side of the arm.
         for (side, below) in [(1i8, true), (-1, false)] {
-            let d = arm(&p, OctopusColor::Blue, side, 1.0);
+            let d = arm(&p, OctopusColor::Blue, side, 1.0, 0.0);
             let (rims, dots) = (rings(&d, sucker_rgb(coat)), rings(&d, shade(coat)));
             assert_eq!(rims.len(), 7, "{rims:?}");
             assert_eq!(dots, rims, "each sucker has its dot at its centre");
@@ -194,7 +199,7 @@ mod tests {
     fn every_coat_colours_the_arm_like_the_head() {
         let mut bodies = Vec::new();
         for coat in OctopusColor::ALL {
-            let d = arm(&line(41, 20.0), *coat, 1, 1.0);
+            let d = arm(&line(41, 20.0), *coat, 1, 1.0, 0.0);
             let base = octopus_rgb(*coat);
             assert!(matches!(d[0], Draw::Fill { rgb, .. } if rgb == base), "{coat:?}");
             assert!(!rings(&d, sucker_rgb(base)).is_empty(), "{coat:?}: rims");
@@ -204,6 +209,32 @@ mod tests {
         assert_eq!(bodies, [0xE87C8E, 0xD9505F, 0xA98BD6, 0x5FA8C9]);
         // The head's own tints: the coat at 0.82 of its brightness, 55 % toward white.
         assert_eq!((shade(0xE87C8E), sucker_rgb(0xE87C8E)), (0xBE6674, 0xF5C4CC));
+    }
+
+    #[test]
+    fn the_flush_reaches_the_arm_like_the_mantle() {
+        let p = line(41, 20.0);
+        for coat in OctopusColor::ALL {
+            let base = octopus_rgb(*coat);
+            let plain = arm(&p, *coat, 1, 1.0, 0.0);
+            // Fully flushed, the arm is the colour the mantle gets (the
+            // painter mixes the coat toward `FLUSH_RGB` by the pose's flush)
+            // and its suckers and dots follow it.
+            let red = arm(&p, *coat, 1, 1.0, 1.0);
+            assert!(matches!(red[0], Draw::Fill { rgb, .. } if rgb == mix(base, FLUSH_RGB, 1.0)), "{coat:?}");
+            assert!(matches!(red[0], Draw::Fill { rgb, .. } if rgb == FLUSH_RGB), "{coat:?}");
+            assert!(!rings(&red, sucker_rgb(FLUSH_RGB)).is_empty() && !rings(&red, shade(FLUSH_RGB)).is_empty(), "{coat:?}");
+            // Half way is half way, and the shape does not change.
+            let half = arm(&p, *coat, 1, 1.0, 0.5);
+            assert!(matches!(half[0], Draw::Fill { rgb, .. } if rgb == mix(base, FLUSH_RGB, 0.5)), "{coat:?}");
+            assert_eq!(half_widths(&half), half_widths(&plain), "{coat:?}");
+            // Out of range is clamped as the painter clamps it.
+            assert_eq!(arm(&p, *coat, 1, 1.0, 2.0), red, "{coat:?}");
+            assert_eq!(arm(&p, *coat, 1, 1.0, -1.0), plain, "{coat:?}");
+            // No flush, nothing changes: the coat's own tints.
+            assert!(matches!(plain[0], Draw::Fill { rgb, .. } if rgb == base), "{coat:?}");
+            assert!(!rings(&plain, sucker_rgb(base)).is_empty(), "{coat:?}");
+        }
     }
 
     #[test]

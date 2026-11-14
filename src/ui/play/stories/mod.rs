@@ -182,7 +182,15 @@ pub enum Draw {
 /// the startle's 1.75) and accessory: (left, top, right, bottom). Measured
 /// -6.2, -15.4 (the falk's startled crest), 70.2 (the octopus's arms), 60.9,
 /// plus 3 units for the pixels the measure rounds to.
-const HEAD_INK: (f32, f32, f32, f32) = (-9.0, -19.0, 73.0, 64.0);
+pub(crate) const HEAD_INK: (f32, f32, f32, f32) = (-9.0, -19.0, 73.0, 64.0);
+
+/// `HEAD_INK` for the octopus as its mantle alone (`MascotShot::bare_octopus`),
+/// any face but the typing laptop, any accessory, flushed or not. Measured
+/// -5, -8 (the sung note), 70 (the sung note), 55 (the scarf of the waving
+/// face), plus 1.5 units for the pixels the measure rounds to. The mantle
+/// itself is x 9..55, y 9..46; the rest is faces' marks and accessories. Only
+/// an octopus story draws a bare head.
+pub(crate) const BARE_OCTOPUS_INK: (f32, f32, f32, f32) = (-6.5, -9.5, 71.5, 56.5);
 
 impl Draw {
     /// The box the part's ink stays in, window dip.
@@ -204,7 +212,7 @@ impl Draw {
                 h: 2.0 * r.1,
             },
             Draw::Head { at, shot } => {
-                let (l, t, r, b) = HEAD_INK;
+                let (l, t, r, b) = if shot.bare_octopus { BARE_OCTOPUS_INK } else { HEAD_INK };
                 let place = |x: f32, y: f32| {
                     (at.0 + (x - HEAD_PIVOT.0) * unit, at.1 + (y - HEAD_PIVOT.1) * unit)
                 };
@@ -376,6 +384,9 @@ pub struct MascotShot {
     /// arms would double. The coat, face and accessory come along; the
     /// other mascots ignore it.
     pub bare_octopus: bool,
+    /// The octopus's flush, 0 to 1: its mantle (and the long arms, `arm`)
+    /// mixed toward the flush colour. Never lowers the app's own flush.
+    pub flush: f32,
 }
 
 impl MascotShot {
@@ -386,6 +397,7 @@ impl MascotShot {
             crest: Some(self.crest),
             beak_open: Some(self.beak_open),
             bare_octopus: self.bare_octopus,
+            flush: base.flush.max(self.flush),
             glance_x: base.glance_x + self.glance.0,
             glance_y: base.glance_y + self.glance.1,
             ..base
@@ -689,6 +701,7 @@ mod tests {
             blink: false,
             beak_open: false,
             bare_octopus: false,
+            flush: 0.0,
         };
         // The app's own pose has the arms, and a shot leaves them there.
         assert!(!Pose::default().bare_octopus);
@@ -698,6 +711,31 @@ mod tests {
         let base = Pose { flush: 0.5, lift_px: 2.0, ..Pose::default() };
         let bare = MascotShot { bare_octopus: true, ..shot }.pose(base);
         assert_eq!(Pose { bare_octopus: false, ..bare }, shot.pose(base));
+    }
+
+    #[test]
+    fn a_shots_flush_reaches_the_pose_and_never_lowers_the_apps() {
+        let shot = MascotShot {
+            dx: 0.0,
+            dy: 0.0,
+            rot_deg: 0.0,
+            sx: 1.0,
+            sy: 1.0,
+            expr: Expr::Idle,
+            crest: CrestPose { rot_deg: 10.0, scale: 1.0 },
+            glance: (0.0, 0.0),
+            blink: false,
+            beak_open: false,
+            bare_octopus: false,
+            flush: 0.0,
+        };
+        assert_eq!(shot.pose(Pose::default()).flush, 0.0);
+        assert_eq!(MascotShot { flush: 0.6, ..shot }.pose(Pose::default()).flush, 0.6);
+        // The app's own flush (a reminder alert) stays under a story's.
+        let alert = Pose { flush: 0.7, ..Pose::default() };
+        assert_eq!(shot.pose(alert).flush, 0.7);
+        assert_eq!(MascotShot { flush: 0.2, ..shot }.pose(alert).flush, 0.7);
+        assert_eq!(MascotShot { flush: 1.0, ..shot }.pose(alert).flush, 1.0);
     }
 
     #[test]
@@ -714,6 +752,7 @@ mod tests {
             blink: false,
             beak_open: false,
             bare_octopus: false,
+            flush: 0.0,
         };
         let at = (300.0, 100.0);
         let b = Draw::Head { at, shot }.bounds();

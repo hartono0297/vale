@@ -173,6 +173,7 @@ pub fn shot(style: Style, s: ShapeRect, beat: Beat) -> Shot {
         blink: blinks(t, &[1.15, 4.75, 7.6]) > 0.25,
         beak_open: chirp > 0.05,
         bare_octopus: false,
+        flush: 0.0,
     };
     let beak = beak_at(&head, rest, k);
     let pivot = (rest.0 + head.dx, rest.1 + head.dy);
@@ -522,6 +523,7 @@ mod tests {
             blink: true,
             beak_open: true,
             bare_octopus: false,
+            flush: 0.0,
         };
         let base = Pose { glance_x: 1.0, head_dx_dip: 3.0, ..Pose::default() };
         let pose = m.pose(base);

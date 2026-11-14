@@ -345,6 +345,7 @@ mod tests {
             blink: false,
             beak_open: false,
             bare_octopus: false,
+            flush: 0.0,
         }
     }
 

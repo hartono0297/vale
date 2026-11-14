@@ -748,6 +748,12 @@ mod tests {
 
     /// `render` with `painter` (and its factory), so a test can read its caches.
     fn render_on(painter: &RobotPainter, look: CatLook, expr: Expr, pose: Pose) -> Vec<u32> {
+        render_in(painter, look, expr, pose, 64, 0.0)
+    }
+
+    /// `render_on` on a `size` px square canvas, the 64-unit area at (`at`,
+    /// `at`): room for ink that leaves the area.
+    fn render_in(painter: &RobotPainter, look: CatLook, expr: Expr, pose: Pose, size: u32, at: f32) -> Vec<u32> {
         use windows::Win32::Graphics::Direct2D::Common::{
             D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_PIXEL_FORMAT,
         };
@@ -762,14 +768,13 @@ mod tests {
         use windows::Win32::System::Com::{
             CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
         };
-        const SIZE: u32 = 64;
         unsafe {
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
             let wic: IWICImagingFactory =
                 CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)
                     .expect("wic");
             let bitmap = wic
-                .CreateBitmap(SIZE, SIZE, &GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad)
+                .CreateBitmap(size, size, &GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad)
                 .expect("bitmap");
             let props = D2D1_RENDER_TARGET_PROPERTIES {
                 r#type: D2D1_RENDER_TARGET_TYPE_SOFTWARE,
@@ -788,11 +793,11 @@ mod tests {
             let brush = rt.CreateSolidColorBrush(&solid(0, 1.0), None).expect("brush");
             rt.BeginDraw();
             rt.Clear(Some(&solid(0x000000, 1.0)));
-            let area = Rect { x: 0.0, y: 0.0, w: 64.0, h: 64.0 };
+            let area = Rect { x: at, y: at, w: 64.0, h: 64.0 };
             painter.paint(&rt, &brush, area, expr, pose, 1.0, look);
             rt.EndDraw(None, None).expect("end draw");
-            let mut out = vec![0u8; (SIZE * SIZE * 4) as usize];
-            bitmap.CopyPixels(std::ptr::null(), SIZE * 4, &mut out).expect("pixels");
+            let mut out = vec![0u8; (size * size * 4) as usize];
+            bitmap.CopyPixels(std::ptr::null(), size * 4, &mut out).expect("pixels");
             out.chunks(4)
                 .map(|p| (p[2] as u32) << 16 | (p[1] as u32) << 8 | p[0] as u32)
                 .collect()
@@ -976,5 +981,44 @@ mod tests {
         assert_eq!((o.x, o.y, o.w, o.h, r), (14.5, 4.5, 23.0, 18.5, 8.5));
         let (all, _) = mascot_box(Mascot::Octopus, area, Expr::Idle, &Pose::default());
         assert_eq!((all.x, all.w, all.h), (8.5, 35.0, 26.0), "the sitting octopus's box is as ever");
+    }
+
+    /// The box of every non-black pixel of `img` (a `canvas` px square whose
+    /// grid origin is at `at` px), in grid units, ink to the pixel's far edge.
+    fn ink(img: &[u32], canvas: u32, at: f32) -> (f32, f32, f32, f32) {
+        let (mut l, mut t, mut r, mut b) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for (i, p) in img.iter().enumerate() {
+            if *p != 0 {
+                let (x, y) = ((i as u32 % canvas) as f32 - at, (i as u32 / canvas) as f32 - at);
+                (l, t, r, b) = (l.min(x), t.min(y), r.max(x + 1.0), b.max(y + 1.0));
+            }
+        }
+        (l, t, r, b)
+    }
+
+    #[test]
+    fn a_bare_octopus_stays_inside_its_ink_box_with_every_face_and_accessory() {
+        use crate::ui::play::stories::BARE_OCTOPUS_INK;
+        let p = painter();
+        // 64 px on each side of the area is more than any ink reaches.
+        let (canvas, at) = (192, 64.0);
+        let mut bare = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        // Not the typing cat's laptop, a prop no story gives a head.
+        for e in Expr::ALL.into_iter().filter(|e| *e != Expr::Typing) {
+            for acc in CatAccessory::ALL {
+                let look = CatLook { mascot: Mascot::Octopus, accessory: *acc, ..CatLook::default() };
+                for flush in [0.0, 1.0] {
+                    let pose = Pose { flush, bare_octopus: true, ..Pose::default() };
+                    let i = ink(&render_in(&p, look, e, pose, canvas, at), canvas, at);
+                    bare = (bare.0.min(i.0), bare.1.min(i.1), bare.2.max(i.2), bare.3.max(i.3));
+                }
+            }
+        }
+        let b = BARE_OCTOPUS_INK;
+        assert!(bare.0 >= b.0 && bare.1 >= b.1 && bare.2 <= b.2 && bare.3 <= b.3, "ink {bare:?} leaves {b:?}");
+        // And the box is no looser than the measure plus its margin, or it
+        // would hide a bug in the other direction.
+        let slack = (bare.0 - b.0).max(bare.1 - b.1).max(b.2 - bare.2).max(b.3 - bare.3);
+        assert!(slack <= 2.0, "ink {bare:?} against {b:?}");
     }
 }
