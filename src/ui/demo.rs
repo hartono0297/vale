@@ -2709,6 +2709,7 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                 super::panel_layout::devices_reveal(shape, scene.strip, &shapes, 0.0, at)
             });
             let mixer_rows = demo_mixer();
+            let shelf_thumbs = crate::shelf_thumbs::ShelfThumbs::default();
             let shelf_elapsed = shelf_span.map_or(0, |ms| match frozen_shelf {
                 Some(p) => (p.clamp(0.0, 1.0) * ms as f32) as u64,
                 None => into as u64,
@@ -2803,6 +2804,7 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                 calendar: &snapshot,
                 mixer: Some(&mixer_rows),
                 shelf: &shelf_cards,
+                shelf_thumbs: &shelf_thumbs,
                 shelf_drag: scene.shelf_drag,
                 shelf_motion: &shelf_motion,
                 phone: phone_view.as_ref(),

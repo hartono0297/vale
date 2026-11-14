@@ -7266,6 +7266,7 @@ impl App {
             calendar: &self.calendar,
             mixer: self.mixer.as_deref(),
             shelf: &self.shelf.cards,
+            shelf_thumbs: &self.shelf.thumbs,
             shelf_drag: self.shelf.dragging,
             shelf_motion: &self.shelf.motion,
             phone: phone_view.as_ref(),

@@ -88,6 +88,7 @@ use crate::reminders::Reminder;
 use crate::search::SearchResult;
 use crate::search_details::Detail;
 use crate::shelf::ShelfCard;
+use crate::shelf_thumbs::ShelfThumbs;
 use crate::state::{MolePhase, notice_closable, notice_kind_closable};
 use crate::system::SystemSample;
 use crate::theme::{self, Accent, Palette, radius};
@@ -159,6 +160,8 @@ pub struct Frame<'a> {
     pub mixer: Option<&'a [MixerRow]>,
     /// The file shelf's cards.
     pub shelf: &'a [ShelfCard],
+    /// The decoded thumbnails of the shelf's image cards, by card key.
+    pub shelf_thumbs: &'a ShelfThumbs,
     /// Files are being dragged over the island: the shelf's drop zone lights.
     pub shelf_drag: bool,
     /// Cards coming in, going out or changing slot, as of `now` (empty at
@@ -840,6 +843,9 @@ pub struct Renderer {
     /// Clipboard thumbnails as bitmaps of the current target, by entry id;
     /// entries no longer drawn are dropped each frame.
     clip_thumbs: std::cell::RefCell<Vec<(u64, ID2D1Bitmap)>>,
+    /// The shelf's card thumbnails as bitmaps of the current target, by card
+    /// key: at most `SHELF_THUMB_CACHE`, the oldest dropped.
+    shelf_thumbs: std::cell::RefCell<Vec<(String, ID2D1Bitmap)>>,
     /// App logos of the Notifikasi page as bitmaps of the current target, by
     /// logo key; keys no longer drawn are dropped each frame.
     notif_logos: std::cell::RefCell<Vec<(String, ID2D1Bitmap)>>,
@@ -1120,6 +1126,7 @@ impl Renderer {
                 clip_caret: std::cell::Cell::new(None),
                 search_caret: std::cell::Cell::new(None),
                 clip_thumbs: std::cell::RefCell::new(Vec::new()),
+                shelf_thumbs: std::cell::RefCell::new(Vec::new()),
                 notif_logos: std::cell::RefCell::new(Vec::new()),
                 search_icons: std::cell::RefCell::new(Vec::new()),
                 arrange_icons: std::cell::RefCell::new(Vec::new()),
@@ -1225,6 +1232,7 @@ impl Renderer {
         self.target = None;
         self.art.clear();
         self.clip_thumbs.borrow_mut().clear();
+        self.shelf_thumbs.borrow_mut().clear();
         self.notif_logos.borrow_mut().clear();
         self.search_icons.borrow_mut().clear();
         self.arrange_icons.borrow_mut().clear();

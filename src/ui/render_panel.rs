@@ -50,6 +50,7 @@ use crate::pomodoro::{Phase, PomoStatus, Pomodoro};
 use crate::reminders::{Reminder, Repeat, local_time};
 use crate::search::Kind as SearchKind;
 use crate::shelf::ShelfCard;
+use crate::shelf_thumbs::{ShelfThumbs, Slot, cover_source};
 use crate::shortcuts;
 use crate::state::MolePhase;
 use crate::system::{self, SystemSample};
@@ -155,6 +156,8 @@ fn rec_discard_look(p: &Palette) -> (u32, u32) {
     (mix(p.raised, theme::REC_RED, REC_DISCARD_TINT), theme::SOFT_RED)
 }
 
+/// Shelf thumbnails kept as bitmaps of the current target (one page, at most).
+const SHELF_THUMB_CACHE: usize = 12;
 /// A heading's line (DM Sans 600 20, 26 px) is taller than the 22 px header
 /// row: its box grows by this much above and below so the line, descenders
 /// included, is not clipped.
@@ -3679,6 +3682,23 @@ impl Renderer {
         Ok(Some(bitmap))
     }
 
+    /// The thumbnail of shelf card `key` as a bitmap of this target, made
+    /// once; the oldest of `SHELF_THUMB_CACHE` goes when a new one comes.
+    pub(super) fn shelf_thumb(&self, key: &str, thumb: &Thumb) -> Result<Option<ID2D1Bitmap>> {
+        if let Some((_, b)) = self.shelf_thumbs.borrow().iter().find(|(k, _)| k == key) {
+            return Ok(Some(b.clone()));
+        }
+        let Some(bitmap) = self.thumb_bitmap(thumb)? else {
+            return Ok(None);
+        };
+        let mut cache = self.shelf_thumbs.borrow_mut();
+        if cache.len() >= SHELF_THUMB_CACHE {
+            cache.remove(0);
+        }
+        cache.push((key.to_owned(), bitmap.clone()));
+        Ok(Some(bitmap))
+    }
+
     /// The logo `thumb` of logo key `key` as a bitmap of this target, made
     /// once.
     pub(super) fn notif_logo(&self, key: &str, thumb: &Thumb) -> Result<Option<ID2D1Bitmap>> {
@@ -3704,6 +3724,7 @@ impl Renderer {
         let lang = i18n::lang();
         let p = self.palette;
         let (cards, dragging) = (frame.shelf, frame.shelf_drag);
+        let thumbs = frame.shelf_thumbs;
         let (motion, now) = (frame.shelf_motion, frame.now);
         // Cards on their way out still count, and keep the empty hint away,
         // until the last of them is gone.
@@ -3784,11 +3805,11 @@ impl Renderer {
         // a transform only: no layer, so this is safe inside a page
         // cross-fade or reveal (they hold `layer2`).
         for (card, drawn) in motion.ghosts(now) {
-            self.paint_shelf_card(card, drawn);
+            self.paint_shelf_card(card, drawn, thumbs);
         }
         for (lay, card) in l.cards.iter().zip(cards) {
             let drawn = motion.card_at(&card.key, lay.card, l.lines, now);
-            self.paint_shelf_card(card, drawn);
+            self.paint_shelf_card(card, drawn, thumbs);
         }
         // The outline last, so cards never cut it.
         if dragging {
@@ -3798,8 +3819,9 @@ impl Renderer {
 
     /// One card as `drawn` says: its parts laid out in the rect it is at with
     /// its name on the lines it has, all at its opacity, scaled around its
-    /// centre and shifted down by `dy`.
-    fn paint_shelf_card(&self, card: &ShelfCard, drawn: Drawn) {
+    /// centre and shifted down by `dy`. An image card whose thumbnail is
+    /// ready (and whose file is still there) shows it instead of the icon.
+    fn paint_shelf_card(&self, card: &ShelfCard, drawn: Drawn, thumbs: &ShelfThumbs) {
         if drawn.alpha <= 0.0 {
             return;
         }
@@ -3832,7 +3854,34 @@ impl Renderer {
         let per_line = (lay.label.w / 6.4) as usize;
         self.set_color(p.raised, a);
         self.fill_round(lay.card, radius::TILE);
-        self.icon(crate::shelf::icon(card.kind), lay.glyph, 26.0, ink, true);
+        let ready = match thumbs.get(&card.key) {
+            Some(Slot::Ready(thumb)) if !card.stale => Some(thumb),
+            _ => None,
+        };
+        let bitmap = ready.and_then(|t| self.shelf_thumb(&card.key, t).ok().flatten());
+        match (ready, bitmap) {
+            (Some(thumb), Some(bitmap)) => {
+                // Cover-cropped, per-draw alpha only: no layer in here.
+                let (sx, sy, sw, sh) =
+                    cover_source(thumb.w as f32, thumb.h as f32, lay.thumb.w, lay.thumb.h);
+                let source = D2D_RECT_F {
+                    left: sx,
+                    top: sy,
+                    right: sx + sw,
+                    bottom: sy + sh,
+                };
+                unsafe {
+                    target.rt.DrawBitmap(
+                        &bitmap,
+                        Some(&d2d_rect(lay.thumb)),
+                        a,
+                        D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+                        Some(&source),
+                    );
+                }
+            }
+            _ => self.icon(crate::shelf::icon(card.kind), lay.glyph, 26.0, ink, true),
+        }
         let names = crate::shelf::wrap_name(&card.name, per_line.max(6), lines);
         for (i, line) in names.iter().enumerate() {
             let row = Rect {

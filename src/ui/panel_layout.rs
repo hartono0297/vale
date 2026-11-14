@@ -219,6 +219,8 @@ pub struct ShelfCardLayout {
     pub remove: Rect,
     pub glyph: Rect,
     pub label: Rect,
+    /// Where an image card's thumbnail sits: the card above its name.
+    pub thumb: Rect,
     /// Where "hilang" sits on a card whose file is gone.
     pub missing: Rect,
 }
@@ -3099,12 +3101,19 @@ pub fn shelf_card_layout(card: Rect, lines: usize) -> ShelfCardLayout {
         card.w - 12.0,
         lines as f32 * SHELF_LINE_H,
     );
+    let thumb = rect(
+        card.x + 4.0,
+        card.y + 4.0,
+        card.w - 8.0,
+        label.y - 3.0 - (card.y + 4.0),
+    );
     let missing = rect(card.x + 6.0, card.y + 6.0, 40.0, 15.0);
     ShelfCardLayout {
         card,
         remove,
         glyph,
         label,
+        thumb,
         missing,
     }
 }
@@ -7445,6 +7454,27 @@ mod tests {
             .map(|r| r.hit)
             .collect();
         assert_eq!(none, [Hit::OpenSettings, Hit::ShelfPhone]);
+    }
+
+    #[test]
+    fn a_shelf_cards_thumb_rect_sits_inside_the_card_above_its_label() {
+        for style in [Style::Pill, Style::Notch] {
+            let s = panel(style);
+            for strip in [false, true] {
+                for n in [3, 12] {
+                    let l = shelf_layout(s, strip, n);
+                    for lines in [1, 2] {
+                        for c in &l.cards {
+                            let c = shelf_card_layout(c.card, lines);
+                            let t = c.thumb;
+                            assert!(t.x >= c.card.x && t.right() <= c.card.right());
+                            assert!(t.y >= c.card.y && t.bottom() < c.label.y);
+                            assert!(t.w >= 40.0, "{style:?} strip={strip} n={n}: {t:?}");
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]
