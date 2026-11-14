@@ -66,10 +66,12 @@ Clear the clipboard history without opening Settings.
   with "Yakin?").
 - The clearing code of Settings' `ClipSetting::Clear` moves into one `App`
   method used by Settings and the new action (no copy of the block).
-- i18n: one new key, "Hapus semua" / "Clear all". "Yakin?" is the existing
-  `ConfirmShort`.
+- i18n: no new key. The button reuses `Key::NotifClearAll` ("Hapus semua" /
+  "Clear all") and `Key::NotifSure` ("Yakin?" / "Sure?"), the words the
+  Notifikasi page already has.
 - Tests: reducer arm / confirm / expire / disarm, layout (button position,
-  hidden, search keeps a minimum width), the clear itself (pins stay), i18n key.
+  hidden, search keeps a minimum width), which entries make the button show.
+  The clearing itself is `History::clear_unpinned`, already tested (pins stay).
 
 ## Left to the builder
 
