@@ -70,10 +70,10 @@ use super::geometry::{
 use super::icons::{Icon, IconSet};
 use super::motion::{StripFrame, Transit};
 use super::panel_layout::Region;
-use super::play::shape::{Deform, outline, rigid, turn_about};
+use super::play::shape::{Deform, outline, rigid, top_corners, turn_about};
 use super::play::state::{Beat, spread_offsets};
 use super::play::stories::{
-    Draw, HEAD_PIVOT, Layer, MascotShot, PAINT_ORDER, Part, Pass, Shot, group_matrix, head_matrix,
+    Draw, HEAD_PIVOT, Layer, MascotShot, PAINT_ORDER, Part, Pass, Shot, Slot, group_matrix, head_matrix,
     whistle_arcs,
 };
 use super::robot::{
@@ -340,9 +340,9 @@ pub struct PlayFrame {
     /// One per character of the clock (`%H:%M`). All `IDENTITY` draws the
     /// clock as the one run it is at rest.
     pub digits: [DigitFx; 5],
-    /// The story's mascot in place of the one resting in its slot; `None`
-    /// draws the mascot as ever.
-    pub mascot: Option<MascotShot>,
+    /// What the mascot's slot shows: the app's head as ever, the story's
+    /// head in its place, or nothing.
+    pub slot: Slot,
     /// What the story draws behind, on and in front of the island, each part
     /// in its layer (`PAINT_ORDER`).
     pub parts: Vec<Part>,
@@ -355,7 +355,7 @@ impl PlayFrame {
             deform: shot.deform,
             beat,
             digits: shot.digits,
-            mascot: shot.mascot,
+            slot: shot.slot,
             parts: shot.parts,
         }
     }
@@ -2592,9 +2592,10 @@ impl Renderer {
                 );
                 let l = play_layout(l, shape, play);
                 if let (Some(area), Some(r)) = (l.robot, robot) {
-                    match play.and_then(|p| p.mascot.as_ref()) {
-                        Some(m) => self.paint_story_mascot(area, r, m),
-                        None => self.paint_robot(area, r),
+                    match play.map_or(Slot::App, |p| p.slot) {
+                        Slot::App => self.paint_robot(area, r),
+                        Slot::Story(m) => self.paint_story_mascot(area, r, &m),
+                        Slot::Empty => {}
                     }
                 }
                 // A play paints its clock over its inside parts, below.
@@ -4092,13 +4093,14 @@ impl Renderer {
     ///
     /// The Notch is that body plus the two shoulders `notch_path` draws. They
     /// join the body to the screen edge, which never swings: they sit on the
-    /// edge, follow the squeeze, and ignore the swing. At rest the union is
-    /// the resting island, so nothing pops when a play starts or ends.
+    /// edge, meet the body's sides where `d` puts them (`top_corners`), and
+    /// ignore the swing. At rest the union is the resting island, so nothing
+    /// pops when a play starts or ends.
     fn played_path(
         &self,
         style: Style,
         s: ShapeRect,
-        squeeze: f32,
+        d: &Deform,
         pts: &[(f32, f32)],
     ) -> Result<ID2D1PathGeometry> {
         let at = |&(x, y): &(f32, f32)| Vector2::new(x, y);
@@ -4118,9 +4120,7 @@ impl Renderer {
         if style != Style::Notch || shoulder <= 0.0 {
             return Ok(body);
         }
-        // The body's top corners before the swing, the squeeze having moved them.
-        let half = s.w / 2.0 * (1.0 - squeeze);
-        let (left, right) = (s.x + s.w / 2.0 - half, s.x + s.w / 2.0 + half);
+        let (left, right) = top_corners(style, s, d);
         let left = self.shoulder_path(s.y, left, -1.0, shoulder)?;
         let right = self.shoulder_path(s.y, right, 1.0, shoulder)?;
         self.union(&self.union(&body, &left)?, &right)
@@ -4183,7 +4183,7 @@ impl Renderer {
     ) -> Result<ID2D1Geometry> {
         match play {
             Some(d) => self
-                .played_path(style, s, d.squeeze, &outline(style, s, d))?
+                .played_path(style, s, d, &outline(style, s, d))?
                 .cast(),
             None => self.shape_geometry(style, s),
         }
@@ -5164,12 +5164,33 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_pulled_in_or_shifted_notch_leaves_no_ledge_at_its_shoulder() {
+        // The shoulder's foot is where the body's side is: just above it and
+        // just below it the island's left edge is in the same place.
+        let r = renderer();
+        for (w, h) in [(160.0, 28.0), (190.0, 34.0), (300.0, 44.0)] {
+            let s = shape(Style::Notch, w, h);
+            let foot = s.y + crate::ui::geometry::shoulder_depth(s);
+            for d in [
+                Deform { bulge_left: -2.2, squeeze: 0.018, ..Deform::default() },
+                Deform { shift: (1.6, 0.0), ..Deform::default() },
+                Deform { shift: (-1.6, 0.0), ..Deform::default() },
+            ] {
+                let island = r.island_geometry(Style::Notch, s, Some(&d)).unwrap();
+                let edge = |y: f32| (0..800).map(|i| s.x - 6.0 + i as f32 * 0.025).find(|&x| contains(&island, x, y)).unwrap_or(f32::NAN);
+                let (above, below) = (edge(foot - 0.4), edge(foot + 0.4));
+                assert!((above - below).abs() < 0.5, "{w}x{h} {d:?}: {above} above the foot, {below} below");
+            }
+        }
+    }
+
     fn play_frame(spread: f32) -> PlayFrame {
         PlayFrame {
             deform: Deform::default(),
             beat: Beat { spread, alpha: 1.0, t: 0.0 },
             digits: [DigitFx::IDENTITY; 5],
-            mascot: None,
+            slot: Slot::App,
             parts: Vec::new(),
         }
     }
@@ -5259,7 +5280,7 @@ mod tests {
                 let n = pts.len();
                 let island = r.island_geometry(Style::Notch, s, Some(&deform)).unwrap();
                 // Only the body, for telling it from a wedge.
-                let body = r.played_path(Style::Pill, s, 0.0, &pts).unwrap().cast().unwrap();
+                let body = r.played_path(Style::Pill, s, &Deform::default(), &pts).unwrap().cast().unwrap();
                 let unit = |from: (f32, f32), to: (f32, f32)| {
                     let (dx, dy) = (to.0 - from.0, to.1 - from.1);
                     let len = dx.hypot(dy);
@@ -5364,7 +5385,7 @@ mod tests {
                 // However the outline winds: the same outline listed the other
                 // way round leaves the same island out.
                 let backwards: Vec<_> = pts.iter().rev().copied().collect();
-                let island = r.played_path(style, s, dented().squeeze, &backwards).unwrap().cast().unwrap();
+                let island = r.played_path(style, s, &dented(), &backwards).unwrap().cast().unwrap();
                 let out = r.cut_out(window, &island).unwrap();
                 assert!(!contains(&out, cx, s.y + 3.0), "{case}: wound the other way");
                 // At rest it is the resting shape that is left out.
@@ -6113,6 +6134,40 @@ mod tests {
             let (one, both) = (pixel(&px, at(5.0)), pixel(&px, at(15.0)));
             assert!((120..=135).contains(&one[3]), "{style:?}: not half: {one:?}");
             assert!(same(one, both), "{style:?}: the overlap {both:?} is darker than {one:?}");
+        }
+    }
+
+    #[test]
+    fn an_empty_slot_paints_no_mascot_and_the_app_slot_its_own() {
+        // The terracotta cat's head (0xE2683C) in the slot: painted for the
+        // app's slot, gone from an empty one.
+        let mut r = renderer();
+        for style in [Style::Notch, Style::Pill] {
+            for fill in [1.0, 0.42] {
+                let s = shape(style, 190.0, 34.0);
+                let dip = (crate::ui::geometry::WINDOW_W, s.y + s.h + 10.0);
+                let robot = Some(RobotFrame { expr: Expr::Idle, pose: Pose::default() });
+                let fur = |r: &mut Renderer, slot: Slot| {
+                    let play = PlayFrame { slot, ..play_frame(1.0) };
+                    let px = with_frame_all(Some(play), None, robot, fill, |frame| {
+                        painted(r, dip, |r| r.paint_island(style, s, frame).unwrap())
+                    });
+                    let mut n = 0;
+                    for y in 0..px.h {
+                        for x in 0..px.w {
+                            let [blue, green, red, alpha] = pixel(&px, (x, y));
+                            if alpha > 200 && red > 190 && (80..130).contains(&green) && blue < 90 {
+                                n += 1;
+                            }
+                        }
+                    }
+                    n
+                };
+                let case = format!("{style:?} fill {fill}");
+                assert!(fur(&mut r, Slot::App) > 50, "{case}: the app's head");
+                assert!(fur(&mut r, Slot::Story(MascotShot::REST)) > 50, "{case}: the story's head");
+                assert_eq!(fur(&mut r, Slot::Empty), 0, "{case}: an empty slot");
+            }
         }
     }
 

@@ -2616,7 +2616,8 @@ impl App {
     fn play_frame(&self, now: Instant, shape: ShapeRect) -> Option<PlayFrame> {
         self.play.as_ref().map(|active| {
             let beat = active.play.beat(now);
-            let shot = stories::shot(active.play.story(), self.config.style, shape, beat);
+            let look = CatLook::of(&self.config);
+            let shot = stories::shot(active.play.story(), self.config.style, shape, beat, look);
             PlayFrame::of(shot, beat)
         })
     }

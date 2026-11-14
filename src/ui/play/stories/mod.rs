@@ -10,6 +10,7 @@ use windows_numerics::{Matrix3x2, Vector2};
 
 use crate::config::Style;
 use crate::theme::Mascot;
+use crate::ui::cat_style::CatLook;
 use crate::ui::geometry::{ROBOT_COMPACT, Rect, ShapeRect, shoulder_depth};
 use crate::ui::mascot::CrestPose;
 use crate::ui::play::shape::{Deform, outline, turn_about};
@@ -30,9 +31,8 @@ pub struct Shot {
     pub deform: Deform,
     /// One per character of the clock (`%H:%M`).
     pub digits: [DigitFx; 5],
-    /// The mascot in its slot as the story moves it, painted in `Layer::Dark`
-    /// (clipped to the island); `None` leaves it as the app draws it.
-    pub mascot: Option<MascotShot>,
+    /// What the mascot's slot shows.
+    pub slot: Slot,
     /// Everything else the story draws, each part in its layer; within a
     /// layer in this order.
     pub parts: Vec<Part>,
@@ -49,8 +49,17 @@ impl Shot {
             island: island_box(style, s, &deform),
             deform,
             digits: [DigitFx::IDENTITY; 5],
-            mascot: None,
+            slot: Slot::App,
             parts: Vec::new(),
+        }
+    }
+
+    /// The story's head in the slot, if it moves one.
+    #[cfg(test)]
+    pub fn head(&self) -> Option<MascotShot> {
+        match self.slot {
+            Slot::Story(m) => Some(m),
+            _ => None,
         }
     }
 
@@ -60,6 +69,18 @@ impl Shot {
     pub fn bounds(&self) -> Rect {
         self.parts.iter().map(|p| p.draw.bounds()).fold(self.island, union)
     }
+}
+
+/// What fills the mascot's slot while a story plays.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Slot {
+    /// The app's own head, as it draws it at rest.
+    App,
+    /// The head as the story moves it, painted in `Layer::Dark` (clipped to
+    /// the island).
+    Story(MascotShot),
+    /// Nothing: the mascot has left its slot and the story draws it as parts.
+    Empty,
 }
 
 /// Where a part is painted, as the mockup's `compose` stacks it (see
@@ -392,6 +413,25 @@ pub struct MascotShot {
 }
 
 impl MascotShot {
+    /// The head at rest in its slot with the idle face (the falk's idle
+    /// crest; the other mascots have none).
+    // Built on by the stories that hand the slot head to a figure (next commit).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub const REST: MascotShot = MascotShot {
+        dx: 0.0,
+        dy: 0.0,
+        rot_deg: 0.0,
+        sx: 1.0,
+        sy: 1.0,
+        expr: Expr::Idle,
+        crest: CrestPose { rot_deg: 10.0, scale: 1.0 },
+        glance: (0.0, 0.0),
+        blink: false,
+        beak_open: false,
+        bare_octopus: false,
+        flush: 0.0,
+    };
+
     /// `base` (the app's pose: its look, its lift) with the story's face on it.
     pub fn pose(&self, base: Pose) -> Pose {
         Pose {
@@ -427,11 +467,12 @@ pub fn whistle_arcs(at: (f32, f32)) -> [((f32, f32), f32, f32, f32); 3] {
     })
 }
 
-/// `story`'s shot at `beat` on the island `s`. A story that is not ready
-/// leaves everything at rest.
-pub fn shot(story: Story, style: Style, s: ShapeRect, beat: Beat) -> Shot {
+/// `story`'s shot at `beat` on the island `s`, the mascot's body in the
+/// coat of `look` (the head's own painter takes it from the renderer). A
+/// story that is not ready leaves everything at rest.
+pub fn shot(story: Story, style: Style, s: ShapeRect, beat: Beat, look: CatLook) -> Shot {
     let shot = match story {
-        Story::MalingAngka => maling_angka::shot(style, s, beat),
+        Story::MalingAngka => maling_angka::shot(style, s, beat, look),
         _ => Shot::rest(style, s),
     };
     debug_assert!(bare_heads_fit(story, &shot), "{story:?} draws a bare head");
@@ -449,7 +490,7 @@ fn bare_heads_fit(story: Story, shot: &Shot) -> bool {
             _ => false,
         }
     }
-    let any = shot.mascot.is_some_and(|m| m.bare_octopus) || shot.parts.iter().any(|p| bare(&p.draw));
+    let any = matches!(shot.slot, Slot::Story(m) if m.bare_octopus) || shot.parts.iter().any(|p| bare(&p.draw));
     !any || story.mascot() == Mascot::Octopus
 }
 
@@ -575,6 +616,137 @@ fn toward_rest(fx: DigitFx, alpha: f32) -> DigitFx {
     }
 }
 
+/// The sizes every story is tested at: the tightest, the default, the largest.
+#[cfg(test)]
+pub(crate) const CONTRACT_SIZES: [(f32, f32); 3] = [(160.0, 28.0), (190.0, 34.0), (300.0, 44.0)];
+
+/// `shot` is exactly at rest: the island, the clock, the slot (the app's
+/// head, or a story head equal to the resting one) and no part showing.
+#[cfg(test)]
+pub(crate) fn at_rest(style: Style, shot: &Shot) -> Result<(), String> {
+    if !crate::ui::play::shape::is_rest(style, &shot.deform) {
+        return Err(format!("the island is deformed: {:?}", shot.deform));
+    }
+    if shot.digits.iter().any(|d| *d != DigitFx::IDENTITY) {
+        return Err(format!("the clock moved: {:?}", shot.digits));
+    }
+    if !matches!(shot.slot, Slot::App) && shot.slot != Slot::Story(MascotShot::REST) {
+        return Err(format!("the slot is not at rest: {:?}", shot.slot));
+    }
+    near_rest(shot, 0.0)
+}
+
+/// The mascot is within `tol` of its rest: the slot holds the app's head or
+/// a story head that far from the resting one, with the idle face, and no
+/// part shows more than `tol`.
+#[cfg(test)]
+pub(crate) fn near_rest(shot: &Shot, tol: f32) -> Result<(), String> {
+    let r = MascotShot::REST;
+    match shot.slot {
+        Slot::App => {}
+        Slot::Story(m) => {
+            let off = [
+                m.dx, m.dy, m.rot_deg, m.sx - r.sx, m.sy - r.sy, m.glance.0, m.glance.1, m.flush,
+                m.crest.rot_deg - r.crest.rot_deg, m.crest.scale - r.crest.scale,
+            ];
+            if off.iter().any(|v| v.abs() > tol) || m.expr != r.expr || m.blink || m.beak_open {
+                return Err(format!("the slot head is not at rest: {m:?}"));
+            }
+        }
+        Slot::Empty => return Err("the slot is empty".into()),
+    }
+    match shot.parts.iter().find(|p| p.alpha > tol) {
+        Some(p) => Err(format!("a part shows: {p:?}")),
+        None => Ok(()),
+    }
+}
+
+/// The four tests every story passes, in its tests module:
+/// `story_contract_tests!(Story::X, shot)`, `shot` the story's
+/// `fn(Style, ShapeRect, Beat, CatLook) -> Shot`. It starts and ends exactly
+/// at rest; `alpha` 0 never deforms the island; nothing leaves the window;
+/// the mascot is at rest just after the start and just before the end.
+#[cfg(test)]
+macro_rules! story_contract_tests {
+    ($story:expr, $shot:expr) => {
+        /// The story played by its own mascot.
+        fn contract_shot(style: $crate::config::Style, w: f32, h: f32, beat: $crate::ui::play::state::Beat) -> $crate::ui::play::stories::Shot {
+            let look = $crate::ui::cat_style::CatLook { mascot: $story.mascot(), ..Default::default() };
+            $shot(style, $crate::ui::play::testing::shape(style, w, h), beat, look)
+        }
+
+        #[test]
+        fn the_story_starts_and_ends_at_rest_in_both_styles() {
+            use $crate::config::Style;
+            use $crate::ui::play::state::Beat;
+            for style in [Style::Notch, Style::Pill] {
+                for (w, h) in $crate::ui::play::stories::CONTRACT_SIZES {
+                    for t in [0.0, $story.secs()] {
+                        for spread in [0.0, 1.0] {
+                            let shot = contract_shot(style, w, h, Beat { spread, alpha: 1.0, t });
+                            if let Err(why) = $crate::ui::play::stories::at_rest(style, &shot) {
+                                panic!("{style:?} {w}x{h} t={t} spread={spread}: {why}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn alpha_zero_means_no_deformation_at_any_moment() {
+            use $crate::config::Style;
+            use $crate::ui::play::state::Beat;
+            for style in [Style::Notch, Style::Pill] {
+                let mut t = 0.0;
+                while t <= $story.secs() {
+                    let shot = contract_shot(style, 190.0, 34.0, Beat { spread: 1.0, alpha: 0.0, t });
+                    assert!($crate::ui::play::shape::is_rest(style, &shot.deform), "{style:?} t={t}: {:?}", shot.deform);
+                    t += 0.1;
+                }
+            }
+        }
+
+        #[test]
+        fn nothing_leaves_the_window_at_any_size_or_style() {
+            use $crate::config::Style;
+            use $crate::ui::geometry::{WINDOW_H, WINDOW_W};
+            use $crate::ui::play::state::Beat;
+            for style in [Style::Notch, Style::Pill] {
+                for (w, h) in $crate::ui::play::stories::CONTRACT_SIZES {
+                    let mut t = 0.0;
+                    while t <= $story.secs() {
+                        let b = contract_shot(style, w, h, Beat { spread: 1.0, alpha: 1.0, t }).bounds();
+                        // Above the screen's top edge is hidden by it, as the
+                        // mockup's bezel hides it.
+                        assert!(b.x >= 0.0 && b.x + b.w <= WINDOW_W && b.y + b.h <= WINDOW_H,
+                            "{style:?} {w}x{h} t={t}: {b:?}");
+                        t += 0.04;
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn the_mascot_rests_just_after_the_start_and_just_before_the_end() {
+            use $crate::config::Style;
+            use $crate::ui::play::state::Beat;
+            for style in [Style::Notch, Style::Pill] {
+                for (w, h) in $crate::ui::play::stories::CONTRACT_SIZES {
+                    for t in [0.001, $story.secs() - 0.001] {
+                        let shot = contract_shot(style, w, h, Beat { spread: 1.0, alpha: 1.0, t });
+                        if let Err(why) = $crate::ui::play::stories::near_rest(&shot, 1e-3) {
+                            panic!("{style:?} {w}x{h} t={t}: {why}");
+                        }
+                    }
+                }
+            }
+        }
+    };
+}
+#[cfg(test)]
+pub(crate) use story_contract_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -652,6 +824,24 @@ mod tests {
         assert!(near(fill.bounds(), Rect { x: 0.0, y: -4.0, w: 20.0, h: 10.0 }), "{:?}", fill.bounds());
         let stroke = Draw::Stroke { path, rgb: 0, width: 2.0 };
         assert!(near(stroke.bounds(), Rect { x: -1.0, y: -5.0, w: 22.0, h: 12.0 }), "{:?}", stroke.bounds());
+    }
+
+    #[test]
+    fn a_resting_shot_leaves_the_slot_to_the_app() {
+        for style in [Style::Notch, Style::Pill] {
+            let s = crate::ui::play::testing::shape(style, 190.0, 34.0);
+            let rest = Shot::rest(style, s);
+            assert_eq!(rest.slot, Slot::App);
+            assert!(at_rest(style, &rest).is_ok());
+            // A story head at rest in its slot is rest too; one moved, or an
+            // empty slot, is not.
+            assert!(at_rest(style, &Shot { slot: Slot::Story(MascotShot::REST), ..rest.clone() }).is_ok());
+            let moved = MascotShot { dy: 2.0, ..MascotShot::REST };
+            assert!(at_rest(style, &Shot { slot: Slot::Story(moved), ..rest.clone() }).is_err());
+            assert!(at_rest(style, &Shot { slot: Slot::Empty, ..rest.clone() }).is_err());
+            assert!(near_rest(&Shot { slot: Slot::Story(MascotShot { dy: 5e-4, ..MascotShot::REST }), ..rest.clone() }, 1e-3).is_ok());
+            assert!(near_rest(&Shot { slot: Slot::Story(moved), ..rest }, 1e-3).is_err());
+        }
     }
 
     #[test]
@@ -786,7 +976,7 @@ mod tests {
             });
             shot
         };
-        let slot = |bare: bool| Shot { mascot: Some(MascotShot { bare_octopus: bare, ..face }), ..Shot::rest(Style::Notch, s) };
+        let slot = |bare: bool| Shot { slot: Slot::Story(MascotShot { bare_octopus: bare, ..face }), ..Shot::rest(Style::Notch, s) };
         // Only the octopus's painter drops the arms; any other mascot paints
         // its whole head, which the bare box would not hold.
         for shot in [nested(true), slot(true)] {

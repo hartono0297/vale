@@ -231,7 +231,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use super::cat_style::CatLook;
 use super::dock::{self, DockFrame};
 use super::geometry::{
-    ANIM_MS, NOTCH_OPACITY_DEFAULT, NotchSize, ROBOT_COMPACT, ShapeKind, ShapeRect, TOAST_SLOT_EXTRA, Under,
+    ANIM_MS, NOTCH_OPACITY_DEFAULT, NotchSize, ShapeKind, ShapeRect, TOAST_SLOT_EXTRA, Under,
     ease_out_back, idle_layout_lead, idle_shape_typing, lerp_shape, lyric_box_w, lyric_max_w, lyric_scroll_offset,
     lyric_shape_sized, lyric_slot_width, lyric_width_min, shape_with_robot_sized, typing_lead,
     with_rec_caption, with_toast_slot,
@@ -254,7 +254,7 @@ use super::play::art::falk::{BirdPose, WingPose, bird, bird_at, bird_parts};
 use super::play::art::octopus;
 use super::play::art::tube::{along, catmull_rom, curl, plen};
 use super::play::rim::rim;
-use super::play::stories::{self, Layer, MascotShot, Part};
+use super::play::stories::{self, Layer, MascotShot, Part, Slot};
 use super::play::trigger::Story;
 use super::robot::{Expr, EyesPose, Motion, PAW_LIFT, Pose};
 use super::shelf_motion::{SHELF_ENTER_MS, SHELF_MOVE_MS, SHELF_STAGGER_MS, ShelfMotion};
@@ -1103,7 +1103,7 @@ fn falk_scene(hang: bool, style: Style, shape: ShapeRect, coat: FalkColor) -> st
         tuck: false,
     };
     let mut shot = stories::Shot::rest(style, shape);
-    shot.mascot = Some(MascotShot { dy: 3.0 * ROBOT_COMPACT, ..face });
+    shot.slot = Slot::Empty;
     let part = |layer, draw| Part { layer, draw, alpha: 1.0 };
     let bottom = shape.y + shape.h;
     if hang {
@@ -1138,7 +1138,8 @@ fn demo_play(which: DemoPlay, style: Style, shape: ShapeRect, cat: CatLook) -> P
     let deform = match which {
         DemoPlay::MalingAngka(t) => {
             let beat = Beat { t, ..beat };
-            return PlayFrame::of(stories::shot(Story::MalingAngka, style, shape, beat), beat);
+            let look = CatLook { mascot: Mascot::Falk, ..cat };
+            return PlayFrame::of(stories::shot(Story::MalingAngka, style, shape, beat, look), beat);
         }
         DemoPlay::CatBody => {
             let beat = Beat { spread: 0.0, ..beat };
@@ -1179,7 +1180,7 @@ fn demo_play(which: DemoPlay, style: Style, shape: ShapeRect, cat: CatLook) -> P
         }
         DemoPlay::OctopusArms => {
             let mut shot = stories::Shot::rest(style, shape);
-            shot.mascot = Some(MascotShot {
+            shot.slot = Slot::Story(MascotShot {
                 dx: 0.0,
                 dy: 0.0,
                 rot_deg: 0.0,
@@ -1230,7 +1231,7 @@ fn demo_play(which: DemoPlay, style: Style, shape: ShapeRect, cat: CatLook) -> P
         deform,
         beat,
         digits,
-        mascot: None,
+        slot: Slot::App,
         parts: Vec::new(),
     }
 }
@@ -5607,7 +5608,7 @@ mod tests {
                     let frame = demo_play(DemoPlay::OctopusArms, style, s, cat);
                     let case = format!("{style:?} {w}x{h} {coat:?}");
                     // The slot head is the mantle alone: the arms are the story's.
-                    assert!(frame.mascot.is_some_and(|m| m.bare_octopus), "{case}");
+                    assert!(matches!(frame.slot, Slot::Story(m) if m.bare_octopus), "{case}");
                     // Two arms, behind the island, in the coat's own colour.
                     let bodies = frame
                         .parts
@@ -5649,9 +5650,8 @@ mod tests {
                     for (which, layers) in [(DemoPlay::FalkOpen, vec![Layer::Back]), (DemoPlay::FalkHang, vec![Layer::Back, Layer::Front])] {
                         let frame = demo_play(which, style, s, cat);
                         let case = format!("{style:?} {w}x{h} {coat:?} {layers:?}");
-                        // The slot head has left the island: its clip hides it.
-                        let m = frame.mascot.expect("the slot head moved");
-                        assert!(m.dy >= ROBOT_COMPACT + h, "{case}: {m:?}");
+                        // The slot is empty: the head is the bird's.
+                        assert_eq!(frame.slot, Slot::Empty, "{case}");
                         // One bird, its head in it once, in the scene's layers.
                         assert_eq!(frame.parts.iter().map(|p| p.layer).collect::<Vec<_>>(), layers, "{case}");
                         assert_eq!(frame.parts.iter().map(|p| heads(&p.draw)).sum::<usize>(), 1, "{case}");
