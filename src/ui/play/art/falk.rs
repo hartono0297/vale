@@ -167,7 +167,7 @@ fn lightness(rgb: u32) -> f32 {
 /// The mockup's `plume`: one soft feather from `root`, heading `deg`, `len`
 /// long and `w` wide, half as wide at the root: two quads and a round tip
 /// (the mockup's arc, as two quarter-circle cubics).
-fn plume(root: Pt, deg: f32, len: f32, w: f32) -> Vec<Seg> {
+pub fn plume(root: Pt, deg: f32, len: f32, w: f32) -> Vec<Seg> {
     let (sin, cos) = deg.to_radians().sin_cos();
     let (d, n, h) = ((cos, sin), (-sin, cos), w / 2.0);
     let at = |p: Pt, v: Pt, k: f32| (p.0 + v.0 * k, p.1 + v.1 * k);

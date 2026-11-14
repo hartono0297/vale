@@ -214,9 +214,9 @@ mod tests {
             }
         }
         // Part 1 ships the falk's Maling angka; part 2 adds the cat's Syal
-        // ekor and Petak umpet first.
-        assert_eq!(pool(Mascot::Falk, true), vec![Story::MalingAngka]);
-        assert!(pool(Mascot::Falk, false).is_empty(), "Maling angka needs the clock");
+        // ekor and Petak umpet first, and the falk's Terbang keliling.
+        assert_eq!(pool(Mascot::Falk, true), vec![Story::MalingAngka, Story::TerbangKeliling]);
+        assert_eq!(pool(Mascot::Falk, false), vec![Story::TerbangKeliling], "Maling angka needs the clock");
         let cat = vec![Story::PetakUmpet, Story::SyalEkor];
         assert_eq!(pool(Mascot::Cat, true), cat);
         assert_eq!(pool(Mascot::Cat, false), cat, "neither needs the clock");
@@ -237,8 +237,8 @@ mod tests {
     fn a_one_story_pool_plays_its_story_again() {
         for moment in [Moment::Idle, Moment::Hour, Moment::Greeting, Moment::Manual] {
             for roll in 0..20 {
-                let s = pick(Mascot::Falk, true, Some(Story::MalingAngka), moment, roll);
-                assert_eq!(s, Story::MalingAngka, "{moment:?} roll={roll}");
+                let s = pick(Mascot::Falk, false, Some(Story::TerbangKeliling), moment, roll);
+                assert_eq!(s, Story::TerbangKeliling, "{moment:?} roll={roll}");
             }
         }
     }

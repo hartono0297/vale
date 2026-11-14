@@ -86,6 +86,12 @@
 //!   and `bata-play-petak-pounce` (5.2 s, the pounce: the bump shooting
 //!   along the lip, the island rocked 2.3 degrees, the tail tip being yanked
 //!   back in at the right end).
+//! - The falk's Terbang keliling story, frozen at two moments, always with
+//!   the falk (its coat from `DI_FALK_COLOR`, `DI_CAT_ACCESSORY` as above):
+//!   `bata-play-terbang-roll` (2.55 s, halfway round the loop under the
+//!   island, upside down, wings flapping, the slot empty) and
+//!   `bata-play-terbang-loop` (4.52 s, swinging round behind the right end,
+//!   cut to outside the island, on the Pill sinking into the end's arc).
 //! - `bata-play-cat-body`: the seated cat (body, legs, paws, tail) beside
 //!   the island at rest, tail up and one paw lifted, always the cat (its coat
 //!   from `DI_CAT_COLOR`, `DI_CAT_ACCESSORY` as above).
@@ -539,7 +545,7 @@ enum CliDemo {
 
 /// What a play scene freezes (`bata-play-island`, `bata-play-swing`,
 /// `bata-play-digits`, the `bata-maling-angka-*`, `bata-play-syal-*` and
-/// `bata-play-petak-*` moments, `bata-play-cat-body`,
+/// `bata-play-petak-*` and `bata-play-terbang-*` moments, `bata-play-cat-body`,
 /// `bata-play-octopus-arms`, `bata-play-falk-open`, `bata-play-falk-hang`).
 #[derive(Clone, Copy, PartialEq)]
 enum DemoPlay {
@@ -558,6 +564,8 @@ enum DemoPlay {
     SyalEkor(f32),
     /// The cat's Petak umpet at this many seconds, always with the cat.
     PetakUmpet(f32),
+    /// The falk's Terbang keliling at this many seconds, always with the falk.
+    TerbangKeliling(f32),
     /// The seated cat beside the island at rest, tail up, one paw lifted,
     /// always the cat.
     CatBody,
@@ -1176,6 +1184,12 @@ fn demo_play(which: DemoPlay, style: Style, shape: ShapeRect, cat: CatLook, layo
             let stage = Stage { style, shape, beat, look, layout };
             return PlayFrame::of(stories::shot(Story::PetakUmpet, &stage), beat);
         }
+        DemoPlay::TerbangKeliling(t) => {
+            let beat = Beat { t, ..beat };
+            let look = CatLook { mascot: Mascot::Falk, ..cat };
+            let stage = Stage { style, shape, beat, look, layout };
+            return PlayFrame::of(stories::shot(Story::TerbangKeliling, &stage), beat);
+        }
         DemoPlay::CatBody => {
             let beat = Beat { spread: 0.0, ..beat };
             let pose = CatPose {
@@ -1466,7 +1480,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 231] = [
+const SCENES: [Scene; 233] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -2138,6 +2152,16 @@ const SCENES: [Scene; 231] = [
     Scene {
         play: DemoPlay::PetakUmpet(5.2),
         ..bata("bata-play-petak-pounce", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    // Terbang keliling, frozen: upside down round the loop, swinging round
+    // behind the right end.
+    Scene {
+        play: DemoPlay::TerbangKeliling(2.55),
+        ..bata("bata-play-terbang-roll", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    Scene {
+        play: DemoPlay::TerbangKeliling(4.52),
+        ..bata("bata-play-terbang-loop", ShapeKind::Idle, View0::Idle, Expr::Idle)
     },
     Scene {
         play: DemoPlay::CatBody,
@@ -3273,7 +3297,7 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                 palette,
                 // A story scene draws its own mascot, whatever `DI_MASCOT` says.
                 cat: match scene.play {
-                    DemoPlay::MalingAngka(_) | DemoPlay::FalkOpen | DemoPlay::FalkHang => CatLook {
+                    DemoPlay::MalingAngka(_) | DemoPlay::TerbangKeliling(_) | DemoPlay::FalkOpen | DemoPlay::FalkHang => CatLook {
                         mascot: Mascot::Falk,
                         ..cat
                     },
