@@ -188,6 +188,10 @@ impl App {
             self.shelf_look();
         }
         self.shelf.shown = wanted;
+        // A preview ends with the page: the 1024 px pixels are dropped.
+        if !wanted {
+            self.shelf.preview = None;
+        }
         // Nothing animates while the page is not on screen (or with
         // Windows' animation effects off): the state is simply dropped.
         if (!wanted || !self.animations) && !self.shelf.motion.is_empty() {
@@ -316,6 +320,24 @@ impl App {
     /// back (and the decoded image goes with the preview).
     pub(super) fn shelf_preview_close(&mut self) {
         self.shelf.preview = None;
+    }
+
+    /// "Pratinjau gambar" was picked on card `i`: the panel shows the large
+    /// image, decoded on the worker (a network path too). A card that is not
+    /// an image any more, or whose preview is already open, changes nothing.
+    pub(super) fn shelf_preview_open(&mut self, i: usize) {
+        let Some(card) = self.shelf.cards.get(i).filter(|c| shelf::previewable(c)) else {
+            return;
+        };
+        let already = self.shelf.preview.as_ref().is_some_and(|p| p.key == card.key);
+        if !already {
+            let key = card.key.clone();
+            self.shelf.preview = Some(Preview::new(key.clone()));
+            if let Some(path) = self.shelf.shelf.get(i).map(PathBuf::from) {
+                self.shelf_decode(vec![(key, path, shelf_thumb::PREVIEW_SIDE, true)]);
+            }
+        }
+        self.refresh(Instant::now());
     }
 
     /// A left press: on a card whose file is there, it may become a drag.
