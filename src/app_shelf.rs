@@ -14,6 +14,7 @@
 //! so the frame clock runs only while something moves.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{POINT, WPARAM};
@@ -21,8 +22,11 @@ use windows::Win32::Graphics::Gdi::ScreenToClient;
 use windows::Win32::System::SystemServices::MK_LBUTTON;
 use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, KillTimer, SetTimer};
 
-use super::{App, Event, Page, View, client_xy};
+use super::{App, Event, Page, View, WM_APP_EVENT, client_xy, poster};
+use crate::clipboard::image::Thumb;
 use crate::shelf::{self, Probe, Shelf, ShelfCard};
+use crate::shelf_thumb;
+use crate::shelf_thumbs::{Preview, ShelfThumbs, shelf_jobs};
 use crate::shortcuts;
 use crate::ui::geometry::{Rect, ShapeKind, shape_for};
 use crate::ui::panel_layout::shelf_layout;
@@ -54,6 +58,10 @@ pub(super) struct ShelfState {
     press: Option<(usize, i32, i32)>,
     /// Cards coming in, going out or sliding; empty at rest.
     pub motion: ShelfMotion,
+    /// The cards' thumbnails, decoded only while the page is open.
+    pub thumbs: ShelfThumbs,
+    /// The large preview of one card, when open.
+    pub preview: Option<Preview>,
 }
 
 impl App {
@@ -64,6 +72,91 @@ impl App {
     pub(super) fn shelf_look(&mut self) {
         self.shelf.cards = self.shelf.shelf.cards(shelf::probe);
         self.phone_sync_shared();
+        // Slots of cards that left go first, so the cache stays the size of
+        // the shelf.
+        self.shelf.thumbs.retain(&self.shelf.cards);
+        if self
+            .shelf
+            .preview
+            .as_ref()
+            .is_some_and(|p| !p.still_open(&self.shelf.cards))
+        {
+            self.shelf.preview = None;
+        }
+        if self.state.view() == View::Panel(Page::Shelf) {
+            let items = &self.shelf.shelf;
+            // A network path is never touched on the UI thread.
+            let wanted = self.shelf.thumbs.wanted(&self.shelf.cards, |i| {
+                items.get(i).is_some_and(shelf::is_network)
+            });
+            let jobs = shelf_jobs(
+                &self.shelf.cards,
+                |i| self.shelf.shelf.get(i).map(PathBuf::from),
+                &wanted,
+            );
+            self.shelf_decode(jobs);
+        }
+    }
+
+    /// Hands the jobs (key, path, long side, is-preview) to one short-lived
+    /// worker thread, never the UI thread, in order; each answer comes back
+    /// as `Event::ShelfDecoded`.
+    pub(super) fn shelf_decode(&mut self, jobs: Vec<(String, PathBuf, u32, bool)>) {
+        if jobs.is_empty() {
+            return;
+        }
+        let keys: Vec<(String, bool)> = jobs.iter().map(|j| (j.0.clone(), j.3)).collect();
+        let (tx, wake) = (self.tx.clone(), poster(self.hwnd, WM_APP_EVENT));
+        let spawned = std::thread::Builder::new()
+            .name("shelf-thumb".into())
+            .spawn(move || {
+                for (key, path, side, preview) in jobs {
+                    let thumb = shelf_thumb::decode(&path, side).map(Arc::new);
+                    if tx
+                        .send(Event::ShelfDecoded {
+                            key,
+                            preview,
+                            thumb,
+                        })
+                        .is_ok()
+                    {
+                        wake();
+                    }
+                }
+            });
+        if spawned.is_err() {
+            // No thread: nothing stays waiting.
+            for (key, preview) in keys {
+                if preview {
+                    if let Some(p) = self.shelf.preview.as_mut() {
+                        p.set(&key, None);
+                    }
+                } else {
+                    self.shelf.thumbs.set(&key, None);
+                }
+            }
+        }
+    }
+
+    /// A worker's answer: the card's slot (or the open preview) takes it,
+    /// and the page draws it if it is showing.
+    pub(super) fn on_shelf_decoded(
+        &mut self,
+        key: &str,
+        preview: bool,
+        thumb: Option<Arc<Thumb>>,
+        now: Instant,
+    ) {
+        if preview {
+            if let Some(p) = self.shelf.preview.as_mut() {
+                p.set(key, thumb);
+            }
+        } else {
+            self.shelf.thumbs.set(key, thumb);
+        }
+        if self.state.view() == View::Panel(Page::Shelf) && !self.animating() {
+            self.draw(now);
+        }
     }
 
     /// The OLE drop target saw files enter the island or leave it.

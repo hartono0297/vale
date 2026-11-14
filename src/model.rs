@@ -714,6 +714,14 @@ pub enum Event {
         fingerprint: u64,
         packed: Option<std::sync::Arc<crate::clipboard::store::Packed>>,
     },
+    /// A worker decoded (or failed to decode) the image of shelf card `key`,
+    /// for its card (`preview` false) or the large preview. `App` keeps it;
+    /// the reducer ignores it.
+    ShelfDecoded {
+        key: String,
+        preview: bool,
+        thumb: Option<std::sync::Arc<Thumb>>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]

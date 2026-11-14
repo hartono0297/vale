@@ -1499,6 +1499,7 @@ impl App {
                     | Event::Arrange(_)
                     | Event::Toast(_)
                     | Event::ClipPacked { .. }
+                    | Event::ShelfDecoded { .. }
                     | Event::Update(_)
                     | Event::Rec(..)
                     | Event::Screen(..)
@@ -1613,6 +1614,10 @@ impl App {
                 }
                 Event::ClipPacked { id, fingerprint, packed } => {
                     self.on_clip_packed(id, fingerprint, packed);
+                    continue;
+                }
+                Event::ShelfDecoded { key, preview, thumb } => {
+                    self.on_shelf_decoded(&key, preview, thumb, now);
                     continue;
                 }
                 // The self-update's workers: `App` decides what shows.

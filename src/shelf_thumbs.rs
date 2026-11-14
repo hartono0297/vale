@@ -3,10 +3,12 @@
 //! `set`.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::clipboard::image::Thumb;
 use crate::shelf::{ShelfCard, previewable};
+use crate::shelf_thumb::CARD_SIDE;
 use crate::ui::geometry::Rect;
 
 /// What the cache knows about one card's thumbnail.
@@ -97,6 +99,23 @@ impl Preview {
     pub fn still_open(&self, cards: &[ShelfCard]) -> bool {
         cards.iter().any(|c| c.key == self.key && previewable(c))
     }
+}
+
+/// The decode jobs (key, path, long side, is-preview) for the cards at the
+/// `wanted` indices, in order. A card whose path is gone from the list is
+/// left out.
+pub fn shelf_jobs(
+    cards: &[ShelfCard],
+    path_of: impl Fn(usize) -> Option<PathBuf>,
+    wanted: &[usize],
+) -> Vec<(String, PathBuf, u32, bool)> {
+    wanted
+        .iter()
+        .filter_map(|&i| {
+            let card = cards.get(i)?;
+            Some((card.key.clone(), path_of(i)?, CARD_SIDE, false))
+        })
+        .collect()
 }
 
 /// The largest rect of the picture's ratio inside `bx`, centred, never
@@ -233,6 +252,27 @@ mod tests {
         assert!(!preview.still_open(&[card("b", ShelfKind::Image, false)]));
         assert!(!preview.still_open(&[card("a", ShelfKind::Image, true)]));
         assert!(!preview.still_open(&[]));
+    }
+
+    #[test]
+    fn jobs_pair_each_wanted_index_with_its_path_and_the_card_side() {
+        let cards = [
+            card("a", ShelfKind::Image, false),
+            card("b", ShelfKind::Image, false),
+            card("c", ShelfKind::Image, false),
+        ];
+        let path_of = |i: usize| match i {
+            2 => None,
+            _ => Some(PathBuf::from(format!("p{i}.png"))),
+        };
+        let jobs = shelf_jobs(&cards, path_of, &[1, 0, 2]);
+        assert_eq!(
+            jobs,
+            vec![
+                ("b".to_string(), PathBuf::from("p1.png"), CARD_SIDE, false),
+                ("a".to_string(), PathBuf::from("p0.png"), CARD_SIDE, false),
+            ]
+        );
     }
 
     #[test]
