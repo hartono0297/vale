@@ -144,6 +144,11 @@ pub fn display_name(path: &Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
+/// The card can open a large image preview: an image that is still there.
+pub fn previewable(card: &ShelfCard) -> bool {
+    card.kind == ShelfKind::Image && !card.stale
+}
+
 /// `name` cut to `max` characters with an ellipsis, keeping a short
 /// extension: "kemang-denah-lantai.pdf" -> "kemang-de….pdf".
 pub fn short_name(name: &str, max: usize) -> String {
