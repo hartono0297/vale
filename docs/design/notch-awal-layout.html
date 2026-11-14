@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Layout awal notch untuk instalasi baru</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #F4EDE4; --card: #FFFBF5; --ink: #231C18; --ink-2: #5E5045;
+    --line: #D9CBBB; --edge: #8C7B6C; --pick: #A8451F; --wall: #4E5C69;
+    --isl: #17120F; --tile: #261D18; --tx: #F2E8DC; --tx2: #B5A698; --acc: #E0642F;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--paper); color: var(--ink); font: 16px/1.5 "DM Sans", system-ui, sans-serif; }
+  header, main, footer { max-width: 1240px; margin: 0 auto; padding: 0 16px; }
+  header { padding-top: 32px; }
+  h1 { font-size: 34px; line-height: 1.15; margin: 0 0 8px; letter-spacing: -0.01em; }
+  h2 { font-size: 22px; margin: 0 0 4px; }
+  p { margin: 0 0 12px; max-width: 72ch; }
+  .lead { color: var(--ink-2); font-size: 17px; }
+  .muted { color: var(--ink-2); font-size: 14px; }
+
+  .now { background: var(--card); border: 2px solid var(--line); border-radius: 12px; padding: 14px 18px; margin: 24px 0 8px; }
+  .now h2 { font-size: 18px; }
+  .now ul { margin: 6px 0 0; padding-left: 20px; color: var(--ink-2); }
+  .now li { margin: 2px 0; }
+
+  .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; margin-top: 20px; }
+  @media (max-width: 1000px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+  .opt { background: var(--card); border: 2px solid var(--line); border-radius: 14px; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+  .opt.rec { border-color: var(--pick); box-shadow: 0 0 0 3px rgba(168,69,31,.15); }
+  .opt.base { background: transparent; border-style: dashed; }
+  .top { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .letter { font-weight: 700; font-size: 14px; background: var(--ink); color: var(--paper); border-radius: 6px; padding: 1px 9px; }
+  .badge { font-size: 13px; font-weight: 700; background: var(--pick); color: #FFFBF5; border-radius: 99px; padding: 1px 10px; }
+  .badge.gray { background: var(--edge); }
+  .sub { color: var(--ink-2); margin: 0; font-size: 15px; }
+  .lab { font-size: 13px; font-weight: 500; color: var(--ink-2); margin: 4px 0 -4px; }
+
+  .stage { background: var(--wall); border-radius: 10px; position: relative; overflow: hidden; }
+  .closed { height: 84px; }
+  .open { height: 262px; }
+  .win { position: absolute; left: 14%; right: 14%; bottom: 0; top: 56px; background: #ECE6DD; border-radius: 8px 8px 0 0; opacity: .9; }
+  .win::before { content: ""; display: block; height: 14px; background: #D4CCC1; border-radius: 8px 8px 0 0; }
+
+  /* the island */
+  .isl { position: absolute; left: 50%; transform: translateX(-50%); background: var(--isl); color: var(--tx); }
+  .isl.notch { top: 0; border-radius: 0 0 16px 16px; }
+  .isl.pill { top: 8px; border-radius: 99px; }
+  .idle { display: flex; align-items: center; justify-content: space-between; padding: 0 14px; }
+  .idle .clk { font-size: 13px; font-weight: 500; font-variant-numeric: tabular-nums; letter-spacing: .02em; }
+  .cat { display: block; }
+
+  .panel { position: absolute; left: 50%; width: 560px; height: 290px; transform-origin: top center; background: var(--isl); color: var(--tx); padding: 18px 20px; }
+  .panel.notch { top: 0; border-radius: 0 0 28px 28px; }
+  .panel.pill { top: 8px; border-radius: 28px; }
+  .panel h3 { margin: 0 0 12px; font-size: 22px; font-weight: 500; }
+  .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  .tile { background: var(--tile); border-radius: 12px; height: 60px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px; font-size: 13px; }
+  .tile i { width: 16px; height: 16px; border: 1.8px solid var(--tx); border-radius: 5px; display: block; opacity: .9; }
+  .dots { position: absolute; left: 0; right: 0; bottom: 10px; display: flex; justify-content: center; gap: 7px; }
+  .dots b { width: 6px; height: 6px; border-radius: 50%; background: #4A3F38; }
+  .dots b.on { background: var(--acc); }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 5px; margin: 0; padding: 0; list-style: none; counter-reset: p; }
+  .chips li { font-size: 13px; border: 1.5px solid var(--edge); background: #fff; border-radius: 99px; padding: 1px 10px 1px 8px; }
+  .chips li::before { counter-increment: p; content: counter(p) " "; color: var(--ink-2); font-size: 11px; }
+  .chips li.off { border-style: dashed; color: #8C7B6C; background: transparent; text-decoration: line-through; text-decoration-color: rgba(140,123,108,.6); }
+  .chips li.off::before { content: ""; }
+  .facts { margin: 0; padding-left: 18px; font-size: 14px; color: var(--ink-2); }
+  .facts li { margin: 1px 0; }
+  .flag { color: var(--pick); font-weight: 700; }
+
+  .why { background: var(--card); border: 2px solid var(--pick); border-radius: 12px; padding: 14px 18px; margin: 24px 0 0; }
+  .why ul { margin: 6px 0 0; padding-left: 20px; }
+  footer { padding: 28px 16px 64px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Layout awal notch untuk instalasi baru</h1>
+  <p class="lead">Ini yang dilihat orang yang baru memasang Vale: notch tertutup di atas layar, lalu panel terbuka (di sini halaman Pintasan, supaya kerapian barisnya kelihatan) dan urutan halamannya. Empat pilihan, satu direkomendasikan, dan kondisi sekarang sebagai pembanding.</p>
+  <div class="now">
+    <h2>Yang terjadi sekarang pada instalasi baru (dari kode)</h2>
+    <ul>
+      <li>Bentuk <b>Pill</b> yang melayang, 190×34, kucing + jam. Semua 15 halaman menyala, urutannya sisa dari fitur yang ditambah satu per satu.</li>
+      <li>Tile Pintasan bawaan ada <b>11</b>, jadi di grid 4 kolom baris terakhir hanya terisi 3. Titik halaman ada 15.</li>
+      <li>Tidak ada layar sambutan. Yang ada hanya notice "Jangan Ganggu" dan jendela pengaturan notifikasi Windows. Karena belum ada Google, halaman Kalender di awal kosong.</li>
+      <li>What's new diam saat instalasi pertama (<code>!onboarding_done</code>), jadi tidak bentrok dengan apa pun yang kita tambah.</li>
+    </ul>
+  </div>
+</header>
+
+<main>
+  <div class="grid" id="grid"></div>
+
+  <div class="why">
+    <h2>Kenapa A yang saya rekomendasikan</h2>
+    <ul>
+      <li><b>Menempel di tepi atas</b> terbaca langsung sebagai "notch" dan tidak ada celah yang mengganggu jendela di bawahnya.</li>
+      <li><b>9 halaman</b> cukup untuk pemakaian harian dan wheel tidak perlu diputar jauh. Halaman lain tetap ada, tinggal dinyalakan di Pengaturan → Panel.</li>
+      <li><b>12 tile</b> mengisi tiga baris penuh, tidak ada baris yatim.</li>
+      <li>Pintasan jadi beranda: begitu notch dibuka, semua fitur utama ada dalam satu layar, dan wheel tetap jalan ke halaman-halamannya.</li>
+      <li>Hanya mengubah nilai awal. Pengguna lama dan config yang sudah ada tidak disentuh.</li>
+    </ul>
+  </div>
+</main>
+
+<footer class="muted">Mockup. Ukuran dan warna mengikuti Vale (notch 190×34, panel 560×290, latar gelap, aksen terracotta). Isi halaman selain Pintasan tidak digambar.</footer>
+
+<script>
+const P = {
+  cal: 'Kalender', pom: 'Pomodoro', rec: 'Rekam', rem: 'Pengingat', note: 'Catatan', med: 'Musik',
+  mix: 'Mixer', clip: 'Clipboard', not: 'Notifikasi', shelf: 'Rak file', sys: 'Sistem',
+  dev: 'Perangkat', cli: 'CLI', arr: 'Susun', sc: 'Pintasan'
+};
+const ALL = ['cal','pom','rec','rem','note','med','mix','clip','not','shelf','sys','dev','cli','arr','sc'];
+const T9 = ['Screenshot','Clipboard','Cari','Emoji','Explorer','Kalkulator','Task Manager','Pengaturan','Kunci layar'];
+
+const OPTS = [
+  { id: 'base', cls: 'base', tag: 'Sekarang', badge: 'Pembanding', name: 'Kondisi bawaan saat ini',
+    sub: 'Pill melayang, semua halaman menyala.',
+    shape: 'pill', w: 190, h: 34, clock: true,
+    order: ALL, off: [], tiles: [...T9, 'Rak file', 'Perangkat'],
+    facts: ['Pill, 190×34, kucing + jam', '15 halaman, 11 tile', '<span class="flag">Baris tile terakhir hanya 3 dari 4</span>'] },
+
+  { id: 'A', cls: 'rec', tag: 'A', badge: 'Revisi: Pintasan di depan', name: 'Notch ringkas, Pintasan jadi beranda',
+    sub: 'Panel terbuka di Pintasan: 12 fitur utama, tiap tile membuka halamannya.',
+    shape: 'notch', w: 190, h: 34, clock: true,
+    order: ['sc','cal','rem','note','pom','med','clip','not','shelf'],
+    off: ['rec','mix','sys','dev','cli','arr'],
+    tiles: ['Kalender','Pengingat','Catatan','Pomodoro','Musik','Clipboard','Rak file','Notifikasi','Screenshot','Cari','Rekam','Mixer'],
+    facts: ['Notch menempel, 190×34, kucing + jam', 'Pintasan halaman pertama, lalu 8 halaman', 'Baris 1 harian, baris 2 media dan alat, baris 3 utilitas', 'Rekam dan Mixer cukup lewat tile (halamannya tidak ikut di wheel)'] },
+
+  { id: 'B', cls: '', tag: 'B', badge: '', name: 'Notch seimbang',
+    sub: 'Seperti A, plus Mixer, Rekam dan Sistem langsung tersedia.',
+    shape: 'notch', w: 190, h: 34, clock: true,
+    order: ['cal','rem','note','pom','med','mix','rec','clip','not','shelf','sys','sc'],
+    off: ['dev','cli','arr'],
+    tiles: [...T9.slice(0, 8), 'Kunci layar', 'Rak file', 'Mixer', 'Rekam'],
+    facts: ['Notch menempel, 190×34, kucing + jam', '12 halaman, dikelompokkan per fungsi', '12 tile = 3 baris penuh'] },
+
+  { id: 'C', cls: '', tag: 'C', badge: '', name: 'Pill ringkas',
+    sub: 'Pilihan halaman seperti A, tapi tetap melayang seperti sekarang.',
+    shape: 'pill', w: 190, h: 34, clock: true,
+    order: ['cal','rem','note','pom','med','clip','not','shelf','sc'],
+    off: ['rec','mix','sys','dev','cli','arr'],
+    tiles: T9.slice(0, 8),
+    facts: ['Pill melayang 8 px dari atas, 190×34', '9 halaman, 8 tile', 'Paling dekat dengan tampilan lama'] },
+
+  { id: 'D', cls: '', tag: 'D', badge: '', name: 'Minimal',
+    sub: 'Paling sedikit elemen: notch kecil, kucing saja, 5 halaman.',
+    shape: 'notch', w: 160, h: 30, clock: false,
+    order: ['med','cal','clip','note','sc'],
+    off: ['pom','rec','rem','mix','not','shelf','sys','dev','cli','arr'],
+    tiles: T9.slice(0, 4),
+    facts: ['Notch menempel, 160×30, hanya kucing', '5 halaman, 4 tile (satu baris)', 'Pengguna harus menyalakan sendiri sisanya'] },
+];
+
+const cat = '<svg class="cat" width="26" height="20" viewBox="0 0 26 20" aria-hidden="true"><path d="M2.5 19V5.5L6.5 2l3.5 3.6h6L19.5 2l4 3.5V19z" fill="#E0642F" stroke="#E0642F" stroke-width="2" stroke-linejoin="round"/><rect x="7.2" y="9.5" width="3.2" height="5" rx="1.6" fill="#17120F"/><rect x="15.6" y="9.5" width="3.2" height="5" rx="1.6" fill="#17120F"/></svg>';
+
+function stageClosed(o) {
+  const clock = o.clock ? '<span class="clk">09:41</span>' : '';
+  return `<div class="stage closed"><div class="win"></div>
+    <div class="isl ${o.shape} idle" style="width:${o.w}px;height:${o.h}px;${o.clock ? '' : 'justify-content:center'}">${cat}${clock}</div></div>`;
+}
+function stageOpen(o) {
+  const tiles = o.tiles.map(t => `<div class="tile"><i></i>${t}</div>`).join('');
+  const shown = o.order.length;
+  const idx = o.order.indexOf('sc');
+  const dots = o.order.map((_, i) => `<b class="${i === idx ? 'on' : ''}"></b>`).join('');
+  const s = 0.82;
+  return `<div class="stage open"><div class="panel ${o.shape}" style="transform:translateX(-50%) scale(${s})">
+    <h3>Pintasan</h3><div class="tiles">${tiles}</div><div class="dots">${dots}</div></div></div>`;
+}
+function chips(o) {
+  const on = o.order.map(k => `<li>${P[k]}</li>`).join('');
+  const off = o.off.map(k => `<li class="off">${P[k]}</li>`).join('');
+  return `<ul class="chips" aria-label="Urutan halaman">${on}${off}</ul>`;
+}
+document.getElementById('grid').innerHTML = OPTS.map(o => `
+  <section class="opt ${o.cls}">
+    <div class="top"><span class="letter">${o.tag}</span><h2>${o.name}</h2>${o.badge ? `<span class="badge ${o.id === 'base' ? 'gray' : ''}">${o.badge}</span>` : ''}</div>
+    <p class="sub">${o.sub}</p>
+    <div class="lab">Tertutup</div>${stageClosed(o)}
+    <div class="lab">Terbuka</div>${stageOpen(o)}
+    <div class="lab">Urutan halaman (yang dicoret disembunyikan, bisa dinyalakan di Pengaturan)</div>${chips(o)}
+    <ul class="facts">${o.facts.map(f => `<li>${f}</li>`).join('')}</ul>
+  </section>`).join('');
+</script>
+</body>
+</html>
