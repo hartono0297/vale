@@ -115,7 +115,8 @@ fn bird_pose(t: f32, face: MascotShot, swing: f32) -> BirdPose {
 /// its scale), its look a glance. `swing` is the bird's swing as it hangs.
 fn face(t: f32, swing: f32) -> MascotShot {
     let happy = (2.95..3.65).contains(&t) || (6.9..7.5).contains(&t);
-    // The quick blinks, and the slow one (0.22 s) peeking over the cloak.
+    // The quick blinks, and the slow one peeking over the cloak (the
+    // mockup's 0.22 s; shut past the 0.25 threshold for about 0.165 s).
     let blink = blinks(t, &[0.3, 2.45, 7.45]).max(1.0 - (t - 4.95).abs() / 0.11);
     // The mockup holds its last crest (1.1) to the end; it settles to rest
     // here.
@@ -159,8 +160,9 @@ fn below_top(top: f32) -> Vec<Seg> {
 
 /// One moment of the story on `stage`, the falk in the coat of its look.
 /// `beat.alpha` eases it home, paced by the wind-down's time (`kept`): over
-/// its first 0.58 the island settles and the slot head comes back in its
-/// place, upright; from 0.3 to 0.88 the figure fades over it. Cut short,
+/// its first 0.58 the island settles; from 0.15 to 0.73 the figure fades out
+/// as the slot head fades back in its place, upright and idle, one
+/// crossfade, so the falk never shows twice. Cut short,
 /// the story holds where the cut found it, so nothing it had not brought out
 /// shows. Exactly at rest at 0 s, at the end and with `alpha` 0.
 pub fn shot(stage: &Stage) -> Shot {
@@ -180,14 +182,22 @@ pub fn shot(stage: &Stage) -> Shot {
     let f = face(t, swing * out_k);
 
     // The figure (its head over the slot head, then the bird) and the slot
-    // head under it; wound down, the slot head comes back first.
+    // head under it; wound down, the one crossfades into the other.
     let show = kf(t, &[(SHOW_IN.0, 0.0, Lin), (SHOW_IN.1, 1.0, Lin), (SHOW_OUT.0, 1.0, Lin), (SHOW_OUT.1, 0.0, Lin)]);
-    let figure = show * kept(a, 0.3, 0.88);
-    let slot_alpha = if show < 1.0 { 1.0 } else { 1.0 - kept(a, 0.0, 0.58) };
+    let fig = kept(a, 0.15, 0.73);
+    let figure = show * fig;
+    let hidden = show >= 1.0;
+    let slot_alpha = if hidden { 1.0 - fig } else { 1.0 };
     // Upright in its slot; its face eases to rest through the wind-down.
+    // Coming back from hiding it is the resting head, so it never snaps
+    // from a happy or blinking face to rest.
     let ease = kept(a, 0.4, 1.0);
     out.halo = 1.0 - figure;
-    out.slot = if slot_alpha > 0.0 {
+    out.slot = if slot_alpha <= 0.0 {
+        Slot::Empty
+    } else if hidden {
+        Slot::Story(MascotShot { alpha: slot_alpha, ..MascotShot::REST })
+    } else {
         Slot::Story(MascotShot {
             rot_deg: 0.0,
             crest: CrestPose {
@@ -198,8 +208,6 @@ pub fn shot(stage: &Stage) -> Shot {
             alpha: slot_alpha,
             ..f
         })
-    } else {
-        Slot::Empty
     };
 
     // A floating Pill tilts about its centre with the bird's swing (the
@@ -509,6 +517,17 @@ mod tests {
             assert_eq!((p.wl_before, p.wr_before), (wing_pose(t - 0.07, -1.0), wing_pose(t - 0.07, 1.0)), "t={t}");
             assert_ne!(p.wl, p.wl_before, "t={t}");
         }
+        // Two whole strong flaps, the arm continuous where they start and end.
+        assert!(((FLAPS.1 - FLAPS.0) * 3.2 - 2.0).abs() < 1e-5, "{FLAPS:?}");
+        for edge in [FLAPS.0, FLAPS.1] {
+            for side in [-1.0, 1.0] {
+                let (a, b) = (wing_pose(edge - 1e-4, side).arm, wing_pose(edge + 1e-4, side).arm);
+                assert!((a - b).abs() < 0.2, "edge {edge} side {side}: {a} to {b}");
+            }
+        }
+        // Wrapped at 4.6 s: the right wing crossed over the chest (`CROSS`, 186).
+        let arm = wing_pose(4.6, 1.0).arm;
+        assert!((arm - 186.0).abs() < 4.0, "{arm}");
     }
 
     #[test]
@@ -548,7 +567,7 @@ mod tests {
         assert_eq!(face(3.3).expr, Expr::Happy);
         assert_eq!(face(7.0).expr, Expr::Happy);
         assert_eq!(face(2.2).expr, Expr::Idle);
-        // The slow blink peeking over the cloak (0.22 s), the quick ones.
+        // The slow blink peeking over the cloak (shut about 0.165 s), the quick ones.
         assert!(face(5.02).blink && face(2.45).blink && !face(2.2).blink);
         // The crest: flat while it hangs, up as the wings open.
         assert!(face(2.7).crest.scale < 0.6 && face(2.95).crest.scale > 1.0, "{} {}", face(2.7).crest.scale, face(2.95).crest.scale);
@@ -562,10 +581,12 @@ mod tests {
     #[test]
     fn a_wind_down_brings_the_falk_home_through_its_slot() {
         // Cut hanging, or turning in the slot: the slot head comes back in
-        // its place, upright, and the figure fades over it, each by at most
-        // a frame's fade; the island settles; then rest.
+        // its place, upright, idle and open-eyed, as the figure fades, one
+        // crossfade (never the falk twice), each by at most a frame's fade;
+        // the island settles; then rest.
         for style in [Style::Notch, Style::Pill] {
-            for cut in [0.7, 3.0, 4.6] {
+            // Turning, hanging, happy with its wings open, blinking in the cloak.
+            for cut in [0.7, 0.8, 3.0, 3.3, 4.6, 4.95] {
                 let frames = wind_down_frames(cut, 0.0, |beat| shot(&stage(style, 190.0, 34.0, beat, true)));
                 let mut last = 0.0;
                 for (ms, beat, shot) in &frames {
@@ -580,6 +601,11 @@ mod tests {
                     };
                     assert!((slot - last).abs() <= FRAME_FADE + 1e-4, "{case}: the slot head from {last} to {slot}");
                     last = slot;
+                    let figure = shot.parts.iter().filter(|p| p.layer == Layer::Front && has_head(&p.draw)).map(|p| p.alpha).fold(0.0, f32::max);
+                    assert!(slot + figure <= 1.0 + 1e-4, "{case}: the slot head {slot} and the figure {figure}");
+                    if let Slot::Story(m) = shot.slot {
+                        assert!(m.expr == Expr::Idle && !m.blink, "{case}: {m:?}");
+                    }
                     if beat.alpha < 0.25 {
                         assert!(is_rest(style, &shot.deform), "{case}: {:?}", shot.deform);
                     }
