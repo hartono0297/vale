@@ -27,11 +27,11 @@ use windows::core::{Error, HSTRING, PCSTR, Result, w};
 
 use crate::config::{Config, NotchMonitor, Style};
 use crate::i18n::{Key, monitor_entry, text, update_menu_install};
+use crate::notch_monitor::{Display, choice_for, display_name, same_path, saved_missing};
 use crate::theme::MascotPlay;
+use crate::ui::app_icon;
 use crate::ui::play::gate::{Env, may_start};
 use crate::ui::play::trigger::Moment;
-use crate::notch_monitor::{Display, choice_for, display_name, same_path, saved_missing};
-use crate::ui::app_icon;
 use crate::ui::tray_dot;
 
 /// Sent by the shell for mouse activity on the tray icon; `lparam` holds the
@@ -257,6 +257,21 @@ pub fn play_item_shown(env: &Env) -> bool {
         Duration::ZERO,
         Duration::ZERO,
     )
+}
+
+/// `env` as the menu's entry judges it: an open panel is looked at as shut.
+/// An open panel reports `idle_view` false (the view is the panel), so the
+/// view the island has *under* it (`idle_if_shut`) replaces it together with
+/// `panel_open`: a media or notice view underneath must still hide the entry.
+pub fn shut_panel_env(env: &Env, idle_if_shut: bool) -> Env {
+    if !env.panel_open {
+        return *env;
+    }
+    Env {
+        panel_open: false,
+        idle_view: idle_if_shut,
+        ..*env
+    }
 }
 
 /// `play_item_shown`, and no play running: `try_play` ignores a start while

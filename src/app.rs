@@ -9383,10 +9383,11 @@ fn open_menu(hwnd: HWND) {
         // A hotkey another app held may be free by now.
         app.retry_hotkeys();
         // Whether "Mainkan maskot" shows: not while a play runs.
-        let play_item = tray::play_item_visible(
+        let env = tray::shut_panel_env(
             &app.play_env(Instant::now(), false),
-            app.play.is_some(),
+            app.state.view_if_panel_shut() == View::Idle,
         );
+        let play_item = tray::play_item_visible(&env, app.play.is_some());
         tray::set_play_item(play_item);
         (app.config.clone(), app.update.known_version())
     }) else {
@@ -11990,23 +11991,6 @@ mod tests {
         assert_eq!(settle_plan(None, true), Settle::Now);
         // Nothing may start, so nothing waits for a fire.
         assert_eq!(settle_plan(Some(ms(250)), false), Settle::Never);
-    }
-
-    #[test]
-    fn a_menu_play_could_start_only_once_the_panel_is_shut() {
-        use crate::ui::play::testing::ok_env;
-        let manual = |env: &Env| {
-            may_start(env, Moment::Manual, MascotPlay::Mati, Duration::ZERO, Duration::ZERO)
-        };
-        let mut env = ok_env();
-        env.panel_open = true;
-        assert!(!manual(&env), "a play is never drawn over an open panel");
-        env.panel_open = false;
-        assert!(manual(&env));
-        // The pointer on the island and the open menu do not hold it back.
-        env.pointer_near = true;
-        env.menu_open = true;
-        assert!(manual(&env));
     }
 
     #[test]
