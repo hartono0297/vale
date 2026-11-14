@@ -27,9 +27,14 @@ pub struct Env {
     pub clock_on: bool,
     /// The mascot has a ready story to play (`trigger::pool` is not empty).
     pub has_story: bool,
+    /// The idle face is the typing one (a Claude session, a CLI command or
+    /// Mole runs) and the island is widened for its laptop.
+    pub working: bool,
 }
 
-/// The gates that bind every play, a `Manual` one included.
+/// The gates that bind every play, a `Manual` one included. The typing face
+/// does too: its island is widened for the laptop, and a story lays itself
+/// out on the plain idle shape (`idle_layout_lead` with no lead).
 fn permanent_ok(env: &Env) -> bool {
     env.mascot_on
         && env.motion_full
@@ -42,6 +47,7 @@ fn permanent_ok(env: &Env) -> bool {
         && !env.asleep
         && !env.recording
         && env.has_story
+        && !env.working
 }
 
 /// The gates that asking for a play by hand switches on (reaching the island to
@@ -116,6 +122,7 @@ mod tests {
         flips!(
             mascot_on, motion_full, energy_saver, win_anim, idle_view, panel_open, menu_open,
             fullscreen, screen_away, shrunk, pointer_near, asleep, recording, clock_on, has_story,
+            working,
         )
         .into_iter()
         .filter(|(name, _)| *name != "clock_on")
@@ -124,7 +131,19 @@ mod tests {
 
     #[test]
     fn the_flips_cover_every_gate_but_the_clock() {
-        assert_eq!(off_by_one_envs().len(), 14);
+        assert_eq!(off_by_one_envs().len(), 15);
+    }
+
+    #[test]
+    fn the_typing_face_blocks_every_play_and_ends_a_running_one() {
+        let mut env = ok_env();
+        env.working = true;
+        let (input, last) = (Duration::from_secs(60), Duration::from_secs(3600));
+        for moment in [Moment::Idle, Moment::Hour, Moment::Greeting, Moment::Manual] {
+            assert!(!may_start(&env, moment, MascotPlay::Sesekali, input, last), "{moment:?}");
+            assert!(must_stop(&env, Story::MalingAngka, moment, false, false), "{moment:?}");
+        }
+        assert!(!instant_stop(&env), "it eases home");
     }
 
     #[test]

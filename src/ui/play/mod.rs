@@ -53,6 +53,7 @@ pub(crate) mod testing {
             recording: false,
             clock_on: true,
             has_story: true,
+            working: false,
         }
     }
 

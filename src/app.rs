@@ -2376,6 +2376,7 @@ impl App {
             recording: hotkeys::any_recording(self.rec.active(), self.screen.recording()),
             clock_on: self.config.idle_clock,
             has_story: has_ready(self.config.mascot, self.config.idle_clock),
+            working: self.typing_shape(now),
         }
     }
 
@@ -11684,7 +11685,7 @@ mod tests {
         assert_eq!(TIMER_MASCOT_PLAY, 19);
     }
 
-    /// An `Env` from 15 bits, one per field, in declaration order.
+    /// An `Env` from 16 bits, one per field, in declaration order.
     fn env_from_bits(bits: u32) -> crate::ui::play::gate::Env {
         let b = |i: u32| bits & (1 << i) != 0;
         crate::ui::play::gate::Env {
@@ -11703,6 +11704,7 @@ mod tests {
             recording: b(12),
             clock_on: b(13),
             has_story: b(14),
+            working: b(15),
         }
     }
 
@@ -11714,7 +11716,7 @@ mod tests {
         let (since_input, since_last) = (Duration::from_secs(60), Duration::from_secs(3600));
         let mut armed = 0u32;
         for preset in [Sesekali, Sering, Jarang, Sapaan, Mati] {
-            for bits in 0..(1u32 << 15) {
+            for bits in 0..(1u32 << 16) {
                 let env = env_from_bits(bits);
                 for playing in [false, true] {
                     // Written out, not read from the gates: the timer's own rule.
@@ -11733,7 +11735,8 @@ mod tests {
                         && !env.shrunk
                         && !env.asleep
                         && !env.recording
-                        && env.has_story;
+                        && env.has_story
+                        && !env.working;
                     let got = mascot_timer_wanted(&env, preset, playing);
                     assert_eq!(got, expected, "{preset:?} playing={playing} env={env:?}");
                     // It also agrees with the gate the fire re-checks, with the
