@@ -474,7 +474,7 @@ mod tests {
             for (w, h) in SIZES {
                 for clock in [true, false] {
                     let case = format!("{style:?} {w}x{h} clock={clock}");
-                    let frames = wind_down_frames(2.0, 0.0, |beat| shot(&stage(style, w, h, beat, clock)));
+                    let frames = wind_down_frames(Story::PetakUmpet, 2.0, 0.0, |beat| shot(&stage(style, w, h, beat, clock)));
                     let mut last: Option<(((f32, f32), f32, f32), f32)> = None;
                     for (ms, beat, shot) in &frames {
                         let st = stage(style, w, h, *beat, clock);

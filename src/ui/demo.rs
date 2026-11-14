@@ -86,6 +86,13 @@
 //!   and `bata-play-petak-pounce` (5.2 s, the pounce: the bump shooting
 //!   along the lip, the island rocked 2.3 degrees, the tail tip being yanked
 //!   back in at the right end).
+//! - The cat's Bantal angka story, frozen at two moments, always with the cat
+//!   (its coat from `DI_CAT_COLOR`, `DI_CAT_ACCESSORY` as above):
+//!   `bata-play-bantal-sleep` (5.9 s, asleep with its head on the minute,
+//!   the digit squashed and tipped under its cheek, the lip sagging under it,
+//!   two z's rising) and `bata-play-bantal-swap` (6.45 s, the minute turned
+//!   over to the next one, popped up and ringing, the cat startled, its tail
+//!   puffed).
 //! - `bata-play-cat-body`: the seated cat (body, legs, paws, tail) beside
 //!   the island at rest, tail up and one paw lifted, always the cat (its coat
 //!   from `DI_CAT_COLOR`, `DI_CAT_ACCESSORY` as above).
@@ -539,7 +546,7 @@ enum CliDemo {
 
 /// What a play scene freezes (`bata-play-island`, `bata-play-swing`,
 /// `bata-play-digits`, the `bata-maling-angka-*`, `bata-play-syal-*` and
-/// `bata-play-petak-*` moments, `bata-play-cat-body`,
+/// `bata-play-petak-*` and `bata-play-bantal-*` moments, `bata-play-cat-body`,
 /// `bata-play-octopus-arms`, `bata-play-falk-open`, `bata-play-falk-hang`).
 #[derive(Clone, Copy, PartialEq)]
 enum DemoPlay {
@@ -558,6 +565,8 @@ enum DemoPlay {
     SyalEkor(f32),
     /// The cat's Petak umpet at this many seconds, always with the cat.
     PetakUmpet(f32),
+    /// The cat's Bantal angka at this many seconds, always with the cat.
+    BantalAngka(f32),
     /// The seated cat beside the island at rest, tail up, one paw lifted,
     /// always the cat.
     CatBody,
@@ -1149,8 +1158,16 @@ fn falk_scene(hang: bool, style: Style, shape: ShapeRect, coat: FalkColor) -> st
 /// deformed as `which` says, or a story's own moment. The cat's body takes
 /// its coat from `cat`.
 ///
-/// `layout` is the idle layout the frame lays the slot and the clock by.
-fn demo_play(which: DemoPlay, style: Style, shape: ShapeRect, cat: CatLook, layout: IdleLayout) -> PlayFrame {
+/// `layout` is the idle layout the frame lays the slot and the clock by,
+/// `minute` the clock's last character as the scene shows it.
+fn demo_play(
+    which: DemoPlay,
+    style: Style,
+    shape: ShapeRect,
+    cat: CatLook,
+    layout: IdleLayout,
+    minute: Option<char>,
+) -> PlayFrame {
     let beat = Beat {
         spread: 1.0,
         alpha: 1.0,
@@ -1161,20 +1178,26 @@ fn demo_play(which: DemoPlay, style: Style, shape: ShapeRect, cat: CatLook, layo
         DemoPlay::MalingAngka(t) => {
             let beat = Beat { t, ..beat };
             let look = CatLook { mascot: Mascot::Falk, ..cat };
-            let stage = Stage { style, shape, beat, look, layout };
+            let stage = Stage { style, shape, beat, look, layout, minute };
             return PlayFrame::of(stories::shot(Story::MalingAngka, &stage), beat);
         }
         DemoPlay::SyalEkor(t) => {
             let beat = Beat { t, ..beat };
             let look = CatLook { mascot: Mascot::Cat, ..cat };
-            let stage = Stage { style, shape, beat, look, layout };
+            let stage = Stage { style, shape, beat, look, layout, minute };
             return PlayFrame::of(stories::shot(Story::SyalEkor, &stage), beat);
         }
         DemoPlay::PetakUmpet(t) => {
             let beat = Beat { t, ..beat };
             let look = CatLook { mascot: Mascot::Cat, ..cat };
-            let stage = Stage { style, shape, beat, look, layout };
+            let stage = Stage { style, shape, beat, look, layout, minute };
             return PlayFrame::of(stories::shot(Story::PetakUmpet, &stage), beat);
+        }
+        DemoPlay::BantalAngka(t) => {
+            let beat = Beat { t, ..beat };
+            let look = CatLook { mascot: Mascot::Cat, ..cat };
+            let stage = Stage { style, shape, beat, look, layout, minute };
+            return PlayFrame::of(stories::shot(Story::BantalAngka, &stage), beat);
         }
         DemoPlay::CatBody => {
             let beat = Beat { spread: 0.0, ..beat };
@@ -1466,7 +1489,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 231] = [
+const SCENES: [Scene; 233] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -2138,6 +2161,15 @@ const SCENES: [Scene; 231] = [
     Scene {
         play: DemoPlay::PetakUmpet(5.2),
         ..bata("bata-play-petak-pounce", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    // Bantal angka, frozen: asleep on the minute, the minute turned over.
+    Scene {
+        play: DemoPlay::BantalAngka(5.9),
+        ..bata("bata-play-bantal-sleep", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    Scene {
+        play: DemoPlay::BantalAngka(6.45),
+        ..bata("bata-play-bantal-swap", ShapeKind::Idle, View0::Idle, Expr::Idle)
     },
     Scene {
         play: DemoPlay::CatBody,
@@ -3277,7 +3309,10 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                         mascot: Mascot::Falk,
                         ..cat
                     },
-                    DemoPlay::CatBody | DemoPlay::SyalEkor(_) | DemoPlay::PetakUmpet(_) => CatLook {
+                    DemoPlay::CatBody
+                    | DemoPlay::SyalEkor(_)
+                    | DemoPlay::PetakUmpet(_)
+                    | DemoPlay::BantalAngka(_) => CatLook {
                         mascot: Mascot::Cat,
                         ..cat
                     },
@@ -3442,7 +3477,8 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                     };
                     let clock = scene.clock.is_some() || clock_on;
                     let layout = idle_layout_lead(shape, scene.robot.is_some(), clock, lead);
-                    demo_play(scene.play, style, shape, cat, layout)
+                    let minute = scene.clock.and_then(|c| c.chars().last());
+                    demo_play(scene.play, style, shape, cat, layout, minute)
                 }),
             };
             if let Err(error) = renderer.draw(&win, style, shape, &frame, opacity) {
@@ -5671,7 +5707,7 @@ mod tests {
                 let s = shape(style, w, h);
                 for coat in OctopusColor::ALL {
                     let cat = CatLook { octopus: *coat, ..CatLook::default() };
-                    let frame = demo_play(DemoPlay::OctopusArms, style, s, cat, idle_layout_lead(s, true, true, 0.0));
+                    let frame = demo_play(DemoPlay::OctopusArms, style, s, cat, idle_layout_lead(s, true, true, 0.0), Some('2'));
                     let case = format!("{style:?} {w}x{h} {coat:?}");
                     // The slot head is the mantle alone: the arms are the story's.
                     assert!(matches!(frame.slot, Slot::Story(m) if m.bare_octopus), "{case}");
@@ -5714,7 +5750,7 @@ mod tests {
                 for coat in FalkColor::ALL {
                     let cat = CatLook { falk: *coat, ..CatLook::default() };
                     for (which, layers) in [(DemoPlay::FalkOpen, vec![Layer::Back]), (DemoPlay::FalkHang, vec![Layer::Back, Layer::Front])] {
-                        let frame = demo_play(which, style, s, cat, idle_layout_lead(s, true, true, 0.0));
+                        let frame = demo_play(which, style, s, cat, idle_layout_lead(s, true, true, 0.0), Some('2'));
                         let case = format!("{style:?} {w}x{h} {coat:?} {layers:?}");
                         // The slot is empty: the head is the bird's.
                         assert_eq!(frame.slot, Slot::Empty, "{case}");

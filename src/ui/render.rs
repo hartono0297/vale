@@ -365,15 +365,18 @@ impl PlayFrame {
 }
 
 /// What a play does to one character of the clock: shifted by `dx`, `dy`
-/// (dip), turned by `rot_deg` and scaled by `scale` about the character's own
-/// centre, and drawn at `alpha` of the clock's own.
+/// (dip), turned by `rot_deg` and scaled by `scale` (its width by `scale_x`
+/// more) about the character's own centre, drawn at `alpha` of the clock's
+/// own, and `ch` drawn in its cell in place of the clock's own character.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DigitFx {
     pub dx: f32,
     pub dy: f32,
     pub rot_deg: f32,
     pub scale: f32,
+    pub scale_x: f32,
     pub alpha: f32,
+    pub ch: Option<char>,
 }
 
 impl DigitFx {
@@ -383,8 +386,16 @@ impl DigitFx {
         dy: 0.0,
         rot_deg: 0.0,
         scale: 1.0,
+        scale_x: 1.0,
         alpha: 1.0,
+        ch: None,
     };
+}
+
+/// A character's own move under `fx`, about the centre `c` of its cell.
+fn digit_matrix(fx: &DigitFx, c: (f32, f32)) -> Matrix3x2 {
+    Matrix3x2::scale_around(fx.scale * fx.scale_x, fx.scale, Vector2::new(c.0, c.1))
+        * turn_about(fx.rot_deg, c, (fx.dx, fx.dy))
 }
 
 /// Whether any character needs a place of its own. When none does, the clock
@@ -2970,9 +2981,16 @@ impl Renderer {
                     self.paint_robot_at(area, robot, alpha)
                 });
             }
-            Draw::Digit { index, at: c, rot_deg } => {
+            Draw::Digit { index, at: to, rot_deg } => {
                 if let Some((area, time)) = at.clock {
-                    self.paint_digit_prop(time, area, *index, *c, *rot_deg, alpha);
+                    let place = |c: (f32, f32)| turn_about(*rot_deg, c, (to.0 - c.0, to.1 - c.1));
+                    self.paint_digit_prop(time, area, *index, None, place, alpha);
+                }
+            }
+            Draw::ClockChar { index, fx, .. } => {
+                if let Some((area, time)) = at.clock {
+                    let place = |c: (f32, f32)| digit_matrix(fx, c);
+                    self.paint_digit_prop(time, area, *index, fx.ch, place, alpha * fx.alpha);
                 }
             }
             Draw::Whistle { at: c } => self.paint_whistle(*c, alpha),
@@ -3035,23 +3053,23 @@ impl Renderer {
     }
 
     /// Character `index` of the clock `time` (laid out in `area`, as the
-    /// clock is), its cell centred on `at` and turned by `rot_deg`, over an
-    /// outline in the island's colour so it reads on the mascot and off the
-    /// island.
+    /// clock is; `ch` in its place if given), moved by what `place` makes of
+    /// its cell's centre, over an outline in the island's colour so it reads
+    /// on the mascot and off the island.
     fn paint_digit_prop(
         &self,
         time: &str,
         area: Rect,
         index: usize,
-        at: (f32, f32),
-        rot_deg: f32,
+        ch: Option<char>,
+        place: impl FnOnce((f32, f32)) -> Matrix3x2,
         alpha: f32,
     ) {
         let wide: Vec<u16> = time.encode_utf16().collect();
         let Ok(line) = self.layout(&wide, &self.fonts.clock, area.w, area.h) else {
             return;
         };
-        let Some((one, origin, c)) = self.clock_char(&line, &wide, index, area) else {
+        let Some((one, origin, c)) = self.clock_char(&line, &wide, index, area, ch) else {
             return;
         };
         let target = self.target.as_ref().expect("target ensured by paint");
@@ -3059,8 +3077,7 @@ impl Renderer {
         let mut before = Matrix3x2::identity();
         unsafe {
             target.rt.GetTransform(&mut before);
-            let own = turn_about(rot_deg, c, (at.0 - c.0, at.1 - c.1));
-            target.rt.SetTransform(&(own * before));
+            target.rt.SetTransform(&(place(c) * before));
             target.brush.SetColor(&color(self.palette.surface, alpha));
             for (dx, dy) in PROP_OUTLINE {
                 let moved = Vector2::new(origin.X + dx, origin.Y + dy);
@@ -4375,12 +4392,10 @@ impl Renderer {
         let mut before = Matrix3x2::identity();
         unsafe { rt.GetTransform(&mut before) };
         for (i, fx) in digits.iter().enumerate().take(wide.len()) {
-            let Some((one, origin, c)) = self.clock_char(&line, &wide, i, area) else {
+            let Some((one, origin, c)) = self.clock_char(&line, &wide, i, area, fx.ch) else {
                 continue;
             };
-            let own = Matrix3x2::scale_around(fx.scale, fx.scale, Vector2::new(c.0, c.1))
-                * turn_about(fx.rot_deg, c, (fx.dx, fx.dy));
-            unsafe { rt.SetTransform(&(own * before)) };
+            unsafe { rt.SetTransform(&(digit_matrix(fx, c) * before)) };
             // No CLIP: it would cut a character at its own layout box, which a
             // character scaled past it (the regrow's overshoot) overhangs.
             self.text_legible(
@@ -4395,16 +4410,17 @@ impl Renderer {
     }
 
     /// Character `i` of `wide` where `line` (`wide` laid out in `area`) puts
-    /// it: the character in a layout of its own, with the line's tracking,
-    /// tabular figures and height, the point to draw that from (its left edge
-    /// at the cell's x), and the centre of its cell. `None` when DirectWrite
-    /// cannot place it.
+    /// it: the character (or `ch` in its place) in a layout of its own, with
+    /// the line's tracking, tabular figures and height, the point to draw that
+    /// from (its left edge at the cell's x), and the centre of its cell.
+    /// `None` when DirectWrite cannot place it.
     fn clock_char(
         &self,
         line: &IDWriteTextLayout,
         wide: &[u16],
         i: usize,
         area: Rect,
+        ch: Option<char>,
     ) -> Option<(IDWriteTextLayout, Vector2, (f32, f32))> {
         if i >= wide.len() {
             return None;
@@ -4412,7 +4428,12 @@ impl Renderer {
         let (mut x, mut y) = (0.0, 0.0);
         let mut cell = DWRITE_HIT_TEST_METRICS::default();
         unsafe { line.HitTestTextPosition(i as u32, false, &mut x, &mut y, &mut cell) }.ok()?;
-        let one = self.layout(&wide[i..=i], &self.fonts.clock, area.w, area.h).ok()?;
+        let mut buf = [0u16; 2];
+        let text = match ch {
+            Some(c) => &*c.encode_utf16(&mut buf),
+            None => &wide[i..=i],
+        };
+        let one = self.layout(text, &self.fonts.clock, area.w, area.h).ok()?;
         unsafe {
             let _ = one.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
         }
@@ -5669,6 +5690,8 @@ mod tests {
         assert!(wakes(|d| d.rot_deg = 1.0));
         assert!(wakes(|d| d.scale = 1.1));
         assert!(wakes(|d| d.alpha = 0.5));
+        assert!(wakes(|d| d.scale_x = 0.8));
+        assert!(wakes(|d| d.ch = Some('2')));
     }
 
     /// The pixels of a target `dip` big (premultiplied BGRA, rows packed).
@@ -5907,6 +5930,75 @@ mod tests {
             );
             let faint = only(&mut r, i, DigitFx { alpha: 0.5, ..DigitFx::IDENTITY });
             assert!((faint.centre().1 / ink0 - 0.5).abs() < 0.03, "{case}: not half as strong");
+        }
+    }
+
+    #[test]
+    fn a_clock_character_part_is_drawn_in_the_clocks_own_cell() {
+        // A story's clock character (the pillow over the cat) sits where the
+        // clock draws that character, under the same effect: no hop when it
+        // takes over from the clock or hands back.
+        let mut r = renderer();
+        let placing = Placing { clock: Some((clock_area(44.0), "14:32")), pose: None };
+        for fx in [
+            DigitFx::IDENTITY,
+            DigitFx { ch: Some('5'), ..DigitFx::IDENTITY },
+            DigitFx { dx: 3.0, dy: -2.0, rot_deg: 12.0, scale: 1.3, scale_x: 0.8, ..DigitFx::IDENTITY },
+        ] {
+            let part = Draw::ClockChar { index: 4, fx, near: (0.0, 0.0) };
+            let drawn = painted(&mut r, CLOCK_BOX, |r| r.paint_draw(&part, 1.0, 1.0, &placing));
+            let clock = only(&mut r, 4, fx);
+            let ((x, y), ink) = drawn.centre();
+            let ((x0, y0), ink0) = clock.centre();
+            // The outline shifts the weighted centre by under half a pixel
+            // (see `a_digit_prop_lands_where_the_clock_would_move_that_digit`).
+            assert!((x - x0).abs() < 0.6 && (y - y0).abs() < 0.6, "{fx:?}: at ({x}, {y}), the clock's at ({x0}, {y0})");
+            // Its outline in the island's colour adds ink round it.
+            assert!(ink > ink0 * 1.2, "{fx:?}: no outline ({ink} from {ink0})");
+        }
+    }
+
+    #[test]
+    fn a_digit_squashed_keeps_its_centre_and_height() {
+        let mut r = renderer();
+        for i in [0, 1, 3, 4] {
+            let rest = only(&mut r, i, DigitFx::IDENTITY);
+            let ((x0, y0), _) = rest.centre();
+            let squashed = only(&mut r, i, DigitFx { scale_x: 0.5, ..DigitFx::IDENTITY });
+            let ((x, y), _) = squashed.centre();
+            assert!((x - x0).abs() < 1.0 && (y - y0).abs() < 0.3, "character {i}: ({x}, {y}) from ({x0}, {y0})");
+            let (w0, w) = (rest.ink_width() as f32, squashed.ink_width() as f32);
+            assert!(w < w0 * 0.7 && w > w0 * 0.3, "character {i}: {w} px wide from {w0}");
+            // As tall as before: the squash is the width alone.
+            let tall = |p: &Px| (0..p.h).filter(|&y| (0..p.w).any(|x| p.alpha(x, y) > 8.0)).count();
+            assert!(tall(&squashed).abs_diff(tall(&rest)) <= 1, "character {i}: {} rows from {}", tall(&squashed), tall(&rest));
+        }
+    }
+
+    #[test]
+    fn a_digit_drawn_as_another_character_is_that_character_in_its_cell() {
+        // The minute swapped in place: a character drawn as another is the
+        // clock showing that other one, to the pixel, in both typefaces and
+        // at the scales a display has; its own character is plainly not.
+        let mut r = renderer();
+        let area = clock_area(44.0);
+        for ui in [UiFont::Sans, UiFont::Mono] {
+            r.set_ui_font(ui).unwrap();
+            for scale in [1.0, 1.25, 1.5, 2.0] {
+                r.scale = scale;
+                for (time, i, ch, shown) in [("14:01", 4, '2', "14:02"), ("08:59", 3, '0', "08:09"), ("23:48", 0, '1', "13:48")] {
+                    let case = format!("{ui:?} x{scale} {time} [{i}] as {ch}");
+                    let mut fx = [DigitFx::IDENTITY; 5];
+                    fx[i].ch = Some(ch);
+                    let swapped = painted(&mut r, CLOCK_BOX, |r| r.clock_per_character(time, area, 1.0, &fx));
+                    let other = painted(&mut r, CLOCK_BOX, |r| r.text(shown, &r.fonts.clock, area, 1.0));
+                    let (worst, loud) = gap(&other, &swapped);
+                    assert!(worst <= IDENTICAL_WITHIN && loud == 0, "{case}: differs from {shown} by {worst} (loud {loud})");
+                    let own = painted(&mut r, CLOCK_BOX, |r| r.text(time, &r.fonts.clock, area, 1.0));
+                    let (worst, loud) = gap(&own, &swapped);
+                    assert!(worst > 64 && loud > 4, "{case}: still {time} ({worst}, loud {loud})");
+                }
+            }
         }
     }
 
@@ -6645,12 +6737,12 @@ mod tests {
         let area = clock_area(44.0);
         let wide: Vec<u16> = "14:32".encode_utf16().collect();
         let line = r.layout(&wide, &r.fonts.clock, area.w, area.h).unwrap();
-        let (_, _, c) = r.clock_char(&line, &wide, 4, area).unwrap();
+        let (_, _, c) = r.clock_char(&line, &wide, 4, area, None).unwrap();
+        let placing = Placing { clock: Some((area, "14:32")), pose: None };
         for (dx, dy) in [(0.0, 0.0), (-20.0, 6.0)] {
             let moved = only(&mut r, 4, DigitFx { dx, dy, ..DigitFx::IDENTITY });
-            let prop = painted(&mut r, CLOCK_BOX, |r| {
-                r.paint_digit_prop("14:32", area, 4, (c.0 + dx, c.1 + dy), 0.0, 1.0)
-            });
+            let part = Draw::Digit { index: 4, at: (c.0 + dx, c.1 + dy), rot_deg: 0.0 };
+            let prop = painted(&mut r, CLOCK_BOX, |r| r.paint_draw(&part, 1.0, 1.0, &placing));
             let ((mx, my), _) = moved.centre();
             let ((px, py), ink) = prop.centre();
             assert!(ink > 100.0, "the prop drew nothing");

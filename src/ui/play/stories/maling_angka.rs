@@ -9,8 +9,8 @@
 use std::f32::consts::{PI, TAU};
 
 use super::{
-    Draw, Ease, HEAD_PIVOT, Layer, MascotShot, Part, Shot, Slot, Stage, blinks, bump, kept, kf, lerp,
-    ring, toward_rest,
+    DIGIT_X, Draw, Ease, HEAD_PIVOT, Layer, MascotShot, Part, Shot, Slot, Stage, blinks, bump, kept, kf,
+    lerp, ring, toward_rest,
 };
 use crate::ui::geometry::IdleLayout;
 use crate::ui::mascot::CrestPose;
@@ -20,11 +20,6 @@ use crate::ui::robot::{Expr, GRID};
 
 use Ease::{Io, Lin, O, Sb, Sio};
 
-/// The clock's character centres from the clock box's centre (DM Sans at
-/// 16, `%H:%M`), as the mockup measures them. Only where the falk aims and
-/// where the stolen digit hangs from the beak; the clock's own characters
-/// are placed by DirectWrite.
-const DIGIT_X: [f32; 5] = [-17.2, -7.6, 0.0, 7.6, 17.2];
 /// The digit the falk steals: the minute's last.
 const STOLEN: usize = 4;
 /// The head stops this far right of the stolen digit's centre: close enough

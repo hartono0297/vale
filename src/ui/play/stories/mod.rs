@@ -2,6 +2,7 @@
 //! the mascot at any moment of its timeline (`Shot`). Pure: the renderer
 //! paints a shot, nothing here touches Direct2D.
 
+pub mod bantal_angka;
 pub mod maling_angka;
 pub mod petak_umpet;
 pub mod syal_ekor;
@@ -24,7 +25,7 @@ use crate::ui::robot::{Expr, GRID, Pose, Seg};
 /// The story has a timeline to play. Only ready stories enter the pool
 /// (`trigger::pool`), so a mascot with none never plays.
 pub fn ready(story: Story) -> bool {
-    matches!(story, Story::MalingAngka | Story::SyalEkor | Story::PetakUmpet)
+    matches!(story, Story::MalingAngka | Story::SyalEkor | Story::PetakUmpet | Story::BantalAngka)
 }
 
 /// What a story plays on: the island, where the play stands, the mascot's
@@ -32,6 +33,8 @@ pub fn ready(story: Story) -> bool {
 /// and the idle layout the renderer places the slot and the clock by before
 /// the play spreads them (`idle_layout_lead` with the frame's own robot,
 /// clock and lead), so a story lines up with them whatever they are.
+/// `minute` is the clock's last character as the frame shows it (`None`
+/// without the clock): a story that swaps the minute shows the real next one.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Stage {
     pub style: Style,
@@ -39,6 +42,7 @@ pub struct Stage {
     pub beat: Beat,
     pub look: CatLook,
     pub layout: IdleLayout,
+    pub minute: Option<char>,
 }
 
 impl Stage {
@@ -47,11 +51,12 @@ impl Stage {
         spread_offsets(self.layout, self.shape, self.beat.spread)
     }
 
-    /// The idle island with the mascot, the clock on or off and no lead.
+    /// The idle island with the mascot, the clock (the mockup's 14:01) on or
+    /// off and no lead.
     #[cfg(test)]
     pub fn idle(style: Style, shape: ShapeRect, beat: Beat, look: CatLook, clock: bool) -> Stage {
         let layout = crate::ui::geometry::idle_layout_lead(shape, true, clock, 0.0);
-        Stage { style, shape, beat, look, layout }
+        Stage { style, shape, beat, look, layout, minute: clock.then_some('1') }
     }
 }
 
@@ -214,6 +219,12 @@ pub enum Draw {
     /// `rot_deg`, outlined in the island's colour so it reads over the
     /// mascot and off the island.
     Digit { index: usize, at: (f32, f32), rot_deg: f32 },
+    /// The clock's character `index` in its own cell, where the clock lays it
+    /// out on the island at rest, under `fx` as the clock's per-character
+    /// path draws it (about its cell's centre, `fx.ch` in its place),
+    /// outlined as a `Digit` is. `near` is where the story reckons that
+    /// centre to be (`DIGIT_X`); only the bounds use it.
+    ClockChar { index: usize, fx: DigitFx, near: (f32, f32) },
     /// Three small whistle arcs, the first starting near `at`.
     Whistle { at: (f32, f32) },
     /// `items` on a grid of their own: its point `pivot` placed at `at`, the
@@ -288,6 +299,17 @@ impl Draw {
                 w: 2.0 * DIGIT_REACH,
                 h: 2.0 * DIGIT_REACH,
             },
+            // Scaled up to its widest, moved, and the reckoned centre
+            // `NEAR_SLACK` off DirectWrite's either way.
+            Draw::ClockChar { fx, near, .. } => {
+                let reach = DIGIT_REACH * fx.scale * fx.scale_x.max(1.0) + NEAR_SLACK;
+                Rect {
+                    x: near.0 + fx.dx - reach,
+                    y: near.1 + fx.dy - reach,
+                    w: 2.0 * reach,
+                    h: 2.0 * reach,
+                }
+            }
             // The arcs (`whistle_arcs`) with their stroke.
             Draw::Whistle { at } => Rect {
                 x: at.0 + 2.5,
@@ -487,6 +509,16 @@ impl MascotShot {
 #[cfg_attr(not(test), allow(dead_code))]
 pub const DIGIT_REACH: f32 = 13.0;
 
+/// How far a story's reckoning of a clock character's centre (`DIGIT_X`)
+/// may be from where DirectWrite puts it, either way (dip).
+#[cfg_attr(not(test), allow(dead_code))]
+const NEAR_SLACK: f32 = 2.0;
+
+/// The clock's character centres from the clock box's centre (DM Sans at
+/// 16, `%H:%M`), as the mockup measures them. Only where a story aims at a
+/// character; the clock's own characters are placed by DirectWrite.
+const DIGIT_X: [f32; 5] = [-17.2, -7.6, 0.0, 7.6, 17.2];
+
 /// The three whistle arcs of a `Draw::Whistle` at `at`: each runs from its
 /// start straight down by its chord, bowing right on a circle of its radius,
 /// at its share of the prop's alpha. (start, chord, radius, alpha)
@@ -509,6 +541,7 @@ pub fn shot(story: Story, stage: &Stage) -> Shot {
         Story::MalingAngka => maling_angka::shot(stage),
         Story::SyalEkor => syal_ekor::shot(stage),
         Story::PetakUmpet => petak_umpet::shot(stage),
+        Story::BantalAngka => bantal_angka::shot(stage),
         _ => Shot::rest(stage.style, stage.shape),
     };
     debug_assert!(bare_heads_fit(story, &shot), "{story:?} draws a bare head");
@@ -672,6 +705,47 @@ fn rim_pt(style: Style, s: ShapeRect, side: f32, u: f32, off: f32) -> (f32, f32)
     (cx + side * big * a.cos(), bottom - r + big * a.sin())
 }
 
+/// The crouched cat's size, where its hop starts and ends.
+const CROUCH: f32 = 0.9;
+
+/// The cat's hop (the mockup's `hopIn`/`hopOut`): how deep in the dark it is
+/// (`dk`), its size, its lift (dip, negative up) and its squash.
+#[derive(Clone, Copy)]
+struct Hop {
+    dk: f32,
+    sc: f32,
+    y: f32,
+    sq: f32,
+}
+
+/// Out of the dark from `a`: settle, a small hop forward (growing a touch),
+/// a soft landing.
+fn hop_in(t: f32, a: f32) -> Hop {
+    let k = ((t - a) / 0.42).clamp(0.0, 1.0);
+    Hop {
+        dk: 1.0 - Ease::Sio.at(((t - a - 0.08) / 0.3).clamp(0.0, 1.0)),
+        sc: lerp(CROUCH, 1.0, Ease::O.at(k)),
+        y: -3.2 * (PI * ((t - a - 0.12) / 0.3).clamp(0.0, 1.0)).sin(),
+        sq: 1.0 - 0.08 * bump(t, a - 0.02, 0.16) + 0.06 * bump(t, a + 0.14, 0.18) + ring(t, a + 0.42, -0.09, 3.0, 6.0),
+    }
+}
+
+/// Back into the dark from `a`.
+fn hop_out(t: f32, a: f32) -> Hop {
+    let k = ((t - a) / 0.4).clamp(0.0, 1.0);
+    Hop {
+        dk: Ease::Sio.at(((t - a - 0.1) / 0.3).clamp(0.0, 1.0)),
+        sc: lerp(1.0, CROUCH, Ease::Io.at(k)),
+        y: -2.4 * (PI * ((t - a - 0.08) / 0.28).clamp(0.0, 1.0)).sin(),
+        sq: 1.0 - 0.08 * bump(t, a - 0.05, 0.16),
+    }
+}
+
+/// The mockup's `mixHop`: in at `a_in`, out at `a_out`.
+fn mix_hop(t: f32, a_in: f32, a_out: f32) -> Hop {
+    if t < a_out - 0.1 { hop_in(t, a_in) } else { hop_out(t, a_out) }
+}
+
 /// How a story fades or moves something home during a wind-down: by the
 /// wind-down's time, never by bands of `alpha`, which eases and crosses its
 /// middle band in about one frame. 1 until the wind-down is `from` of the
@@ -690,7 +764,9 @@ fn toward_rest(fx: DigitFx, alpha: f32) -> DigitFx {
         dy: lerp(id.dy, fx.dy, alpha),
         rot_deg: lerp(id.rot_deg, fx.rot_deg, alpha),
         scale: lerp(id.scale, fx.scale, alpha),
+        scale_x: lerp(id.scale_x, fx.scale_x, alpha),
         alpha: lerp(id.alpha, fx.alpha, alpha),
+        ch: if alpha > 0.0 { fx.ch } else { id.ch },
     }
 }
 
@@ -858,7 +934,7 @@ macro_rules! story_contract_tests {
                     for part in [0.3, 0.5, 0.7] {
                         let cut = $story.secs() * part;
                         for phase in [0.0, 8.0] {
-                            let shots = $crate::ui::play::stories::wind_down_frames(cut, phase, |beat| contract_shot(style, 190.0, 34.0, beat, clock));
+                            let shots = $crate::ui::play::stories::wind_down_frames($story, cut, phase, |beat| contract_shot(style, 190.0, 34.0, beat, clock));
                             if let Err(why) = $crate::ui::play::stories::fades_by_frames(&shots) {
                                 panic!("{style:?} clock={clock} cut at {cut}: {why}");
                             }
@@ -877,14 +953,14 @@ pub(crate) use story_contract_tests;
 #[cfg(test)]
 pub(crate) const FRAME_FADE: f32 = 0.15;
 
-/// The shots of a real wind-down cut `cut` seconds into the story, one per
+/// The shots of a real wind-down cut `cut` seconds into `story`, one per
 /// 60 Hz frame from `phase` ms after the cut until past its end, the first
 /// at the cut itself when `phase` is 0. `shot` turns a beat into the shot.
 #[cfg(test)]
-pub(crate) fn wind_down_frames(cut: f32, phase: f32, shot: impl Fn(Beat) -> Shot) -> Vec<(f32, Beat, Shot)> {
+pub(crate) fn wind_down_frames(story: Story, cut: f32, phase: f32, shot: impl Fn(Beat) -> Shot) -> Vec<(f32, Beat, Shot)> {
     use std::time::{Duration, Instant};
     let t0 = Instant::now();
-    let mut play = crate::ui::play::state::Play::start(Story::MalingAngka, t0);
+    let mut play = crate::ui::play::state::Play::start(story, t0);
     let at = t0 + Duration::from_secs_f32(cut);
     play.end(at);
     let mut out = Vec::new();
@@ -911,6 +987,7 @@ pub(crate) fn fades_by_frames(shots: &[(f32, Beat, Shot)]) -> Result<(), String>
             Draw::Group { .. } => 2,
             Draw::Whistle { .. } => 3,
             Draw::Digit { index, .. } => 10 + index,
+            Draw::ClockChar { index, .. } => 20 + index,
             _ => 4,
         }
     }
@@ -966,7 +1043,7 @@ mod tests {
     fn kept_paces_a_fade_by_the_wind_downs_time() {
         // Stepped through a real wind-down in 60 Hz frames: whole at the
         // cut, gone at its end, never more than a frame's fade at a time.
-        let frames = wind_down_frames(3.0, 0.0, |_| Shot::rest(Style::Pill, crate::ui::play::testing::shape(Style::Pill, 190.0, 34.0)));
+        let frames = wind_down_frames(Story::MalingAngka, 3.0, 0.0, |_| Shot::rest(Style::Pill, crate::ui::play::testing::shape(Style::Pill, 190.0, 34.0)));
         let k: Vec<f32> = frames.iter().map(|(_, b, _)| kept(b.alpha, 0.2, 0.8)).collect();
         assert_eq!((k[0], *k.last().unwrap()), (1.0, 0.0));
         for w in k.windows(2) {

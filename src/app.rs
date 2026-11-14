@@ -2615,8 +2615,14 @@ impl App {
     /// What the renderer gets for the running story on the island `shape`:
     /// the story's shot at this beat (at rest for a story with no timeline),
     /// placed by the frame's idle `layout` as the renderer places the slot and
-    /// the clock.
-    fn play_frame(&self, now: Instant, shape: ShapeRect, layout: IdleLayout) -> Option<PlayFrame> {
+    /// the clock, with the clock's last character (`minute`) as it shows.
+    fn play_frame(
+        &self,
+        now: Instant,
+        shape: ShapeRect,
+        layout: IdleLayout,
+        minute: Option<char>,
+    ) -> Option<PlayFrame> {
         self.play.as_ref().map(|active| {
             let beat = active.play.beat(now);
             let stage = Stage {
@@ -2625,6 +2631,7 @@ impl App {
                 beat,
                 look: CatLook::of(&self.config),
                 layout,
+                minute,
             };
             PlayFrame::of(stories::shot(active.play.story(), &stage), beat)
         })
@@ -7616,6 +7623,7 @@ impl App {
         };
         // Where the renderer puts the slot and the clock: a story lines up with it.
         let idle_layout = idle_layout_lead(shape, robot.is_some(), clock.is_some(), idle_lead);
+        let minute = clock.as_deref().and_then(|c| c.chars().last());
         let frame = Frame {
             view: &self.drawn,
             media: state.media(),
@@ -7771,7 +7779,7 @@ impl App {
             notice_close: self.notice_close_view(now),
             transit,
             full_redraw,
-            play: self.play_frame(now, shape, idle_layout),
+            play: self.play_frame(now, shape, idle_layout, minute),
         };
         let key = eq_key(self.draw_gen, &frame, shape, opacity);
         if eq_tick && !dirty::eq_draw_needed(self.eq_key.as_ref(), &key) {

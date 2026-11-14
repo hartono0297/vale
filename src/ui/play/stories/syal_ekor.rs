@@ -5,9 +5,9 @@
 //! cat acts as if nothing happened, then hops back into the dark. Timeline,
 //! easing and offsets from `docs/design/maskot-notch-v3.html`, story `c4`.
 
-use std::f32::consts::{PI, TAU};
+use std::f32::consts::TAU;
 
-use super::{Draw, Ease, HEAD_PIVOT, Layer, MascotShot, Part, Shot, Slot, Stage, blinks, bump, kept, kf, lerp, rim_pt, ring};
+use super::{CROUCH, Draw, Ease, HEAD_PIVOT, Hop, Layer, MascotShot, Part, Shot, Slot, Stage, blinks, bump, kept, kf, lerp, mix_hop, rim_pt};
 use crate::config::Style;
 use crate::ui::geometry::{ROBOT_COMPACT, ShapeRect, corner_radius};
 use crate::ui::play::art::cat::{CAT_SC, CatPose, Paw, SEAT, cat_at, tail};
@@ -27,49 +27,9 @@ const SHOWN: f32 = 0.45;
 /// by the end.
 const LEAVING: f32 = 8.0;
 const LEFT: f32 = 8.1;
-/// The crouched cat's size, where its hop starts and ends.
-const CROUCH: f32 = 0.9;
 /// How far a crouched cat's head is lowered on its grid (`art::cat`: `14 *
 /// (1 - rise)`).
 const CROUCH_DROP: f32 = 14.0;
-
-/// The cat's hop (the mockup's `hopIn`/`hopOut`): how deep in the dark it is
-/// (`dk`), its size, its lift (dip, negative up) and its squash.
-#[derive(Clone, Copy)]
-struct Hop {
-    dk: f32,
-    sc: f32,
-    y: f32,
-    sq: f32,
-}
-
-/// Out of the dark from `a`: settle, a small hop forward (growing a touch),
-/// a soft landing.
-fn hop_in(t: f32, a: f32) -> Hop {
-    let k = ((t - a) / 0.42).clamp(0.0, 1.0);
-    Hop {
-        dk: 1.0 - Sio.at(((t - a - 0.08) / 0.3).clamp(0.0, 1.0)),
-        sc: lerp(CROUCH, 1.0, O.at(k)),
-        y: -3.2 * (PI * ((t - a - 0.12) / 0.3).clamp(0.0, 1.0)).sin(),
-        sq: 1.0 - 0.08 * bump(t, a - 0.02, 0.16) + 0.06 * bump(t, a + 0.14, 0.18) + ring(t, a + 0.42, -0.09, 3.0, 6.0),
-    }
-}
-
-/// Back into the dark from `a`.
-fn hop_out(t: f32, a: f32) -> Hop {
-    let k = ((t - a) / 0.4).clamp(0.0, 1.0);
-    Hop {
-        dk: Sio.at(((t - a - 0.1) / 0.3).clamp(0.0, 1.0)),
-        sc: lerp(1.0, CROUCH, Io.at(k)),
-        y: -2.4 * (PI * ((t - a - 0.08) / 0.28).clamp(0.0, 1.0)).sin(),
-        sq: 1.0 - 0.08 * bump(t, a - 0.05, 0.16),
-    }
-}
-
-/// The mockup's `mixHop`: in at `a_in`, out at `a_out`.
-fn mix_hop(t: f32, a_in: f32, a_out: f32) -> Hop {
-    if t < a_out - 0.1 { hop_in(t, a_in) } else { hop_out(t, a_out) }
-}
 
 /// The scarf's control points (the mockup's `scarfPath`): from beside the
 /// cat under the lip, round the left end `gap` off it, then up the Notch's
@@ -471,7 +431,7 @@ mod tests {
             for (w, h) in SIZES {
                 for clock in [true, false] {
                     let case = format!("{style:?} {w}x{h} clock={clock}");
-                    let frames = wind_down_frames(4.3, 0.0, |beat| shot(&stage(style, w, h, beat, clock)));
+                    let frames = wind_down_frames(Story::SyalEkor, 4.3, 0.0, |beat| shot(&stage(style, w, h, beat, clock)));
                     let mut last: Option<(((f32, f32), f32), f32)> = None;
                     let mut crossed = false;
                     for (ms, beat, shot) in &frames {
