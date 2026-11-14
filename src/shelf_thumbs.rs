@@ -26,6 +26,14 @@ pub struct ShelfThumbs {
 }
 
 impl ShelfThumbs {
+    /// The demo's cache: slots filled without a decode (debug builds only).
+    #[cfg(debug_assertions)]
+    pub fn with_slots(slots: impl IntoIterator<Item = (String, Slot)>) -> ShelfThumbs {
+        ShelfThumbs {
+            slots: slots.into_iter().collect(),
+        }
+    }
+
     pub fn get(&self, key: &str) -> Option<&Slot> {
         self.slots.get(key)
     }
