@@ -172,6 +172,7 @@ pub fn shot(style: Style, s: ShapeRect, beat: Beat) -> Shot {
         glance: (look * 2.4 * a, curious * 0.3 * 2.2 * a),
         blink: blinks(t, &[1.15, 4.75, 7.6]) > 0.25,
         beak_open: chirp > 0.05,
+        bare_octopus: false,
     };
     let beak = beak_at(&head, rest, k);
     let pivot = (rest.0 + head.dx, rest.1 + head.dy);
@@ -490,6 +491,24 @@ mod tests {
     }
 
     #[test]
+    fn the_falks_story_never_drops_a_mascots_arms() {
+        // Only the octopus reads the flag, and a story that draws its long arms
+        // asks for it; this story does not, so a mascot swapped in keeps its own.
+        for style in [Style::Notch, Style::Pill] {
+            let s = shape(style, 190.0, 34.0);
+            for i in 0..=160 {
+                let shot = shot(style, s, Beat { spread: 1.0, alpha: 1.0, t: i as f32 * 0.05 });
+                assert!(shot.mascot.is_none_or(|m| !m.bare_octopus), "{style:?} t={}", i as f32 * 0.05);
+                for part in &shot.parts {
+                    if let Draw::Head { shot, .. } = &part.draw {
+                        assert!(!shot.bare_octopus, "{style:?} t={}", i as f32 * 0.05);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn the_story_face_overrides_the_crest_and_opens_the_beak() {
         let m = MascotShot {
             dx: 0.0,
@@ -502,6 +521,7 @@ mod tests {
             glance: (2.4, 0.0),
             blink: true,
             beak_open: true,
+            bare_octopus: false,
         };
         let base = Pose { glance_x: 1.0, head_dx_dip: 3.0, ..Pose::default() };
         let pose = m.pose(base);

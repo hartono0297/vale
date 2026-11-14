@@ -76,6 +76,10 @@
 //! - `bata-play-cat-body`: the seated cat (body, legs, paws, tail) beside
 //!   the island at rest, tail up and one paw lifted, always the cat (its coat
 //!   from `DI_CAT_COLOR`, `DI_CAT_ACCESSORY` as above).
+//! - `bata-play-octopus-arms`: the octopus's mantle alone in the slot and two
+//!   long arms winding round the island's right end (the arms of its three
+//!   stories), always the octopus (its coat from `DI_OCTOPUS_COLOR`,
+//!   `DI_CAT_ACCESSORY` as above).
 //! - `DI_FONT=mono` sets the UI typeface to JetBrains Mono in every scene
 //!   that builds a renderer (`--demo`, `--demo-cli`, `--demo-robot`,
 //!   `--demo-devices`, `--demo-arrange`) and in `--settings`; unset or an
@@ -241,6 +245,9 @@ use super::play::shape::{Deform, Dent};
 use super::play::state::Beat;
 use super::mascot::CrestPose;
 use super::play::art::cat::{CatPose, Paw, Tail, cat_at};
+use super::play::art::octopus;
+use super::play::art::tube::{along, catmull_rom, curl, plen};
+use super::play::rim::rim;
 use super::play::stories::{self, Layer, MascotShot, Part};
 use super::play::trigger::Story;
 use super::robot::{Expr, EyesPose, Motion, PAW_LIFT, Pose};
@@ -512,7 +519,8 @@ enum CliDemo {
 }
 
 /// What a play scene freezes (`bata-play-island`, `bata-play-swing`,
-/// `bata-play-digits`, the `bata-maling-angka-*` moments, `bata-play-cat-body`).
+/// `bata-play-digits`, the `bata-maling-angka-*` moments, `bata-play-cat-body`,
+/// `bata-play-octopus-arms`).
 #[derive(Clone, Copy, PartialEq)]
 enum DemoPlay {
     No,
@@ -529,6 +537,9 @@ enum DemoPlay {
     /// The seated cat beside the island at rest, tail up, one paw lifted,
     /// always the cat.
     CatBody,
+    /// The octopus's mantle alone in the slot and two long arms winding round
+    /// the island's right end, always the octopus.
+    OctopusArms,
 }
 
 /// `View` without its payloads, so scenes can be `const`.
@@ -1021,6 +1032,31 @@ const fn rec_hot_scene(name: &'static str, muted: [bool; 2], hot: Source) -> Sce
     }
 }
 
+/// Two long octopus arms in `coat`, each leaving under the island's lip and
+/// winding up round its right end, hugging the outline `rim` gives, the
+/// outer one further off, their tips curled: the mockup's way for an arm to
+/// wrap an end. They sit behind the island, so their roots are hidden by it.
+fn octopus_arms(style: Style, shape: ShapeRect, coat: OctopusColor) -> Vec<Part> {
+    // A point on the island's outline, `off` outside it.
+    let hug = |u: f32, off: f32| {
+        let r = rim(style, shape, u);
+        (r.x + r.nx * off, r.y + r.ny * off)
+    };
+    let mut parts = Vec::new();
+    for (way, ang, wm, side) in [
+        ([(0.68, -5.0), (0.78, 3.4), (0.86, 3.4), (0.92, 3.0), (0.95, 2.6)], 1.6, 1.0, 1),
+        ([(0.60, -5.0), (0.72, 7.0), (0.82, 7.0), (0.89, 6.4), (0.93, 6.0)], 2.2, 0.9, -1),
+    ] {
+        let way: Vec<_> = way.iter().map(|&(u, off)| hug(u, off)).collect();
+        let d = catmull_rom(&way, 8);
+        let path = curl(&along(&d, plen(&d), 30), ang, 9.0, 12, 0.0);
+        for draw in octopus::arm(&path, coat, side, wm) {
+            parts.push(Part { layer: Layer::Back, draw, alpha: 1.0 });
+        }
+    }
+    parts
+}
+
 /// The frozen frames of the play scenes (`Scene::play`) on the island `shape`:
 /// the mascot and the clock spread to the island's ends, and the island
 /// deformed as `which` says, or a story's own moment. The cat's body takes
@@ -1053,6 +1089,7 @@ fn demo_play(which: DemoPlay, style: Style, shape: ShapeRect, cat: CatLook) -> P
                     glance: (0.0, 0.0),
                     blink: false,
                     beak_open: false,
+                    bare_octopus: false,
                 },
                 paws: [Paw::default(), Paw { dx: 1.5, dy: -6.0, lift: 0.8, sq: 0.0 }],
                 tail: Some(Tail::default()),
@@ -1066,6 +1103,24 @@ fn demo_play(which: DemoPlay, style: Style, shape: ShapeRect, cat: CatLook) -> P
                 draw: cat_at(at, 0.0, 1.0, 1.0, &pose, look),
                 alpha: 1.0,
             });
+            return PlayFrame::of(shot, beat);
+        }
+        DemoPlay::OctopusArms => {
+            let mut shot = stories::Shot::rest(style, shape);
+            shot.mascot = Some(MascotShot {
+                dx: 0.0,
+                dy: 0.0,
+                rot_deg: 0.0,
+                sx: 1.0,
+                sy: 1.0,
+                expr: Expr::Idle,
+                crest: CrestPose { rot_deg: 0.0, scale: 1.0 },
+                glance: (0.0, 0.0),
+                blink: false,
+                beak_open: false,
+                bare_octopus: true,
+            });
+            shot.parts = octopus_arms(style, shape, cat.octopus);
             return PlayFrame::of(shot, beat);
         }
         DemoPlay::No | DemoPlay::Dent => Deform {
@@ -1299,7 +1354,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 224] = [
+const SCENES: [Scene; 225] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -1957,6 +2012,10 @@ const SCENES: [Scene; 224] = [
     Scene {
         play: DemoPlay::CatBody,
         ..bata("bata-play-cat-body", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    Scene {
+        play: DemoPlay::OctopusArms,
+        ..bata("bata-play-octopus-arms", ShapeKind::Idle, View0::Idle, Expr::Idle)
     },
     Scene {
         clock: Some("23:48"),
@@ -3082,6 +3141,10 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                     },
                     DemoPlay::CatBody => CatLook {
                         mascot: Mascot::Cat,
+                        ..cat
+                    },
+                    DemoPlay::OctopusArms => CatLook {
+                        mascot: Mascot::Octopus,
                         ..cat
                     },
                     _ => cat,
@@ -5449,5 +5512,38 @@ mod tests {
         ]));
         assert_eq!(look, CatLook::default());
         assert_eq!(demo_look(env(&[])), CatLook::default());
+    }
+
+    #[test]
+    fn the_octopus_arms_scene_has_a_bare_mantle_and_two_arms_in_the_window() {
+        use crate::ui::geometry::{WINDOW_H, WINDOW_W};
+        use crate::ui::play::testing::shape;
+        for style in [Style::Notch, Style::Pill] {
+            for (w, h) in [(160.0, 28.0), (190.0, 34.0), (300.0, 44.0)] {
+                let s = shape(style, w, h);
+                for coat in OctopusColor::ALL {
+                    let cat = CatLook { octopus: *coat, ..CatLook::default() };
+                    let frame = demo_play(DemoPlay::OctopusArms, style, s, cat);
+                    let case = format!("{style:?} {w}x{h} {coat:?}");
+                    // The slot head is the mantle alone: the arms are the story's.
+                    assert!(frame.mascot.is_some_and(|m| m.bare_octopus), "{case}");
+                    // Two arms, behind the island, in the coat's own colour.
+                    let bodies = frame
+                        .parts
+                        .iter()
+                        .filter(|p| matches!(p.draw, stories::Draw::Fill { rgb, .. } if rgb == crate::ui::mascot::octopus_rgb(*coat)))
+                        .count();
+                    assert_eq!(bodies, 2, "{case}");
+                    assert!(frame.parts.iter().all(|p| p.layer == Layer::Back), "{case}");
+                    for p in &frame.parts {
+                        let b = p.draw.bounds();
+                        assert!(
+                            b.x >= 0.0 && b.y >= 0.0 && b.x + b.w <= WINDOW_W && b.y + b.h <= WINDOW_H,
+                            "{case}: {b:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 }

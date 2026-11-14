@@ -6139,6 +6139,7 @@ mod tests {
                     glance: (0.0, 0.0),
                     blink: false,
                     beak_open: false,
+                    bare_octopus: false,
                 };
                 let head = Draw::Head { at: (s.x + s.w / 2.0, s.y + s.h + 45.0), shot };
                 let b = head.bounds();
@@ -6205,6 +6206,7 @@ mod tests {
                             glance: (2.4, 0.66),
                             blink: false,
                             beak_open: true,
+                            bare_octopus: false,
                         };
                         let head = Draw::Head { at: (90.0, 110.0), shot };
                         let b = head.bounds();
@@ -6296,6 +6298,7 @@ mod tests {
                         glance: (0.0, 0.0),
                         blink: false,
                         beak_open: false,
+                        bare_octopus: false,
                     },
                     paws: [Paw::default(), Paw { dx: 1.5, dy: -6.0, lift: 0.8, sq: 0.0 }],
                     tail: Some(Tail::default()),

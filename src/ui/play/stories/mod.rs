@@ -371,6 +371,11 @@ pub struct MascotShot {
     pub glance: (f32, f32),
     pub blink: bool,
     pub beak_open: bool,
+    /// The octopus as its mantle alone, without its six short arms: a story
+    /// that draws the long arms itself (`art::octopus`) turns it on, or the
+    /// arms would double. The coat, face and accessory come along; the
+    /// other mascots ignore it.
+    pub bare_octopus: bool,
 }
 
 impl MascotShot {
@@ -380,6 +385,7 @@ impl MascotShot {
             blink: self.blink,
             crest: Some(self.crest),
             beak_open: Some(self.beak_open),
+            bare_octopus: self.bare_octopus,
             glance_x: base.glance_x + self.glance.0,
             glance_y: base.glance_y + self.glance.1,
             ..base
@@ -670,6 +676,31 @@ mod tests {
     }
 
     #[test]
+    fn a_shot_drops_the_octopus_arms_only_when_it_asks() {
+        let shot = MascotShot {
+            dx: 0.0,
+            dy: 0.0,
+            rot_deg: 0.0,
+            sx: 1.0,
+            sy: 1.0,
+            expr: Expr::Idle,
+            crest: CrestPose { rot_deg: 10.0, scale: 1.0 },
+            glance: (0.0, 0.0),
+            blink: false,
+            beak_open: false,
+            bare_octopus: false,
+        };
+        // The app's own pose has the arms, and a shot leaves them there.
+        assert!(!Pose::default().bare_octopus);
+        assert!(!shot.pose(Pose::default()).bare_octopus);
+        assert!(MascotShot { bare_octopus: true, ..shot }.pose(Pose::default()).bare_octopus);
+        // Nothing else of the app's pose is touched by it.
+        let base = Pose { flush: 0.5, lift_px: 2.0, ..Pose::default() };
+        let bare = MascotShot { bare_octopus: true, ..shot }.pose(base);
+        assert_eq!(Pose { bare_octopus: false, ..bare }, shot.pose(base));
+    }
+
+    #[test]
     fn a_head_is_bounded_about_its_pivot_at_the_slots_size() {
         let shot = MascotShot {
             dx: 0.0,
@@ -682,6 +713,7 @@ mod tests {
             glance: (0.0, 0.0),
             blink: false,
             beak_open: false,
+            bare_octopus: false,
         };
         let at = (300.0, 100.0);
         let b = Draw::Head { at, shot }.bounds();

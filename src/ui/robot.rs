@@ -224,6 +224,10 @@ pub struct Pose {
     /// A story's say on the falk's beak, whatever the face: `Some(open)`
     /// overrides it, `None` leaves it to the face (`mascot::beak_open`).
     pub beak_open: Option<bool>,
+    /// The octopus is painted as its mantle alone, without its six short
+    /// arms (a story that draws the long ones itself). Off, the sitting
+    /// octopus as ever; the other mascots ignore it.
+    pub bare_octopus: bool,
 }
 
 impl Pose {

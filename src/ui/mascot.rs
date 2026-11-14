@@ -398,7 +398,8 @@ pub fn octopus_outline(expr: Expr, pose: &Pose) -> Vec<(f32, f32)> {
 /// square), in px, and its corner radius (the cat head's, scaled). The cat:
 /// its head (`head_rect`). The falk: the egg's width, from the top of its
 /// crest for `expr` and `pose` down to the egg's base. The octopus: the
-/// mantle and the arms with their curls, x -3..67, y 9..61.
+/// mantle and the arms with their curls, x -3..67, y 9..61; the mantle alone
+/// when `pose.bare_octopus`, x 9..55, y 9..46.
 pub fn mascot_box(m: Mascot, area: Rect, expr: Expr, pose: &Pose) -> (Rect, f32) {
     let k = area.w / GRID;
     let (x0, y0, x1, y1) = match m {
@@ -407,6 +408,8 @@ pub fn mascot_box(m: Mascot, area: Rect, expr: Expr, pose: &Pose) -> (Rect, f32)
             let top = falk_outline(expr, pose).iter().map(|p| p.1).fold(f32::MAX, f32::min);
             (9.0, top, 55.0, 57.0)
         }
+        // The mantle alone (a story draws the long arms): x 9..55, y 9..46.
+        Mascot::Octopus if pose.bare_octopus => (9.0, 9.0, 55.0, 46.0),
         Mascot::Octopus => (-3.0, 9.0, 67.0, 61.0),
     };
     (
@@ -578,6 +581,7 @@ impl RobotPainter {
     /// The octopus in `world`, under its face marks: the six arms, the
     /// mantle, the spots and the suckers. The flush tints the mantle and the
     /// arms; the spots and the suckers keep the coat's own tints.
+    /// `pose.bare_octopus` leaves out the arms and their suckers.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn paint_octopus_body(
         &self,
@@ -598,7 +602,7 @@ impl RobotPainter {
         unsafe {
             rt.SetTransform(world);
             brush.SetColor(&solid(col, alpha));
-            for (i, arm) in now.iter().enumerate() {
+            for (i, arm) in now.iter().enumerate().filter(|_| !pose.bare_octopus) {
                 let g = if still {
                     self.mascot_path(MascotShape::Arm(expr, i))
                 } else {
@@ -616,7 +620,7 @@ impl RobotPainter {
                 rt.FillEllipse(&ellipse((cx, cy, r, r)), brush);
             }
             brush.SetColor(&solid(sucker_rgb(base), alpha));
-            for arm in &now {
+            for arm in now.iter().filter(|_| !pose.bare_octopus) {
                 for (cx, cy) in suckers(arm) {
                     rt.FillEllipse(&ellipse((cx, cy, SUCKER_R, SUCKER_R)), brush);
                 }
@@ -925,5 +929,52 @@ mod tests {
         let (l, r) = o.iter().fold((f32::MAX, f32::MIN), |(l, r), p| (l.min(p.0), r.max(p.0)));
         assert!(l < 3.0 && r > 61.0, "arms reach the sides: {l}..{r}");
         assert!(o.iter().any(|p| p.1 < 10.0)); // the mantle top
+    }
+
+    #[test]
+    fn the_octopus_has_its_arms_unless_a_story_asks_for_the_mantle_alone() {
+        let coral = octopus(OctopusColor::Coral);
+        let with = render(coral, Expr::Idle, Pose::default());
+        let bare = render(coral, Expr::Idle, Pose { bare_octopus: true, ..Pose::default() });
+        // The default is the sitting octopus: an outer arm on the floor.
+        assert_near(px(&with, 4, 52), 0xE87C8E);
+        // Bare: no arm, no sucker; the mantle, its spots and the eyes stay.
+        assert_near(px(&bare, 4, 52), 0x000000);
+        assert_near(px(&bare, 32, 20), 0xE87C8E);
+        assert_near(px(&bare, 24, 37), 0x17120F);
+        assert_near(px(&bare, 22, 20), shade(0xE87C8E));
+        // Nothing of an arm is left below the mantle (y 46) or beside it (x < 9).
+        for y in 0..64 {
+            for x in 0..64 {
+                if y > 47 || x < 8 || x > 56 {
+                    assert_near(px(&bare, x, y), 0x000000);
+                }
+            }
+        }
+        assert!(with.iter().zip(&bare).filter(|(w, b)| w != b).count() > 100);
+    }
+
+    #[test]
+    fn a_bare_octopus_keeps_its_coat_flush_and_accessory() {
+        use crate::theme::CatAccessory;
+        let bare = |look, pose: Pose| render(look, Expr::Idle, Pose { bare_octopus: true, ..pose });
+        let blue = bare(octopus(OctopusColor::Blue), Pose::default());
+        assert_near(px(&blue, 32, 20), 0x5FA8C9);
+        let red = bare(octopus(OctopusColor::Coral), Pose { flush: 1.0, ..Pose::default() });
+        assert_near(px(&red, 32, 20), FLUSH_RGB);
+        let plain = bare(octopus(OctopusColor::Coral), Pose::default());
+        let hat = CatLook { accessory: CatAccessory::Nightcap, ..octopus(OctopusColor::Coral) };
+        assert_ne!(plain, bare(hat, Pose::default()), "the accessory comes along");
+    }
+
+    #[test]
+    fn the_halo_of_a_bare_octopus_is_the_mantles() {
+        let area = Rect { x: 10.0, y: 0.0, w: 32.0, h: 32.0 };
+        let bare = Pose { bare_octopus: true, ..Pose::default() };
+        let (o, r) = mascot_box(Mascot::Octopus, area, Expr::Idle, &bare);
+        // The mantle's x 9..55, y 9..46 at half a unit per grid unit.
+        assert_eq!((o.x, o.y, o.w, o.h, r), (14.5, 4.5, 23.0, 18.5, 8.5));
+        let (all, _) = mascot_box(Mascot::Octopus, area, Expr::Idle, &Pose::default());
+        assert_eq!((all.x, all.w, all.h), (8.5, 35.0, 26.0), "the sitting octopus's box is as ever");
     }
 }
