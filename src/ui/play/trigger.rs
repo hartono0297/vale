@@ -214,12 +214,11 @@ mod tests {
             }
         }
         // Part 1 ships the falk's Maling angka; part 2 adds the cat's Syal
-        // ekor and Petak umpet first.
+        // ekor, Petak umpet and Piano ekor first.
         assert_eq!(pool(Mascot::Falk, true), vec![Story::MalingAngka]);
         assert!(pool(Mascot::Falk, false).is_empty(), "Maling angka needs the clock");
-        let cat = vec![Story::PetakUmpet, Story::SyalEkor];
-        assert_eq!(pool(Mascot::Cat, true), cat);
-        assert_eq!(pool(Mascot::Cat, false), cat, "neither needs the clock");
+        assert_eq!(pool(Mascot::Cat, true), vec![Story::PetakUmpet, Story::PianoEkor, Story::SyalEkor]);
+        assert_eq!(pool(Mascot::Cat, false), vec![Story::PetakUmpet, Story::SyalEkor], "Piano ekor needs the clock");
         assert!(pool(Mascot::Octopus, true).is_empty(), "no octopus story yet");
     }
 

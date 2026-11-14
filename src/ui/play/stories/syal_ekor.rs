@@ -36,11 +36,11 @@ const CROUCH_DROP: f32 = 14.0;
 /// The cat's hop (the mockup's `hopIn`/`hopOut`): how deep in the dark it is
 /// (`dk`), its size, its lift (dip, negative up) and its squash.
 #[derive(Clone, Copy)]
-struct Hop {
-    dk: f32,
-    sc: f32,
-    y: f32,
-    sq: f32,
+pub(super) struct Hop {
+    pub(super) dk: f32,
+    pub(super) sc: f32,
+    pub(super) y: f32,
+    pub(super) sq: f32,
 }
 
 /// Out of the dark from `a`: settle, a small hop forward (growing a touch),
@@ -67,7 +67,7 @@ fn hop_out(t: f32, a: f32) -> Hop {
 }
 
 /// The mockup's `mixHop`: in at `a_in`, out at `a_out`.
-fn mix_hop(t: f32, a_in: f32, a_out: f32) -> Hop {
+pub(super) fn mix_hop(t: f32, a_in: f32, a_out: f32) -> Hop {
     if t < a_out - 0.1 { hop_in(t, a_in) } else { hop_out(t, a_out) }
 }
 
