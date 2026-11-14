@@ -918,6 +918,8 @@ keys! {
     MascotPlayLabel => "Animasi maskot otomatis", "Automatic mascot animation";
     MascotPlayDesc => "Maskot bermain saat kamu di PC tapi tidak mengetik. Klik kanan island untuk memainkannya kapan saja",
         "The mascot plays when you are at the PC but not typing. Right-click the island to play one any time";
+    // The same row's line for a mascot with no ready animation yet.
+    MascotPlayComing => "Animasi untuk maskot ini menyusul.", "Animations for this mascot are coming.";
     PlayOften => "Sering", "Often";
     PlaySometimes => "Sesekali", "Sometimes";
     PlayRarely => "Jarang", "Rarely";

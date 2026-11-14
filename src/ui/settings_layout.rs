@@ -3802,14 +3802,21 @@ fn cat_page(b: &mut Builder, s: &State) {
 }
 
 /// "Otomatis": "Animasi maskot otomatis", its description in the card's
-/// width and the five segments in a block under it.
+/// width and the five segments in a block under it. A mascot with no ready
+/// story (whatever the clock) gets the row dimmed and says so.
 fn mascot_play_card(b: &mut Builder, s: &State) {
     let items: Vec<(Hit, String)> = MASCOT_PLAY_ORDER
         .iter()
         .map(|v| (Hit::MascotPlay(*v), b.t(mascot_play_key(*v))))
         .collect();
+    let ready = crate::ui::play::trigger::has_ready(s.mascot, true);
+    let desc_key = if ready {
+        Key::MascotPlayDesc
+    } else {
+        Key::MascotPlayComing
+    };
     let desc = b.wrap(
-        &b.t(Key::MascotPlayDesc),
+        &b.t(desc_key),
         Font::Desc,
         b.g.content_w - 2.0 * INSET,
     );
@@ -3829,7 +3836,7 @@ fn mascot_play_card(b: &mut Builder, s: &State) {
     let selected = index_of(&MASCOT_PLAY_ORDER, &s.mascot_play);
     let right = left + b.segmented_w(&items);
     let cy = card.y + head + CONTROL_H / 2.0;
-    b.segmented_if(Group::MascotPlay, right, cy, items, selected, s.robot);
+    b.segmented_if(Group::MascotPlay, right, cy, items, selected, s.robot && ready);
 }
 
 /// Frequent to rare, then greeting only and off (the enum starts at the
@@ -8437,6 +8444,7 @@ mod tests {
                 lang,
                 robot: true,
                 mascot_play: P::Jarang,
+                mascot: Mascot::Falk,
                 scroll: 1e6,
                 ..states()[0].clone()
             };
@@ -8501,6 +8509,50 @@ mod tests {
                     .any(|(h, _)| matches!(h, Hit::MascotPlay(_)))
             );
         }
+    }
+
+    /// A mascot with no ready story gets the row dimmed and an honest line
+    /// instead of the promise; the falk, whose story is ready, gets both.
+    #[test]
+    fn mascot_play_row_is_dimmed_for_a_mascot_with_no_ready_story() {
+        use crate::theme::MascotPlay as P;
+        for lang in [Lang::Id, Lang::En] {
+            for mascot in [Mascot::Cat, Mascot::Octopus, Mascot::Falk] {
+                // The clock off: a falk owner still has a story to ask for.
+                let s = State {
+                    lang,
+                    robot: true,
+                    mascot,
+                    idle_clock: false,
+                    mascot_play: P::Sesekali,
+                    scroll: 1e6,
+                    ..states()[0].clone()
+                };
+                let l = layout(Section::Cat, &s, &Estimate);
+                let (track, _, _) = l.segmented(Group::MascotPlay).expect("the row");
+                let label = l
+                    .texts
+                    .iter()
+                    .position(|t| t.text == text(lang, Key::MascotPlayLabel))
+                    .expect("label");
+                let top = l.texts[label].rect.y;
+                let desc = l.texts[label + 1..]
+                    .iter()
+                    .filter(|t| t.rect.y > top && t.rect.y < track.y)
+                    .map(|t| t.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let enabled = l.controls.iter().any(|c| {
+                    matches!(c, Control::Segmented { group: Group::MascotPlay, enabled: true, .. })
+                });
+                let ready = mascot == Mascot::Falk;
+                assert_eq!(enabled, ready, "{lang:?} {mascot:?}");
+                let key = if ready { Key::MascotPlayDesc } else { Key::MascotPlayComing };
+                assert_eq!(desc, text(lang, key), "{lang:?} {mascot:?}");
+            }
+        }
+        assert_eq!(text(Lang::Id, Key::MascotPlayComing), "Animasi untuk maskot ini menyusul.");
+        assert_eq!(text(Lang::En, Key::MascotPlayComing), "Animations for this mascot are coming.");
     }
 
     /// The design's full "Hemat: tanpa kedip dan gerak, ekspresi tetap"
