@@ -4,6 +4,7 @@
 use super::rim::rim;
 use crate::config::Style;
 use crate::ui::geometry::ShapeRect;
+use windows_numerics::Matrix3x2;
 
 /// How many rim samples the outline takes. A swinging Notch returns more
 /// points than this, for its extension above the screen edge.
@@ -42,28 +43,75 @@ pub fn is_rest(style: Style, d: &Deform) -> bool {
         && d.dents.iter().all(|k| k.depth == 0.0 || k.width <= 0.0)
 }
 
+/// What turns and moves the island as a whole: where it turns, by how much,
+/// and how far it shifts. The Notch stays welded to the screen edge, so it only
+/// swings, about the edge's middle; the Pill also tilts and shifts, about its
+/// centre.
+struct Motion {
+    pivot: (f32, f32),
+    deg: f32,
+    shift: (f32, f32),
+}
+
+fn motion(style: Style, s: ShapeRect, d: &Deform) -> Motion {
+    let cx = s.x + s.w / 2.0;
+    if style == Style::Notch {
+        Motion {
+            pivot: (cx, s.y),
+            deg: d.swing_deg,
+            shift: (0.0, 0.0),
+        }
+    } else {
+        Motion {
+            pivot: (cx, s.y + s.h / 2.0),
+            deg: d.swing_deg + d.tilt_deg,
+            shift: d.shift,
+        }
+    }
+}
+
+/// `m` as a Direct2D matrix (row vectors: `x' = x * M11 + y * M21 + M31`).
+fn matrix(m: &Motion) -> Matrix3x2 {
+    let ((px, py), (sin, cos)) = (m.pivot, m.deg.to_radians().sin_cos());
+    Matrix3x2 {
+        M11: cos,
+        M12: sin,
+        M21: -sin,
+        M22: cos,
+        M31: px - px * cos + py * sin + m.shift.0,
+        M32: py - px * sin - py * cos + m.shift.1,
+    }
+}
+
+/// The island's rigid motion as one matrix: the swing (plus the Pill's tilt)
+/// about the style's pivot, and the Pill's shift. Not the squeeze and not the
+/// dents. `outline` places every point with it, and whatever sits on the
+/// island (the clock) draws under it, so the two cannot drift apart.
+pub fn rigid(style: Style, s: ShapeRect, d: &Deform) -> Matrix3x2 {
+    matrix(&motion(style, s, d))
+}
+
+/// A turn of `deg` about `pivot`, then a shift: the one rotation `rigid` is
+/// made of, for a piece that turns about its own centre.
+pub fn turn_about(deg: f32, pivot: (f32, f32), shift: (f32, f32)) -> Matrix3x2 {
+    matrix(&Motion { pivot, deg, shift })
+}
+
 /// The deformed lower outline, left to right. The Notch's outline grows two
 /// short runs above the screen edge while it swings, so the rotation never
 /// leaves a gap at the top of the screen.
 pub fn outline(style: Style, s: ShapeRect, d: &Deform) -> Vec<(f32, f32)> {
     let notch = style == Style::Notch;
-    let (pivot_x, pivot_y) = if notch {
-        (s.x + s.w / 2.0, s.y)
-    } else {
-        (s.x + s.w / 2.0, s.y + s.h / 2.0)
-    };
-    let (swing, shift) = if notch {
-        (d.swing_deg, (0.0, 0.0))
-    } else {
-        (d.swing_deg + d.tilt_deg, d.shift)
-    };
-    let (sin, cos) = swing.to_radians().sin_cos();
+    let swing = motion(style, s, d).deg;
+    let rigid = rigid(style, s, d);
+    let pivot_x = s.x + s.w / 2.0;
     let keep = 1.0 - d.squeeze;
+    // The squeeze about the centre, then the island's own motion.
     let place = |x: f32, y: f32| {
-        let (dx, dy) = ((x - pivot_x) * keep, y - pivot_y);
+        let x = pivot_x + (x - pivot_x) * keep;
         (
-            pivot_x + dx * cos - dy * sin + shift.0,
-            pivot_y + dx * sin + dy * cos + shift.1,
+            x * rigid.M11 + y * rigid.M21 + rigid.M31,
+            x * rigid.M12 + y * rigid.M22 + rigid.M32,
         )
     };
 
@@ -240,5 +288,66 @@ mod tests {
         // shift and tilt do nothing on the Notch, so `is_rest` must agree with `outline`.
         assert!(is_rest(Style::Notch, &Deform { shift: (0.0, 6.0), tilt_deg: 4.0, ..Default::default() }));
         assert!(!is_rest(Style::Pill, &Deform { tilt_deg: 4.0, ..Default::default() }));
+    }
+
+    /// `m` applied to a point, as Direct2D does (row vectors).
+    fn apply(m: &windows_numerics::Matrix3x2, (x, y): (f32, f32)) -> (f32, f32) {
+        (x * m.M11 + y * m.M21 + m.M31, x * m.M12 + y * m.M22 + m.M32)
+    }
+
+    fn near(a: (f32, f32), b: (f32, f32)) -> bool {
+        (a.0 - b.0).abs() < 0.001 && (a.1 - b.1).abs() < 0.001
+    }
+
+    #[test]
+    fn the_rigid_motion_keeps_each_styles_pivot_where_it_is() {
+        for (w, h) in [(160.0, 28.0), (300.0, 44.0)] {
+            let d = Deform { swing_deg: 7.0, shift: (3.0, 5.0), tilt_deg: 4.0, squeeze: 0.1, ..Default::default() };
+            let (n, p) = (shape(Style::Notch, w, h), shape(Style::Pill, w, h));
+            // The Notch turns about the middle of the screen edge and never shifts.
+            let top = (n.x + n.w / 2.0, n.y);
+            assert!(near(apply(&rigid(Style::Notch, n, &d), top), top), "{w}x{h} Notch");
+            // The Pill turns about its centre, which only the shift moves.
+            let mid = (p.x + p.w / 2.0, p.y + p.h / 2.0);
+            let moved = apply(&rigid(Style::Pill, p, &d), mid);
+            assert!(near(moved, (mid.0 + 3.0, mid.1 + 5.0)), "{w}x{h} Pill centre went to {moved:?}");
+            // And it does turn: the Notch's corner leaves its place by the swing.
+            let corner = (n.x, n.y + n.h);
+            let swung = apply(&rigid(Style::Notch, n, &d), corner);
+            let want = ((corner.0 - top.0) * 7.0_f32.to_radians().cos() - (corner.1 - top.1) * 7.0_f32.to_radians().sin() + top.0,
+                (corner.0 - top.0) * 7.0_f32.to_radians().sin() + (corner.1 - top.1) * 7.0_f32.to_radians().cos() + top.1);
+            assert!(near(swung, want), "{w}x{h}: {swung:?} is not {want:?}");
+        }
+    }
+
+    #[test]
+    fn a_rest_deform_has_no_rigid_motion_and_the_notch_ignores_shift_and_tilt() {
+        let s = shape(Style::Notch, 190.0, 34.0);
+        let id = windows_numerics::Matrix3x2::identity();
+        assert_eq!(rigid(Style::Notch, s, &Deform::default()), id);
+        assert_eq!(rigid(Style::Pill, shape(Style::Pill, 190.0, 34.0), &Deform::default()), id);
+        // A squeeze and a dent are not rigid.
+        let soft = Deform { squeeze: 0.2, dents: vec![Dent { u: 0.5, depth: 0.3, width: 0.3 }], ..Default::default() };
+        assert_eq!(rigid(Style::Notch, s, &soft), id);
+        let d = Deform { shift: (0.0, 6.0), tilt_deg: 4.0, ..Default::default() };
+        assert_eq!(rigid(Style::Notch, s, &d), id);
+    }
+
+    #[test]
+    fn the_outline_is_the_squeezed_rim_under_the_rigid_motion() {
+        // The clock draws under `rigid`; if `outline` placed its points any
+        // other way the clock would slide off a swinging island.
+        for style in [Style::Notch, Style::Pill] {
+            let s = shape(style, 190.0, 34.0);
+            let d = Deform { swing_deg: 5.0, shift: (2.0, 3.0), tilt_deg: 3.0, squeeze: 0.1, ..Default::default() };
+            let (m, pts) = (rigid(style, s, &d), outline(style, s, &d));
+            let off = (pts.len() - OUTLINE_PTS) / 2;
+            let cx = s.x + s.w / 2.0;
+            for i in 0..OUTLINE_PTS {
+                let p = rim(style, s, i as f32 / (OUTLINE_PTS - 1) as f32);
+                let squeezed = (cx + (p.x - cx) * 0.9, p.y);
+                assert!(near(pts[i + off], apply(&m, squeezed)), "{style:?} point {i}");
+            }
+        }
     }
 }

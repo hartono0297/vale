@@ -222,7 +222,7 @@ use super::motion::{
 use super::notch_fill::{self, fill_alpha};
 use super::render::{
     CleanerView, CliView, ClipNoticeView, ClipView, DevicesView, FolderMenuView, Frame, MoleView, RecFrame, RecordView, VideoThumbView,
-    NoticeCloseView, NotifView, PlayFrame, Progress, Renderer, RobotFrame, SearchView, SheetKind, ShotView,
+    DigitFx, NoticeCloseView, NotifView, PlayFrame, Progress, Renderer, RobotFrame, SearchView, SheetKind, ShotView,
     SystemView, ToastBadgeView, ToastLogoView,
 };
 use super::play::shape::{Deform, Dent};
@@ -495,7 +495,8 @@ enum CliDemo {
     FolderMenu,
 }
 
-/// What a play scene freezes (`bata-play-island`, `bata-play-swing`).
+/// What a play scene freezes (`bata-play-island`, `bata-play-swing`,
+/// `bata-play-digits`).
 #[derive(Clone, Copy, PartialEq)]
 enum DemoPlay {
     No,
@@ -503,6 +504,10 @@ enum DemoPlay {
     Dent,
     /// The Notch swung by 3.4 degrees, so its low side shows.
     Swing,
+    /// The island turned a few degrees with no digit moved by its own, and
+    /// the clock's first digit lifted and turned: the clock follows the
+    /// island, and one character has a place of its own.
+    Digits,
 }
 
 /// `View` without its payloads, so scenes can be `const`.
@@ -1012,7 +1017,22 @@ fn demo_play(which: DemoPlay) -> PlayFrame {
             swing_deg: 3.4,
             ..Deform::default()
         },
+        // The Notch swings, the Pill swings and tilts: both turn the clock.
+        DemoPlay::Digits => Deform {
+            swing_deg: 3.4,
+            tilt_deg: 3.0,
+            ..Deform::default()
+        },
     };
+    let mut digits = [DigitFx::IDENTITY; 5];
+    if which == DemoPlay::Digits {
+        digits[0] = DigitFx {
+            dy: -4.0,
+            rot_deg: 14.0,
+            scale: 1.1,
+            ..DigitFx::IDENTITY
+        };
+    }
     PlayFrame {
         deform,
         beat: Beat {
@@ -1020,6 +1040,7 @@ fn demo_play(which: DemoPlay) -> PlayFrame {
             alpha: 1.0,
             t: 0.0,
         },
+        digits,
     }
 }
 
@@ -1215,7 +1236,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 212] = [
+const SCENES: [Scene; 213] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -1836,6 +1857,10 @@ const SCENES: [Scene; 212] = [
     Scene {
         play: DemoPlay::Swing,
         ..bata("bata-play-swing", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    Scene {
+        play: DemoPlay::Digits,
+        ..bata("bata-play-digits", ShapeKind::Idle, View0::Idle, Expr::Idle)
     },
     Scene {
         clock: Some("23:48"),

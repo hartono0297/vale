@@ -19,7 +19,8 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_WEIGHT, DWRITE_FONT_WEIGHT_MEDIUM,
     DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
     DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_TEXT_ALIGNMENT, DWRITE_TEXT_ALIGNMENT_CENTER,
-    DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TEXT_METRICS,
+    DWRITE_HIT_TEST_METRICS, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_TRAILING,
+    DWRITE_TEXT_METRICS,
     DWRITE_TRIMMING, DWRITE_TRIMMING_GRANULARITY_CHARACTER, DWRITE_WORD_WRAPPING_NO_WRAP,
     DWRITE_WORD_WRAPPING_WRAP, DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat,
     IDWriteTextLayout, IDWriteTypography,
@@ -65,7 +66,7 @@ use super::geometry::{
 use super::icons::{Icon, IconSet};
 use super::motion::{StripFrame, Transit};
 use super::panel_layout::Region;
-use super::play::shape::{Deform, outline};
+use super::play::shape::{Deform, outline, rigid, turn_about};
 use super::play::state::{Beat, spread_offsets};
 use super::robot::{Expr, EyesPose, Pose, RobotPainter, eyes_area, eyes_centre, eyes_offset_in};
 use super::shelf_motion::ShelfMotion;
@@ -304,12 +305,45 @@ pub struct Frame<'a> {
 }
 
 /// What a running play asks of the renderer this frame: how the island is
-/// deformed and where the play stands (`Beat::spread` moves the mascot and
-/// the clock, `Beat::t` is the story's own time).
+/// deformed, where the play stands (`Beat::spread` moves the mascot and the
+/// clock, `Beat::t` is the story's own time) and what happens to each
+/// character of the clock.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlayFrame {
     pub deform: Deform,
     pub beat: Beat,
+    /// One per character of the clock (`%H:%M`). All `IDENTITY` draws the
+    /// clock as the one run it is at rest.
+    pub digits: [DigitFx; 5],
+}
+
+/// What a play does to one character of the clock: shifted by `dx`, `dy`
+/// (dip), turned by `rot_deg` and scaled by `scale` about the character's own
+/// centre, and drawn at `alpha` of the clock's own.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DigitFx {
+    pub dx: f32,
+    pub dy: f32,
+    pub rot_deg: f32,
+    pub scale: f32,
+    pub alpha: f32,
+}
+
+impl DigitFx {
+    /// Leaves the character where and as the layout puts it.
+    pub const IDENTITY: DigitFx = DigitFx {
+        dx: 0.0,
+        dy: 0.0,
+        rot_deg: 0.0,
+        scale: 1.0,
+        alpha: 1.0,
+    };
+}
+
+/// Whether any character needs a place of its own. When none does, the clock
+/// stays the single run it is at rest.
+pub fn per_character_wanted(fx: &[DigitFx]) -> bool {
+    fx.iter().any(|f| *f != DigitFx::IDENTITY)
 }
 
 /// How far a played Notch's shoulder runs into the body (dip).
@@ -2459,9 +2493,11 @@ impl Renderer {
                 if let (Some(area), Some(time)) = (l.clock, &frame.clock) {
                     // A sleeping Bata dims the clock beside it, as in the design.
                     let asleep = robot.is_some_and(|r| r.expr == Expr::Sleep);
-                    self.text(
+                    self.paint_clock(
+                        style,
+                        shape,
+                        play,
                         time,
-                        &self.fonts.clock,
                         area,
                         if asleep { 0.6 } else { 1.0 },
                     );
@@ -3780,6 +3816,88 @@ impl Renderer {
         self.text_colored(text, format, area, self.palette.text, alpha);
     }
 
+    /// The idle clock in `area`. Without a play it is the one run it always
+    /// was, nothing else. A play draws it on the island's rigid motion (it
+    /// turns with the island it sits on), as one run, or one character at a
+    /// time when a character has something of its own to do.
+    fn paint_clock(
+        &self,
+        style: Style,
+        shape: ShapeRect,
+        play: Option<&PlayFrame>,
+        time: &str,
+        area: Rect,
+        alpha: f32,
+    ) {
+        let Some(p) = play else {
+            return self.text(time, &self.fonts.clock, area, alpha);
+        };
+        let rt = &self.target.as_ref().expect("target ensured by paint").rt;
+        let mut before = Matrix3x2::identity();
+        unsafe {
+            rt.GetTransform(&mut before);
+            rt.SetTransform(&(rigid(style, shape, &p.deform) * before));
+        }
+        // Nothing between the set and the restore returns early.
+        if per_character_wanted(&p.digits) {
+            self.clock_per_character(time, area, alpha, &p.digits);
+        } else {
+            self.text(time, &self.fonts.clock, area, alpha);
+        }
+        unsafe { rt.SetTransform(&before) };
+    }
+
+    /// `time` one character at a time, each at the place the whole line's own
+    /// layout gives it (`HitTestTextPosition`: the tracking and the kerning
+    /// are the layout's, not a constant of ours), under its own `DigitFx`.
+    /// A character turns and scales about the centre of its cell. Drawn on
+    /// top of the current transform, which the caller sets and restores.
+    fn clock_per_character(&self, time: &str, area: Rect, alpha: f32, digits: &[DigitFx; 5]) {
+        if time.is_empty() || area.w <= 0.0 {
+            return;
+        }
+        let wide: Vec<u16> = time.encode_utf16().collect();
+        let Ok(line) = self.layout(&wide, &self.fonts.clock, area.w, area.h) else {
+            return;
+        };
+        let rt = &self.target.as_ref().expect("target ensured by paint").rt;
+        let mut before = Matrix3x2::identity();
+        unsafe { rt.GetTransform(&mut before) };
+        for (i, fx) in digits.iter().enumerate().take(wide.len()) {
+            let (mut x, mut y) = (0.0, 0.0);
+            let mut cell = DWRITE_HIT_TEST_METRICS::default();
+            if unsafe { line.HitTestTextPosition(i as u32, false, &mut x, &mut y, &mut cell) }
+                .is_err()
+            {
+                continue;
+            }
+            // The character in a layout of its own, with the line's tracking,
+            // tabular figures and height, drawn from its left edge at the
+            // cell's x.
+            let Ok(one) = self.layout(&wide[i..=i], &self.fonts.clock, area.w, area.h) else {
+                continue;
+            };
+            unsafe {
+                let _ = one.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            }
+            let c = (
+                area.x + cell.left + cell.width / 2.0,
+                area.y + cell.top + cell.height / 2.0,
+            );
+            let own = Matrix3x2::scale_around(fx.scale, fx.scale, Vector2::new(c.0, c.1))
+                * turn_about(fx.rot_deg, c, (fx.dx, fx.dy));
+            unsafe { rt.SetTransform(&(own * before)) };
+            self.text_legible(
+                Vector2::new(area.x + x, area.y),
+                &one,
+                D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
+                self.palette.text,
+                (alpha * fx.alpha).clamp(0.0, 1.0),
+            );
+        }
+        unsafe { rt.SetTransform(&before) };
+    }
+
     /// Text in the palette's secondary colour (captions, times, labels).
     fn text2(&self, text: &str, format: &IDWriteTextFormat, area: Rect) {
         self.text_colored(text, format, area, self.palette.secondary, 1.0);
@@ -4539,6 +4657,7 @@ mod tests {
         PlayFrame {
             deform: Deform::default(),
             beat: Beat { spread, alpha: 1.0, t: 0.0 },
+            digits: [DigitFx::IDENTITY; 5],
         }
     }
 
@@ -4937,6 +5056,407 @@ mod tests {
         assert!(matches!(dirty::plan(Some(&rest), &rest.clone()), Plan::Dirty(_)));
         for (prev, cur) in [(&rest, &playing), (&playing, &playing), (&playing, &rest)] {
             assert_eq!(dirty::plan(Some(prev), cur), Plan::Full);
+        }
+    }
+
+    #[test]
+    fn identity_digit_effects_mean_the_plain_clock_path() {
+        assert!(!per_character_wanted(&[DigitFx::IDENTITY; 5]));
+        let mut fx = [DigitFx::IDENTITY; 5];
+        fx[0].dy = 3.0;
+        assert!(per_character_wanted(&fx));
+        // Each field alone wakes the per-character path.
+        let wakes = |f: fn(&mut DigitFx)| {
+            let mut fx = [DigitFx::IDENTITY; 5];
+            f(&mut fx[4]);
+            per_character_wanted(&fx)
+        };
+        assert!(wakes(|d| d.dx = 1.0));
+        assert!(wakes(|d| d.rot_deg = 1.0));
+        assert!(wakes(|d| d.scale = 1.1));
+        assert!(wakes(|d| d.alpha = 0.5));
+    }
+
+    /// The pixels of a target `dip` big (premultiplied BGRA, rows packed).
+    struct Px {
+        w: usize,
+        h: usize,
+        bgra: Vec<u8>,
+    }
+
+    impl Px {
+        fn alpha(&self, x: usize, y: usize) -> f32 {
+            f32::from(self.bgra[(y * self.w + x) * 4 + 3])
+        }
+
+        /// The alpha-weighted centre of the ink, in px, and its total weight.
+        fn centre(&self) -> ((f32, f32), f32) {
+            let (mut sx, mut sy, mut sum) = (0.0, 0.0, 0.0);
+            for y in 0..self.h {
+                for x in 0..self.w {
+                    let a = self.alpha(x, y);
+                    (sx, sy, sum) = (sx + a * (x as f32 + 0.5), sy + a * (y as f32 + 0.5), sum + a);
+                }
+            }
+            ((sx / sum, sy / sum), sum)
+        }
+
+        /// The ink's width in px: its first to its last column with any alpha.
+        fn ink_width(&self) -> usize {
+            let col = |x: usize| (0..self.h).any(|y| self.alpha(x, y) > 8.0);
+            let first = (0..self.w).find(|&x| col(x)).unwrap_or(0);
+            let last = (0..self.w).rev().find(|&x| col(x)).unwrap_or(0);
+            last + 1 - first
+        }
+    }
+
+    /// How far apart two renderings are: the largest gap in any channel of
+    /// any pixel, and how many pixels have a channel more than `LOUD` apart.
+    const LOUD: u8 = 40;
+    /// Two renderings of the same clock agree to this many levels (of 255) in
+    /// every channel of every pixel. They measure 0 here; the 2 only keeps a
+    /// rasteriser's rounding from failing the test, and is far under what the
+    /// smallest drift tried (a quarter pixel) gives.
+    const IDENTICAL_WITHIN: u8 = 2;
+    fn gap(a: &Px, b: &Px) -> (u8, usize) {
+        assert_eq!((a.w, a.h), (b.w, b.h));
+        let (mut worst, mut loud) = (0, 0);
+        for (p, q) in a.bgra.chunks(4).zip(b.bgra.chunks(4)) {
+            let d = p.iter().zip(q).map(|(x, y)| x.abs_diff(*y)).max().unwrap();
+            worst = worst.max(d);
+            loud += usize::from(d > LOUD);
+        }
+        (worst, loud)
+    }
+
+    /// What `draw` paints on a fresh, transparent target of `dip` (logical
+    /// px) at the renderer's scale.
+    fn painted(r: &mut Renderer, dip: (f32, f32), draw: impl FnOnce(&Renderer)) -> Px {
+        let size = SIZE {
+            cx: (dip.0 * r.scale).ceil() as i32,
+            cy: (dip.1 * r.scale).ceil() as i32,
+        };
+        r.ensure_target(size).unwrap();
+        let rt = &r.target.as_ref().unwrap().rt;
+        unsafe {
+            rt.SetDpi(96.0 * r.scale, 96.0 * r.scale);
+            rt.BeginDraw();
+            rt.Clear(Some(&color(0, 0.0)));
+        }
+        draw(r);
+        unsafe { rt.EndDraw(None, None) }.unwrap();
+        let (w, h) = (size.cx as usize, size.cy as usize);
+        let area = WICRect { X: 0, Y: 0, Width: size.cx, Height: size.cy };
+        let lock = unsafe { r.target.as_ref().unwrap().bitmap.Lock(&area, WICBitmapLockRead.0 as u32) }.unwrap();
+        let stride = unsafe { lock.GetStride() }.unwrap() as usize;
+        let (mut len, mut data) = (0u32, std::ptr::null_mut());
+        unsafe { lock.GetDataPointer(&mut len, &mut data) }.unwrap();
+        let rows = unsafe { std::slice::from_raw_parts(data as *const u8, len as usize) };
+        let bgra = (0..h).flat_map(|y| rows[y * stride..y * stride + w * 4].iter().copied()).collect();
+        Px { w, h, bgra }
+    }
+
+    const CLOCK_BOX: (f32, f32) = (80.0, 40.0);
+    const TIMES: [&str; 3] = ["14:32", "00:00", "08:51"];
+
+    fn clock_area(w: f32) -> Rect {
+        Rect { x: 8.0, y: 2.0, w, h: 36.0 }
+    }
+
+    /// The one run the resting clock is, and the same time one character at a
+    /// time with `fx`.
+    fn plain_and_split(r: &mut Renderer, time: &str, area: Rect, fx: [DigitFx; 5]) -> (Px, Px) {
+        let plain = painted(r, CLOCK_BOX, |r| r.text(time, &r.fonts.clock, area, 1.0));
+        let split = painted(r, CLOCK_BOX, |r| r.clock_per_character(time, area, 1.0, &fx));
+        (plain, split)
+    }
+
+    #[test]
+    fn the_clock_drawn_per_character_is_the_plain_clock_to_the_pixel() {
+        // The risk of the per-character path is a jump the moment it takes
+        // over: if the digits' places differ from the layout's own tracking
+        // and kerning, they hop. Tracked text, a narrow box and a wide one (the
+        // clock is centred in it), both typefaces and the scales a display
+        // has. A digit off by a pixel, or by less, cannot pass: see the drift
+        // checks below, which also fix the tolerance.
+        let mut r = renderer();
+        for ui in [UiFont::Sans, UiFont::Mono] {
+            r.set_ui_font(ui).unwrap();
+            for scale in [1.0, 1.25, 1.5, 2.0] {
+                r.scale = scale;
+                for time in TIMES {
+                    for w in [44.0, 61.0] {
+                        let case = format!("{ui:?} x{scale} {time} in {w}");
+                        let area = clock_area(w);
+                        let (plain, split) = plain_and_split(&mut r, time, area, [DigitFx::IDENTITY; 5]);
+                        assert!(plain.centre().1 > 500.0, "{case}: the plain clock drew nothing");
+                        let (worst, loud) = gap(&plain, &split);
+                        assert!(
+                            worst <= IDENTICAL_WITHIN && loud == 0,
+                            "{case}: the two renderings differ by {worst} (loud pixels {loud})"
+                        );
+                        // Every digit a quarter pixel off, and a whole pixel off,
+                        // is plainly not the same: far above the 2 levels
+                        // allowed, with over fifty loud pixels (a quarter pixel
+                        // measures 100 and more, a whole one 200 and more).
+                        for px in [0.25, 1.0] {
+                            let drift = DigitFx { dx: px / scale, ..DigitFx::IDENTITY };
+                            let (_, drifted) = plain_and_split(&mut r, time, area, [drift; 5]);
+                            let (worst, loud) = gap(&plain, &drifted);
+                            assert!(
+                                worst > 64 && loud > 50,
+                                "{case}: digits {px} px off still pass ({worst}, loud {loud})"
+                            );
+                        }
+                        // And one digit alone, half a pixel off, whichever it is.
+                        for i in 0..5 {
+                            let mut fx = [DigitFx::IDENTITY; 5];
+                            fx[i].dx = 0.5 / scale;
+                            let (_, one) = plain_and_split(&mut r, time, area, fx);
+                            let (worst, loud) = gap(&plain, &one);
+                            assert!(
+                                worst > 64 && loud > 4,
+                                "{case}: digit {i} half a pixel off still passes ({worst}, loud {loud})"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The clock `time` drawn as `paint_clock` draws it on a target big
+    /// enough for the island of `s`.
+    fn island_clock(
+        r: &mut Renderer,
+        style: Style,
+        s: ShapeRect,
+        play: Option<&PlayFrame>,
+        area: Rect,
+    ) -> Px {
+        painted(r, (s.x + s.w + 24.0, s.y + s.h + 24.0), |r| {
+            r.paint_clock(style, s, play, "14:32", area, 1.0)
+        })
+    }
+
+    /// `fx` on character `i` alone, the rest drawn at alpha 0.
+    fn only(r: &mut Renderer, i: usize, fx: DigitFx) -> Px {
+        let mut all = [DigitFx { alpha: 0.0, ..DigitFx::IDENTITY }; 5];
+        all[i] = fx;
+        painted(r, CLOCK_BOX, |r| {
+            r.clock_per_character("14:32", clock_area(44.0), 1.0, &all)
+        })
+    }
+
+    #[test]
+    fn each_digits_effect_lands_on_that_digit_alone() {
+        // The five characters drawn one at a time (the others invisible) add
+        // up to the whole clock, so every one sits at its own place and
+        // takes the effect of its own index.
+        let mut r = renderer();
+        let area = clock_area(44.0);
+        let whole = painted(&mut r, CLOCK_BOX, |r| r.text("14:32", &r.fonts.clock, area, 1.0));
+        let parts: Vec<Px> = (0..5).map(|i| only(&mut r, i, DigitFx::IDENTITY)).collect();
+        let mut sum = Px { w: whole.w, h: whole.h, bgra: vec![0; whole.bgra.len()] };
+        for part in &parts {
+            assert!(part.centre().1 > 100.0, "a character drew nothing");
+            for (t, p) in sum.bgra.iter_mut().zip(&part.bgra) {
+                *t = t.saturating_add(*p);
+            }
+        }
+        let (worst, loud) = gap(&whole, &sum);
+        assert!(
+            worst <= IDENTICAL_WITHIN + 1 && loud == 0,
+            "the five parts are not the whole: {worst}, loud {loud}"
+        );
+        // And they are five different places, left to right.
+        let xs: Vec<f32> = parts.iter().map(|p| p.centre().0.0).collect();
+        assert!(xs.windows(2).all(|w| w[1] > w[0] + 3.0), "not left to right: {xs:?}");
+    }
+
+    #[test]
+    fn a_digit_moves_turns_and_scales_about_its_own_centre() {
+        let mut r = renderer();
+        // The colon is left out of the turn and the scale: its ink sits well off
+        // its cell's centre (the line's middle), so it legitimately travels.
+        for i in [0, 1, 3, 4] {
+            let case = format!("character {i}");
+            let rest = only(&mut r, i, DigitFx::IDENTITY);
+            let ((x0, y0), ink0) = rest.centre();
+            let moved = only(&mut r, i, DigitFx { dx: 3.0, dy: -2.0, ..DigitFx::IDENTITY });
+            let ((x, y), ink) = moved.centre();
+            assert!(
+                (x - x0 - 3.0).abs() < 0.15 && (y - y0 + 2.0).abs() < 0.15,
+                "{case}: moved to ({x}, {y}) from ({x0}, {y0})"
+            );
+            assert!((ink - ink0).abs() < ink0 * 0.02, "{case}: moving changed the ink");
+            // About its own centre the ink stays put (a glyph's ink is off its
+            // cell's centre by a pixel at most); about the origin it would
+            // fly off by tens.
+            let turned = only(&mut r, i, DigitFx { rot_deg: 25.0, ..DigitFx::IDENTITY });
+            let ((x, y), _) = turned.centre();
+            assert!(
+                (x - x0).abs() < 1.0 && (y - y0).abs() < 1.0,
+                "{case}: turned about a point far from itself: ({x}, {y}) from ({x0}, {y0})"
+            );
+            let big = only(&mut r, i, DigitFx { scale: 2.0, ..DigitFx::IDENTITY });
+            let ((x, y), _) = big.centre();
+            assert!(
+                (x - x0).abs() < 2.0 && (y - y0).abs() < 2.0,
+                "{case}: scaled about a point far from itself: ({x}, {y}) from ({x0}, {y0})"
+            );
+            assert!(
+                big.ink_width() as f32 > rest.ink_width() as f32 * 1.5,
+                "{case}: not scaled up ({} px from {})",
+                big.ink_width(),
+                rest.ink_width()
+            );
+            let faint = only(&mut r, i, DigitFx { alpha: 0.5, ..DigitFx::IDENTITY });
+            assert!((faint.centre().1 / ink0 - 0.5).abs() < 0.03, "{case}: not half as strong");
+        }
+    }
+
+    fn at_rest() -> PlayFrame {
+        play_frame(1.0)
+    }
+
+    fn turned() -> PlayFrame {
+        PlayFrame {
+            deform: Deform {
+                swing_deg: 4.0,
+                tilt_deg: 3.0,
+                shift: (2.0, 3.0),
+                ..Deform::default()
+            },
+            ..at_rest()
+        }
+    }
+
+    fn apply(m: &Matrix3x2, (x, y): (f32, f32)) -> (f32, f32) {
+        (x * m.M11 + y * m.M21 + m.M31, x * m.M12 + y * m.M22 + m.M32)
+    }
+
+    fn clock_area_of(style: Style, w: f32, h: f32, play: &PlayFrame) -> (ShapeRect, Rect) {
+        let s = shape(style, w, h);
+        let l = play_layout(idle_layout_lead(s, true, true, 0.0), s, Some(play));
+        (s, l.clock.unwrap())
+    }
+
+    #[test]
+    fn a_play_with_no_digit_effect_and_no_motion_draws_the_resting_clock_to_the_pixel() {
+        // No play at all is the same call as ever; a play that has done
+        // nothing yet must not change a pixel of the clock either.
+        let mut r = renderer();
+        for style in [Style::Notch, Style::Pill] {
+            for (w, h) in SIZES {
+                let (s, area) = clock_area_of(style, w, h, &at_rest());
+                let plain = painted(&mut r, (s.x + s.w + 24.0, s.y + s.h + 24.0), |r| {
+                    r.text("14:32", &r.fonts.clock, area, 1.0)
+                });
+                for play in [None, Some(at_rest())] {
+                    let drawn = island_clock(&mut r, style, s, play.as_ref(), area);
+                    assert_eq!(
+                        gap(&plain, &drawn),
+                        (0, 0),
+                        "{style:?} {w}x{h} play {}",
+                        play.is_some()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_clock_turns_with_the_island_it_sits_on_even_when_no_digit_moves() {
+        // `Kelelawar` tilts the Pill and moves no digit; the clock must go
+        // with it.
+        let mut r = renderer();
+        for style in [Style::Notch, Style::Pill] {
+            for (w, h) in SIZES {
+                let play = turned();
+                let (s, area) = clock_area_of(style, w, h, &play);
+                let rest = island_clock(&mut r, style, s, None, area);
+                let drawn = island_clock(&mut r, style, s, Some(&play), area);
+                let (c0, c1) = (rest.centre().0, drawn.centre().0);
+                let want = apply(&rigid(style, s, &play.deform), c0);
+                let case = format!("{style:?} {w}x{h}");
+                assert!(
+                    (c1.0 - c0.0).hypot(c1.1 - c0.1) > 2.0,
+                    "{case}: the clock did not move with the island"
+                );
+                // Within a dip: a clock drawn upright sits on a whole pixel
+                // baseline and a turned one does not, which is up to half a
+                // pixel on its own. The exact comparison follows.
+                assert!(
+                    (c1.0 - want.0).abs() < 1.0 && (c1.1 - want.1).abs() < 1.0,
+                    "{case}: the clock is at {c1:?}, the island's motion puts it at {want:?}"
+                );
+                // Exactly: the plain run drawn under the island's own matrix.
+                let by_hand = painted(&mut r, (s.x + s.w + 24.0, s.y + s.h + 24.0), |r| {
+                    let rt = &r.target.as_ref().unwrap().rt;
+                    unsafe { rt.SetTransform(&rigid(style, s, &play.deform)) };
+                    r.text("14:32", &r.fonts.clock, area, 1.0);
+                    unsafe { rt.SetTransform(&Matrix3x2::identity()) };
+                });
+                assert_eq!(gap(&by_hand, &drawn), (0, 0), "{case}: not drawn under the island's matrix");
+            }
+        }
+    }
+
+    #[test]
+    fn the_per_character_clock_goes_with_the_island_too() {
+        // One digit barely faded wakes the per-character path; under the same
+        // island motion it must land where the single run does.
+        let mut r = renderer();
+        for style in [Style::Notch, Style::Pill] {
+            let mut play = turned();
+            let (s, area) = clock_area_of(style, 190.0, 34.0, &play);
+            let run = island_clock(&mut r, style, s, Some(&play), area);
+            play.digits[0].alpha = 0.999;
+            assert!(per_character_wanted(&play.digits), "the premise");
+            let split = island_clock(&mut r, style, s, Some(&play), area);
+            let (worst, loud) = gap(&run, &split);
+            assert!(worst <= IDENTICAL_WITHIN && loud == 0, "{style:?}: {worst}, loud {loud}");
+        }
+    }
+
+    #[test]
+    fn a_digits_own_effect_comes_first_and_the_islands_motion_after_it() {
+        // A digit pushed along the clock's line, on an island turned a lot:
+        // it has moved along the island's own line, not the screen's. The
+        // other way round the digit lands about 2.6 dip off.
+        let mut r = renderer();
+        for style in [Style::Notch, Style::Pill] {
+            let mut play = at_rest();
+            for fx in play.digits.iter_mut() {
+                fx.alpha = 0.0;
+            }
+            play.digits[3] = DigitFx { dx: 10.0, ..DigitFx::IDENTITY };
+            let (s, area) = clock_area_of(style, 190.0, 34.0, &play);
+            let upright = island_clock(&mut r, style, s, Some(&play), area).centre().0;
+            play.deform = Deform { swing_deg: 15.0, ..Deform::default() };
+            let tilted = island_clock(&mut r, style, s, Some(&play), area).centre().0;
+            let want = apply(&rigid(style, s, &play.deform), upright);
+            assert!(
+                (tilted.0 - want.0).abs() < 1.0 && (tilted.1 - want.1).abs() < 1.0,
+                "{style:?}: the digit is at {tilted:?}, the island's motion puts it at {want:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_clock_leaves_the_transform_as_it_found_it() {
+        let mut r = renderer();
+        let mut wakes = turned();
+        wakes.digits[1].dy = -3.0;
+        for play in [None, Some(turned()), Some(wakes)] {
+            let (s, area) = clock_area_of(Style::Pill, 190.0, 34.0, &turned());
+            let mut after = Matrix3x2 { M11: 0.0, M12: 0.0, M21: 0.0, M22: 0.0, M31: 0.0, M32: 0.0 };
+            painted(&mut r, (s.x + s.w + 24.0, s.y + s.h + 24.0), |r| {
+                r.paint_clock(Style::Pill, s, play.as_ref(), "14:32", area, 1.0);
+                unsafe { r.target.as_ref().unwrap().rt.GetTransform(&mut after) };
+            });
+            assert_eq!(after, Matrix3x2::identity(), "play {}", play.is_some());
         }
     }
 }
