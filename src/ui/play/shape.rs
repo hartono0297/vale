@@ -37,6 +37,10 @@ pub struct Deform {
     /// Notch along the screen edge); unlike `shift`, what sits on it (the
     /// clock) stays put: the mockup's `dx` (a sneeze's jolt).
     pub jolt: f32,
+    /// The island's height grows by this fraction (negative shrinks it): the
+    /// Notch's from the screen edge, which it stays welded to, the Pill's
+    /// about its centre. The mockup's `sy` (a hug's squeeze).
+    pub stretch: f32,
 }
 
 /// True when `d` leaves the island's geometry untouched; a dent with no depth
@@ -46,6 +50,7 @@ pub struct Deform {
 pub fn is_rest(style: Style, d: &Deform) -> bool {
     let pill = style == Style::Pill;
     d.squeeze == 0.0
+        && d.stretch == 0.0
         && d.swing_deg == 0.0
         && d.bulge_left == 0.0
         && d.jolt == 0.0
@@ -116,9 +121,12 @@ pub fn outline(style: Style, s: ShapeRect, d: &Deform) -> Vec<(f32, f32)> {
     let rigid = rigid(style, s, d);
     let pivot_x = s.x + s.w / 2.0;
     let keep = 1.0 - d.squeeze;
-    // The squeeze about the centre, then the island's own motion.
+    let (pivot_y, tall) = (if notch { s.y } else { s.y + s.h / 2.0 }, 1.0 + d.stretch);
+    // The squeeze about the centre, the stretch about the screen edge (the
+    // Notch) or the centre (the Pill), then the island's own motion.
     let place = |x: f32, y: f32| {
         let x = pivot_x + (x - pivot_x) * keep;
+        let y = pivot_y + (y - pivot_y) * tall;
         (
             x * rigid.M11 + y * rigid.M21 + rigid.M31,
             x * rigid.M12 + y * rigid.M22 + rigid.M32,
@@ -183,16 +191,17 @@ fn left_pull(s: ShapeRect, bulge: f32, x: f32, y: f32) -> f32 {
 
 /// The body's left and right side at the foot of the Notch's shoulders
 /// (`shoulder_depth` below the screen edge), where each shoulder meets it:
-/// moved by the squeeze, the left bulge, the jolt and the swing (a swung
-/// side crosses the foot's height elsewhere: on the side, its corner or the
-/// run above the screen edge, as `outline` draws them). The shoulders
+/// moved by the squeeze, the left bulge, the jolt, the swing and the
+/// stretch (a swung or stretched side crosses the foot's height elsewhere:
+/// on the side, its corner or the run above the screen edge, as `outline`
+/// draws them). The shoulders
 /// themselves never turn: they slide along the edge with it. Unswung, a dent
 /// is not followed; none reaches that high. The Pill has no shoulders.
 pub fn top_corners(s: ShapeRect, d: &Deform) -> (f32, f32) {
     let cx = s.x + s.w / 2.0;
     let foot = s.y + shoulder_depth(s);
     let keep = 1.0 - d.squeeze;
-    if d.swing_deg == 0.0 {
+    if d.swing_deg == 0.0 && d.stretch == 0.0 {
         let left = s.x + left_pull(s, d.bulge_left, s.x, foot);
         let right = s.x + s.w;
         return (cx + (left - cx) * keep + d.jolt, cx + (right - cx) * keep + d.jolt);
@@ -550,6 +559,62 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_stretch_grows_the_notch_from_the_screen_edge_and_the_pill_about_its_centre() {
+        // The mockup's `sy`: the Notch stays welded to the screen edge, the
+        // Pill grows on all sides; widths are left to the squeeze.
+        for style in [Style::Notch, Style::Pill] {
+            for (w, h) in SIZES {
+                let s = shape(style, w, h);
+                let case = format!("{style:?} {w}x{h}");
+                let rest = outline(style, s, &Deform::default());
+                assert_eq!(outline(style, s, &Deform { stretch: 0.0, ..Default::default() }), rest, "{case}");
+                let pivot = if style == Style::Notch { s.y } else { s.y + s.h / 2.0 };
+                for k in [0.072, -0.067] {
+                    let d = Deform { stretch: k, ..Default::default() };
+                    assert!(!is_rest(style, &d), "{case} {k}");
+                    assert_eq!(rigid(style, s, &d), windows_numerics::Matrix3x2::identity(), "{case} {k}");
+                    for (p, r) in outline(style, s, &d).iter().zip(&rest) {
+                        assert!(near(*p, (r.0, pivot + (r.1 - pivot) * (1.0 + k))), "{case} {k}: {r:?} went to {p:?}");
+                    }
+                    // With the squeeze: narrower about the middle, taller about the pivot.
+                    let both = Deform { stretch: k, squeeze: 0.03, ..Default::default() };
+                    let cx = s.x + s.w / 2.0;
+                    for (p, r) in outline(style, s, &both).iter().zip(&rest) {
+                        let want = (cx + (r.0 - cx) * 0.97, pivot + (r.1 - pivot) * (1.0 + k));
+                        assert!(near(*p, want), "{case} {k}: {r:?} went to {p:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_stretched_notchs_shoulders_meet_its_sides_at_their_foot() {
+        // Shrunk, the 160x28 Notch's foot leaves its straight side for the
+        // corner; the shoulder follows the side there, so no ledge.
+        for (w, h) in SIZES {
+            let s = shape(Style::Notch, w, h);
+            let foot = s.y + crate::ui::geometry::shoulder_depth(s);
+            for stretch in [-0.067, 0.072] {
+                for d in [
+                    Deform { stretch, ..Default::default() },
+                    Deform { stretch, squeeze: 0.03, jolt: 1.0, ..Default::default() },
+                ] {
+                    let pts = outline(Style::Notch, s, &d);
+                    let right: Vec<_> = pts.iter().rev().copied().collect();
+                    let (l, r) = top_corners(s, &d);
+                    let (side_l, side_r) = (left_side_at(&pts, foot), left_side_at(&right, foot));
+                    assert!((l - side_l).abs() < 1e-3 && (r - side_r).abs() < 1e-3,
+                        "{w}x{h} {d:?}: shoulders at {l}, {r}, sides at {side_l}, {side_r}");
+                }
+            }
+        }
+        let s = shape(Style::Notch, 160.0, 28.0);
+        let (l, _) = top_corners(s, &Deform { stretch: -0.067, ..Default::default() });
+        assert!(l > s.x + 0.05, "the premise: the foot is on the corner ({l})");
     }
 
     #[test]

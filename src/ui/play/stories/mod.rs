@@ -4,6 +4,7 @@
 
 pub mod bantal_angka;
 pub mod maling_angka;
+pub mod peluk_pulau;
 pub mod penasaran_jam;
 pub mod petak_umpet;
 pub mod piano_ekor;
@@ -35,6 +36,7 @@ pub fn ready(story: Story) -> bool {
             | Story::BantalAngka
             | Story::PianoEkor
             | Story::PenasaranJam
+            | Story::PelukPulau
     )
 }
 
@@ -555,6 +557,7 @@ pub fn shot(story: Story, stage: &Stage) -> Shot {
         Story::BantalAngka => bantal_angka::shot(stage),
         Story::PianoEkor => piano_ekor::shot(stage),
         Story::PenasaranJam => penasaran_jam::shot(stage),
+        Story::PelukPulau => peluk_pulau::shot(stage),
         _ => Shot::rest(stage.style, stage.shape),
     };
     debug_assert!(bare_heads_fit(story, &shot), "{story:?} draws a bare head");

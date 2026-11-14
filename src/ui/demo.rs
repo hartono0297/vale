@@ -106,6 +106,11 @@
 //!   empty) and `bata-play-penasaran-plop` (5.0 s, the plop: the ring over
 //!   the digit wobbling home, the octopus flushed and startled, its short
 //!   arms splayed).
+//! - The octopus's Peluk pulau story, frozen at its hug, always with the
+//!   octopus (its coat from `DI_OCTOPUS_COLOR`, `DI_CAT_ACCESSORY` as
+//!   above): `bata-play-peluk-hug` (4.15 s, the mantle under the island,
+//!   flushed and happy, four long arms round both ends and onto its face,
+//!   the island squeezed narrower and taller).
 //! - `bata-play-cat-body`: the seated cat (body, legs, paws, tail) beside
 //!   the island at rest, tail up and one paw lifted, always the cat (its coat
 //!   from `DI_CAT_COLOR`, `DI_CAT_ACCESSORY` as above).
@@ -560,7 +565,8 @@ enum CliDemo {
 /// What a play scene freezes (`bata-play-island`, `bata-play-swing`,
 /// `bata-play-digits`, the `bata-maling-angka-*`, `bata-play-syal-*` and
 /// `bata-play-petak-*`, `bata-play-bantal-*`, `bata-play-piano-*` and
-/// `bata-play-penasaran-*` moments, `bata-play-cat-body`,
+/// `bata-play-penasaran-*` moments, `bata-play-peluk-hug`,
+/// `bata-play-cat-body`,
 /// `bata-play-octopus-arms`, `bata-play-falk-open`, `bata-play-falk-hang`).
 #[derive(Clone, Copy, PartialEq)]
 enum DemoPlay {
@@ -586,6 +592,9 @@ enum DemoPlay {
     /// The octopus's Penasaran jam at this many seconds, always with the
     /// octopus.
     PenasaranJam(f32),
+    /// The octopus's Peluk pulau at this many seconds, always with the
+    /// octopus.
+    PelukPulau(f32),
     /// The seated cat beside the island at rest, tail up, one paw lifted,
     /// always the cat.
     CatBody,
@@ -1230,6 +1239,12 @@ fn demo_play(
             let stage = Stage { style, shape, beat, look, layout, minute };
             return PlayFrame::of(stories::shot(Story::PenasaranJam, &stage), beat);
         }
+        DemoPlay::PelukPulau(t) => {
+            let beat = Beat { t, ..beat };
+            let look = CatLook { mascot: Mascot::Octopus, ..cat };
+            let stage = Stage { style, shape, beat, look, layout, minute };
+            return PlayFrame::of(stories::shot(Story::PelukPulau, &stage), beat);
+        }
         DemoPlay::CatBody => {
             let beat = Beat { spread: 0.0, ..beat };
             let pose = CatPose {
@@ -1520,7 +1535,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 237] = [
+const SCENES: [Scene; 238] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -2219,6 +2234,11 @@ const SCENES: [Scene; 237] = [
     Scene {
         play: DemoPlay::PenasaranJam(5.0),
         ..bata("bata-play-penasaran-plop", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    // Peluk pulau, frozen: the hug.
+    Scene {
+        play: DemoPlay::PelukPulau(4.15),
+        ..bata("bata-play-peluk-hug", ShapeKind::Idle, View0::Idle, Expr::Idle)
     },
     Scene {
         play: DemoPlay::CatBody,
@@ -3366,7 +3386,7 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                         mascot: Mascot::Cat,
                         ..cat
                     },
-                    DemoPlay::OctopusArms | DemoPlay::PenasaranJam(_) => CatLook {
+                    DemoPlay::OctopusArms | DemoPlay::PenasaranJam(_) | DemoPlay::PelukPulau(_) => CatLook {
                         mascot: Mascot::Octopus,
                         ..cat
                     },

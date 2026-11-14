@@ -216,7 +216,7 @@ mod tests {
         // Derived, no per-mascot lists (P27): every story is ready but the
         // ones still to land, and the pool is the rest of what the mascot
         // owns, never a clock story with the clock off.
-        let later = [Story::PelukPulau, Story::Bungee, Story::Kelelawar, Story::TerbangKeliling];
+        let later = [Story::Bungee, Story::Kelelawar, Story::TerbangKeliling];
         for m in [Mascot::Cat, Mascot::Falk, Mascot::Octopus] {
             for clock_on in [true, false] {
                 let want: Vec<Story> = owned(m, clock_on).into_iter().filter(|s| !later.contains(s)).collect();
