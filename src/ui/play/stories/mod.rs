@@ -977,15 +977,77 @@ macro_rules! story_contract_tests {
                 }
             }
         }
+
+        #[test]
+        fn the_slot_heads_alpha_changes_by_a_frames_fade_at_most() {
+            use $crate::config::Style;
+            use $crate::ui::play::state::Beat;
+            use $crate::ui::play::stories::{slot_head_fades_by_frames, wind_down_frames};
+            for style in [Style::Notch, Style::Pill] {
+                for clock in contract_clocks() {
+                    // Playing, one 60 Hz frame at a time, from two phases.
+                    for phase in [0.0, 1.0 / 120.0] {
+                        let mut frames = Vec::new();
+                        let mut t = phase;
+                        while t <= $story.secs() {
+                            let beat = Beat { spread: 1.0, alpha: 1.0, t, cut_at: None };
+                            frames.push((t * 1000.0, beat, contract_shot(style, 190.0, 34.0, beat, clock)));
+                            t += 1.0 / 60.0;
+                        }
+                        if let Err(why) = slot_head_fades_by_frames(&frames) {
+                            panic!("{style:?} clock={clock} playing: {why}");
+                        }
+                    }
+                    // Wound down from a cut every 0.1 s.
+                    let mut cut = 0.05;
+                    while cut < $story.secs() {
+                        for phase in [0.0, 8.0] {
+                            let shots = wind_down_frames($story, cut, phase, |beat| contract_shot(style, 190.0, 34.0, beat, clock));
+                            if let Err(why) = slot_head_fades_by_frames(&shots) {
+                                panic!("{style:?} clock={clock} cut at {cut}: {why}");
+                            }
+                        }
+                        cut += 0.1;
+                    }
+                }
+            }
+        }
     };
 }
 #[cfg(test)]
 pub(crate) use story_contract_tests;
 
 /// The most a part's alpha, the halo or the slot head's alpha may change in
-/// one 60 Hz frame of a wind-down.
+/// one 60 Hz frame of a wind-down; the slot head's while it plays too.
 #[cfg(test)]
 pub(crate) const FRAME_FADE: f32 = 0.15;
+
+/// The slot head's alpha in `shot`: the app's head is whole, an empty slot
+/// has none to compare (a story empties it only under a figure that has
+/// taken its place whole).
+#[cfg(test)]
+fn slot_head_alpha(shot: &Shot) -> Option<f32> {
+    match shot.slot {
+        Slot::App => Some(1.0),
+        Slot::Story(m) => Some(m.alpha),
+        Slot::Empty => None,
+    }
+}
+
+/// The slot head's alpha changes by at most `FRAME_FADE` from one frame of
+/// `shots` to the next (a frame with the slot empty is skipped).
+#[cfg(test)]
+pub(crate) fn slot_head_fades_by_frames(shots: &[(f32, Beat, Shot)]) -> Result<(), String> {
+    for w in shots.windows(2) {
+        let ((_, _, a), (ms, beat, b)) = (&w[0], &w[1]);
+        if let (Some(u), Some(v)) = (slot_head_alpha(a), slot_head_alpha(b)) {
+            if (u - v).abs() > FRAME_FADE + 1e-4 {
+                return Err(format!("+{ms:.1} ms (t {}, alpha {}): the slot head from {u} to {v}", beat.t, beat.alpha));
+            }
+        }
+    }
+    Ok(())
+}
 
 /// The shots of a real wind-down cut `cut` seconds into `story`, one per
 /// 60 Hz frame from `phase` ms after the cut until past its end, the first

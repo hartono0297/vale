@@ -92,7 +92,11 @@ pub fn shot(stage: &Stage) -> Shot {
     let sy0 = kf(t, &[(0.7, 1.0, Lin), (1.0, 0.86, O), (1.15, 1.1, Io), (1.3, 1.0, Io), (6.95, 1.0, Lin), (7.15, 1.15, O), (7.3, 0.88, O), (7.6, 1.0, Io)]);
     let ly = kf(t, &[(0.4, 0.0, Lin), (0.6, 1.0, Io), (1.2, 1.0, Io), (7.3, 1.0, Lin), (7.6, 0.0, Io)]);
     let home = kept(a, 0.6, 1.0);
-    let (sink, dark) = (dep * home, dep.max(0.0) * kept(a, 0.3, 0.88));
+    // Its fade, eased in and out: over the sink, and back over the rise's
+    // first 0.25 s (whole by the overshoot). The sink's own ease would take
+    // it 0.16 in a frame, the rise's 0.22.
+    let fade = kf(t, &[(1.0, 0.0, Lin), (1.3, 1.0, Sio), (6.95, 1.0, Lin), (7.2, 0.0, Sio)]);
+    let (sink, dark) = (dep * home, fade * kept(a, 0.3, 0.88));
     let (sc, sq) = (1.0 - 0.45 * sink, lerp(1.0, sy0, home));
     out.slot = Slot::Story(MascotShot {
         dx: 2.0 * sink,

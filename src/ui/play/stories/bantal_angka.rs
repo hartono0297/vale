@@ -77,7 +77,10 @@ pub fn shot(stage: &Stage) -> Shot {
     // dived, then rises home.
     let away = kf(t, &[(0.45, 0.0, Lin), (0.8, 1.0, I), (8.05, 1.0, Lin), (8.45, 0.0, Sb)]);
     let duck = away * kept(a, 0.6, 1.0);
-    let dark = away.max(0.0) * kept(a, 0.3, 0.88);
+    // It fades back in over the same span, eased in and out: the rise's
+    // overshoot would bring it back 0.16 in a frame.
+    let fade = kf(t, &[(0.45, 0.0, Lin), (0.8, 1.0, I), (8.05, 1.0, Lin), (8.45, 0.0, Sio)]);
+    let dark = fade * kept(a, 0.3, 0.88);
     out.slot = Slot::Story(MascotShot {
         dy: 4.0 * duck,
         sx: 1.0 - 0.15 * duck,

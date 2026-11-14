@@ -130,6 +130,10 @@ pub fn shot(stage: &Stage) -> Shot {
     // sinks into the dark, darkening (fading with its halo) as it goes; it
     // comes back up with a bounce, still flushed, happy.
     let dep = kf(t, &[(1.3, 0.0, Lin), (1.6, 1.0, I), (6.45, 1.0, Io), (6.8, 0.0, Ob)]);
+    // Its fade, eased in and out: over the sink, and back over the rise's
+    // first 0.25 s (whole by the overshoot). The sink's own ease would take
+    // it 0.16 in a frame, the rise's 0.22.
+    let fade = kf(t, &[(1.3, 0.0, Lin), (1.6, 1.0, Sio), (6.45, 1.0, Lin), (6.7, 0.0, Sio)]);
     let squash = kf(
         t,
         &[(0.95, 1.0, Lin), (1.25, 0.86, O), (1.4, 1.1, Io), (1.6, 1.0, Io), (6.45, 1.0, Io), (6.65, 1.15, O), (6.82, 0.88, O), (7.1, 1.0, Io)],
@@ -147,7 +151,7 @@ pub fn shot(stage: &Stage) -> Shot {
         glance: (2.4 * glance * home, 0.0),
         blink: blinks(t, &[0.4]) > 0.25,
         flush: flush * home,
-        alpha: 1.0 - (dep * kept(a, 0.3, 0.88)).clamp(0.0, 1.0),
+        alpha: 1.0 - fade * kept(a, 0.3, 0.88),
         ..MascotShot::REST
     });
     if play <= 0.0 {
