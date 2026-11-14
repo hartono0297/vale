@@ -181,8 +181,8 @@ pub enum Draw {
 
 /// The head's ink on its 64-unit grid, whichever mascot, face but the typing
 /// laptop, crest (up to the startle's 1.75) and accessory: (left, top, right,
-/// bottom). Measured -6.6, -15.4 (the falk's startled crest), 70.6 (the
-/// octopus's arms), 64.6, plus 2.4 to 3.6 units for the pixels the measure
+/// bottom). Measured -6.6, -15.0 (the falk's startled crest), 70.6 (the
+/// octopus's arms), 64.6, plus 2.4 to 4 units for the pixels the measure
 /// rounds to (`a_head_part_stays_inside_its_bounds` measures it).
 pub(crate) const HEAD_INK: (f32, f32, f32, f32) = (-9.0, -19.0, 73.0, 68.0);
 

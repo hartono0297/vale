@@ -6237,8 +6237,9 @@ mod tests {
             }
         }
         // Upright, three times the slot's size so a pixel is under one grid
-        // unit, every face but the typing laptop: the ink's extremes on the
-        // grid (each pixel's far edge), against `HEAD_INK` less its margin.
+        // unit, every face but the typing laptop, the crest at rest and
+        // startled (1.75): the ink's extremes on the grid (each pixel's far
+        // edge), against `HEAD_INK` less its margin.
         use crate::ui::play::stories::HEAD_INK;
         let unit = 3.0 * crate::ui::geometry::ROBOT_COMPACT / crate::ui::robot::GRID;
         let at = (200.0, 100.0);
@@ -6252,7 +6253,8 @@ mod tests {
                     })
                 };
                 let without = draw(&mut r, play_frame(1.0));
-                for expr in Expr::ALL.into_iter().filter(|e| *e != Expr::Typing) {
+                let faces = Expr::ALL.into_iter().filter(|e| *e != Expr::Typing);
+                for (expr, crest) in faces.flat_map(|e| [(e, 1.0), (e, 1.75)]) {
                     let shot = MascotShot {
                         dx: 0.0,
                         dy: 0.0,
@@ -6260,7 +6262,7 @@ mod tests {
                         sx: 3.0,
                         sy: 3.0,
                         expr,
-                        crest: CrestPose { rot_deg: 10.0, scale: 1.0 },
+                        crest: CrestPose { rot_deg: 10.0, scale: crest },
                         glance: (2.4, 0.66),
                         blink: false,
                         beak_open: true,

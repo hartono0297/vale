@@ -6,25 +6,30 @@
 //! crest pose, coat and accessory come along; the mockup's `falkHead` only
 //! shows where it sits.
 //!
+//! Units: the body keeps the mockup's numbers, at its 0.4 dip per grid
+//! unit, so the port stays verbatim; the head is the app's at the slot's
+//! 26 / 64 (`ROBOT_COMPACT / GRID`), so it matches the slot head exactly
+//! and is 1.6 % larger against the body than in the mockup.
+//!
 //! The colours are the head's: the body, and the wing's bone, are
-//! `falk_ink(coat).body`; every other tone is that body moved, channel by
-//! channel, toward black or white by the fraction the mockup's Lutino tone
-//! (its `FK` and `WC` tables) moves from the Lutino body (`tone`). So
-//! Lutino is the mockup's own table, and Grey and WhiteFace, which share the
-//! grey body, share one wing:
+//! `falk_ink(coat).body`. Lutino is the mockup's own table (its `FK` and
+//! `WC`). Every other coat keeps its body's hue: each tone is the body moved
+//! toward black or white as far, in lightness, as the Lutino tone moves from
+//! the Lutino body (`tone`). Grey and WhiteFace share the grey body, so they
+//! share one wing:
 //!
 //! | tone  | Lutino (mockup) | Grey, WhiteFace |
 //! |-------|-----------------|-----------------|
 //! | body, edge | F1E4A2     | 9A959C          |
-//! | belly | F8F0CE          | CDC4CB          |
-//! | tail  | EFE3AA          | 9994A5          |
-//! | rim   | DCC67F          | 8D817A          |
-//! | under | E2CE86          | 908781          |
-//! | prim  | F8F1D2          | CDC8CF          |
-//! | prim2 | F4EAC2          | B0ADBE          |
-//! | sec   | F3E7B0          | A8A1AB          |
-//! | sec2  | F0E2A4          | 99949E          |
-//! | cov   | EEDC93          | 98908E          |
+//! | belly | F8F0CE          | CAC8CB          |
+//! | tail  | EFE3AA          | A09BA2          |
+//! | rim   | DCC67F          | 858086          |
+//! | under | E2CE86          | 8A858B          |
+//! | prim  | F8F1D2          | CECBCF          |
+//! | prim2 | F4EAC2          | BBB8BC          |
+//! | sec   | F3E7B0          | A9A5AB          |
+//! | sec2  | F0E2A4          | 9B969D          |
+//! | cov   | EEDC93          | 938E95          |
 //! | foot  | C99289          | C99289          |
 //!
 //! The feet are the mockup's `FK.foot`, a shade of the beak, and the beak
@@ -32,7 +37,7 @@
 
 use crate::theme::FalkColor;
 use crate::ui::geometry::ROBOT_COMPACT;
-use crate::ui::mascot::falk_ink;
+use crate::ui::mascot::{falk_ink, mix};
 use crate::ui::play::art::tube::{LimbStyle, catmull_rom, limb, smooth};
 use crate::ui::play::stories::{Draw, HEAD_PIVOT, MascotShot};
 use crate::ui::robot::{GRID, Seg};
@@ -128,7 +133,7 @@ pub struct FalkCoat {
 
 pub fn falk_coat(coat: FalkColor) -> FalkCoat {
     let body = falk_ink(coat).body;
-    let t = |lutino| tone(body, lutino);
+    let t = |lutino| if coat == FalkColor::Lutino { lutino } else { tone(body, lutino) };
     FalkCoat {
         body,
         belly: t(BELLY),
@@ -145,17 +150,18 @@ pub fn falk_coat(coat: FalkColor) -> FalkCoat {
     }
 }
 
-/// `body` moved, channel by channel, toward black or white by the fraction
-/// `lutino` moves from `LUTINO_BODY`: the Lutino body gives the mockup's
-/// own tones back exactly.
+/// `body` moved toward black or white, keeping its hue, as far in lightness
+/// as `lutino` moves from `LUTINO_BODY`: darker, the body at the same share
+/// of its lightness; lighter, the same share of the way to white.
 fn tone(body: u32, lutino: u32) -> u32 {
-    let ch = |sh: u32| {
-        let at = |rgb: u32| ((rgb >> sh) & 0xFF) as f32;
-        let (b, l, v) = (at(body), at(LUTINO_BODY), at(lutino));
-        let x = if v <= l { b * v / l } else { b + (255.0 - b) * (v - l) / (255.0 - l) };
-        (x.round().min(255.0) as u32) << sh
-    };
-    ch(16) | ch(8) | ch(0)
+    let (lb, lt) = (lightness(LUTINO_BODY), lightness(lutino));
+    if lt <= lb { mix(0, body, lt / lb) } else { mix(body, 0xFFFFFF, (lt - lb) / (255.0 - lb)) }
+}
+
+/// HSL lightness, 0 to 255: halfway between the largest and smallest channel.
+fn lightness(rgb: u32) -> f32 {
+    let c = [rgb >> 16 & 0xFF, rgb >> 8 & 0xFF, rgb & 0xFF];
+    (c.iter().max().unwrap_or(&0) + c.iter().min().unwrap_or(&0)) as f32 / 2.0
 }
 
 /// The mockup's `plume`: one soft feather from `root`, heading `deg`, `len`
@@ -578,7 +584,87 @@ mod tests {
         // Grey and WhiteFace share the grey body, so their wings are one.
         let g = falk_coat(FalkColor::Grey);
         assert_eq!(g, falk_coat(FalkColor::WhiteFace));
-        assert_eq!((g.prim, g.rim, g.belly), (0xCDC8CF, 0x8D817A, 0xCDC4CB));
+        assert_eq!((g.prim, g.rim, g.belly), (0xCECBCF, 0x858086, 0xCAC8CB), "the table in the module's notes");
+        // Their tones keep the body's hue: each is the body moved toward
+        // black or white as far, in lightness, as the Lutino tone moves from
+        // the Lutino body, so its channel spread is the body's scaled by that
+        // move, with no cast of Lutino's yellow.
+        let light = |rgb: u32| {
+            let c = channels(rgb);
+            (c.iter().max().unwrap() + c.iter().min().unwrap()) as f32 / 2.0
+        };
+        let spread = |rgb: u32| {
+            let c = channels(rgb);
+            (c.iter().max().unwrap() - c.iter().min().unwrap()) as f32
+        };
+        let pairs = [
+            (g.belly, l.belly),
+            (g.tail, l.tail),
+            (g.rim, l.rim),
+            (g.under, l.under),
+            (g.prim, l.prim),
+            (g.prim2, l.prim2),
+            (g.sec, l.sec),
+            (g.sec2, l.sec2),
+            (g.cov, l.cov),
+        ];
+        let moved = |body: f32, t: f32| if t <= body { t / body } else { (t - body) / (255.0 - body) };
+        for (t, lt) in pairs {
+            let (lb, lg) = (light(g.body), light(t));
+            assert_eq!(lg <= lb, light(lt) <= light(l.body), "{t:06X}: the same way as {lt:06X}");
+            assert!((moved(lb, lg) - moved(light(l.body), light(lt))).abs() < 0.02, "{t:06X}: as far as {lt:06X}");
+            let k = if lg <= lb { lg / lb } else { (255.0 - lg) / (255.0 - lb) };
+            assert!((spread(t) - spread(g.body) * k).abs() <= 1.5, "{t:06X}: a cast ({} vs {})", spread(t), spread(g.body) * k);
+        }
+    }
+
+    /// A feather's root, length (root to its round tip) and width (across
+    /// its tip's two ends); its base is half as wide.
+    fn size(p: &[Seg]) -> ((f32, f32), f32, f32) {
+        let ((Seg::Quad(.., ax, ay), Seg::Cubic(.., bx, by)), (Seg::Move(mx, my), Seg::Quad(.., nx, ny))) = ((p[1], p[3]), (p[0], p[4])) else {
+            panic!("not a feather: {p:?}");
+        };
+        let (root, tip) = root_tip(p);
+        let w = (ax - bx).hypot(ay - by);
+        assert!(((mx - nx).hypot(my - ny) - w / 2.0).abs() < 1e-3, "{p:?}");
+        (root, (tip.0 - root.0).hypot(tip.1 - root.1), w)
+    }
+
+    #[test]
+    fn the_feathers_are_the_mockups_size_and_the_hand_is_before() {
+        let c = falk_coat(FalkColor::Lutino);
+        let (now, then) = (WingPose::SPREAD, WingPose::mix(WingPose::SPREAD, WingPose::FOLD, 0.4));
+        let d = wing(1, SH, now, then, FalkColor::Lutino);
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-3;
+        // The wrist where the arm puts it now; the wing's tip where the hand
+        // was a moment before: `before.arm + before.hand`, `before.ext` long.
+        let wrist = toward(SH, now.arm, lerp(5.0, 10.5, now.ext));
+        let tip = toward(wrist, then.arm + then.hand, lerp(3.5, 8.5, then.ext));
+        // The primaries root from the wrist toward that tip (painted outer
+        // first), 10.5 to 13.6 long and 5 to 4.4 wide.
+        for (k, p) in fills(&d, &[c.prim, c.prim2]).iter().enumerate() {
+            let u = (4 - k) as f32 / 4.0;
+            let (root, len, w) = size(p);
+            let want = lerp2(wrist, tip, u * 0.85);
+            assert!(near(root.0, want.0) && near(root.1, want.1), "{k}: {root:?} {want:?}");
+            assert!(near(len, lerp(10.5, 13.6, u)) && near(w, lerp(5.0, 4.4, u)), "{k}: {len} {w}");
+        }
+        for p in fills(&d, &[c.sec, c.sec2]) {
+            let (_, len, w) = size(p);
+            assert!(near(len, 9.0) && near(w, 5.2), "{len} {w}");
+        }
+        for p in fills(&d, &[c.cov]) {
+            let (_, len, w) = size(p);
+            assert!(near(len, 6.2) && near(w, 5.6), "{len} {w}");
+        }
+        // Each rim is its feather from the same root, 0.5 longer, 0.8 wider.
+        for pair in d[2..28].chunks(2) {
+            let [Draw::Fill { path: rim, .. }, Draw::Fill { path, .. }] = pair else {
+                panic!("{pair:?}");
+            };
+            let ((r0, l0, w0), (r1, l1, w1)) = (size(rim), size(path));
+            assert!(near(r0.0, r1.0) && near(r0.1, r1.1) && near(l0 - l1, 0.5) && near(w0 - w1, 0.8), "{rim:?} {path:?}");
+        }
     }
 
     #[test]
