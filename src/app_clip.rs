@@ -228,6 +228,7 @@ pub(super) fn clip_view<'a>(
     query: &'a str,
     selection: (usize, usize),
     focused: bool,
+    armed: bool,
 ) -> ClipView<'a> {
     let items = shown(&clip.history, query);
     let selected = effective(&items, clip.selected);
@@ -241,7 +242,15 @@ pub(super) fn clip_view<'a>(
         selected,
         scroll: clip.scroll,
         now: Local::now().naive_local(),
+        clearable: clip_clearable(enabled, query, clip.history.items()),
+        armed,
     }
+}
+
+/// "Hapus semua" shows with history on, no search typed and at least one
+/// entry that is not pinned (pinned ones are kept).
+fn clip_clearable(enabled: bool, query: &str, items: &[Clip]) -> bool {
+    enabled && query.is_empty() && items.iter().any(|c| !c.pinned)
 }
 
 /// The "Disalin" notice for `clip`: its one-line preview.
@@ -1265,6 +1274,19 @@ mod tests {
         let only_a = shown(&h, "a");
         assert_eq!(effective(&only_a, Some(ids[0])), Some(ids[2]));
         assert_eq!(effective(&[], Some(1)), None);
+    }
+
+    #[test]
+    fn clip_clearable_needs_history_on_no_search_and_an_unpinned_entry() {
+        let mut h = History::new(50);
+        assert!(!clip_clearable(true, "", h.items()), "empty history");
+        ingest(&mut h, text("a"), 1);
+        assert!(clip_clearable(true, "", h.items()));
+        assert!(!clip_clearable(false, "", h.items()), "history off");
+        assert!(!clip_clearable(true, "a", h.items()), "searching");
+        let id = h.items()[0].id;
+        h.set_pinned(id, true);
+        assert!(!clip_clearable(true, "", h.items()), "only pinned left");
     }
 
     #[test]

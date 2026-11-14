@@ -7539,6 +7539,7 @@ impl App {
             &query,
             search_sel,
             clip_focused,
+            state.clip_armed(),
         );
         let notif =
             notif_page::notif_view(&self.notif, self.config.notifications, state.notif_armed());
