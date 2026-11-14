@@ -65,7 +65,7 @@ use super::geometry::{
 use super::icons::{Icon, IconSet};
 use super::motion::{StripFrame, Transit};
 use super::panel_layout::Region;
-use super::play::shape::{Deform, OUTLINE_PTS, outline};
+use super::play::shape::{Deform, outline};
 use super::play::state::{Beat, spread_offsets};
 use super::robot::{Expr, EyesPose, Pose, RobotPainter, eyes_area, eyes_centre, eyes_offset_in};
 use super::shelf_motion::ShelfMotion;
@@ -311,6 +311,9 @@ pub struct PlayFrame {
     pub deform: Deform,
     pub beat: Beat,
 }
+
+/// How far a played Notch's shoulder runs into the body (dip).
+const SHOULDER_TUCK: f32 = 3.0;
 
 /// The play this frame draws. Only the idle island plays, and never the one
 /// shrunk to the eyes; any other frame keeps the island's own shape.
@@ -1220,7 +1223,7 @@ impl Renderer {
         // Taken: it is only set again once this frame is on the screen, so a
         // failed frame leaves the next one a full redraw.
         let prev = self.last.take();
-        let cur = self.signature(win, style, shape, frame, opacity);
+        let cur = self.signature(win.size(), win.origin(), style, shape, frame, opacity);
         let mut plan = dirty::plan(prev.as_ref(), &cur);
         // A lost target is rebuilt once; a second failure is reported.
         if let Err(error) = self.paint(style, shape, frame, opacity, plan) {
@@ -1266,14 +1269,13 @@ impl Renderer {
     /// What this frame is, for `dirty::plan`.
     fn signature(
         &self,
-        win: &IslandWindow,
+        size: SIZE,
+        origin: POINT,
         style: Style,
         shape: ShapeRect,
         frame: &Frame,
         opacity: f32,
     ) -> Drawn {
-        let size = win.size();
-        let origin = win.origin();
         let kind = ViewKind::of(frame.view);
         let t = &frame.transit;
         // What the renderer can see for itself: the panel, and any transition
@@ -2297,10 +2299,7 @@ impl Renderer {
         // anything is pushed, so a failure here leaves nothing to undo.
         let play = playing(frame.play.as_ref(), view, frame.eyes);
         let played = match play {
-            Some(p) => {
-                let pts = outline(style, shape, &p.deform);
-                Some(self.island_geometry(style, shape, Some(&pts))?)
-            }
+            Some(p) => Some(self.island_geometry(style, shape, Some(&p.deform))?),
             None => None,
         };
         let target = self.target.as_ref().expect("target ensured by paint");
@@ -2325,10 +2324,11 @@ impl Renderer {
                 self.palette.surface,
                 frame.fill_alpha.clamp(0.0, 1.0),
             ));
-            // A play paints in this order, and nothing counts on the island
-            // being opaque (its fill can be see-through): what is behind it
-            // is clipped to `outside_island`, what reads as inside the dark
-            // to the island's own geometry, and the fill comes last, here.
+            // The fill goes down first and the content over it, play or not.
+            // Art behind the island or inside it (a story's, later) must not
+            // lean on this fill being opaque, since it can be see-through:
+            // behind is clipped to `outside_island`, inside to the island's
+            // own geometry.
             match (&played, style) {
                 (Some(island), _) => target.rt.FillGeometry(island, &target.brush, None),
                 (None, Style::Pill) => target.rt.FillRoundedRectangle(
@@ -3545,88 +3545,106 @@ impl Renderer {
         }
     }
 
-    /// A play's outline (`play::outline`) as a closed path: its points joined
-    /// by straight lines, the last back to the first. A swinging Notch has
-    /// two more points than a resting one (its extension above the screen
-    /// edge), so the list's length is not fixed.
+    /// A play's island as a closed path: `pts` (`play::outline`) joined by
+    /// straight lines, the last back to the first. A swinging Notch has two
+    /// more points than a resting one (its extension above the screen edge),
+    /// so the list's length is not fixed.
     ///
-    /// The Notch gets the shoulders `notch_path` draws, fixed to the body's
-    /// top corners wherever a squeeze or a swing puts them, so that an island
-    /// at rest is the same shape as the resting one and nothing pops when a
-    /// play starts or ends.
-    fn played_path(&self, style: Style, s: ShapeRect, pts: &[(f32, f32)]) -> Result<ID2D1PathGeometry> {
+    /// The Notch is that body plus the two shoulders `notch_path` draws. They
+    /// join the body to the screen edge, which never swings: they sit on the
+    /// edge, follow the squeeze, and ignore the swing. At rest the union is
+    /// the resting island, so nothing pops when a play starts or ends.
+    fn played_path(
+        &self,
+        style: Style,
+        s: ShapeRect,
+        squeeze: f32,
+        pts: &[(f32, f32)],
+    ) -> Result<ID2D1PathGeometry> {
         let at = |&(x, y): &(f32, f32)| Vector2::new(x, y);
-        let n = pts.len();
-        let ext = usize::from(n > OUTLINE_PTS);
-        let shoulder = shoulder_depth(s);
-        unsafe {
+        let body = unsafe {
             let path = self.d2d.CreatePathGeometry()?;
             let sink = path.Open()?;
-            if style == Style::Notch && n >= 2 * ext + 4 && shoulder > 0.0 {
-                // The sides' downward directions: straight down, or along the
-                // extension that leads into each top corner when it swings.
-                let down = |from: (f32, f32), to: (f32, f32)| {
-                    let (dx, dy) = (to.0 - from.0, to.1 - from.1);
-                    let len = dx.hypot(dy).max(f32::EPSILON);
-                    (dx / len, dy / len)
-                };
-                let (corner_l, corner_r) = (pts[ext], pts[n - 1 - ext]);
-                let (down_l, down_r) = if ext == 1 {
-                    (down(pts[0], pts[1]), down(pts[n - 1], pts[n - 2]))
-                } else {
-                    ((0.0, 1.0), (0.0, 1.0))
-                };
-                // Out from the body: left of the left side, right of the right.
-                let step = |c: (f32, f32), d: (f32, f32), out: (f32, f32), along: f32, away: f32| {
-                    Vector2::new(c.0 + d.0 * along + out.0 * away, c.1 + d.1 * along + out.1 * away)
-                };
-                let (out_l, out_r) = ((-down_l.1, down_l.0), (down_r.1, -down_r.0));
-                // The points the shoulders replace: those within a shoulder of
-                // the corner, down the side.
-                let far = |c: (f32, f32), p: &(f32, f32)| (p.0 - c.0).hypot(p.1 - c.1) >= shoulder;
-                let first = (ext..n).find(|&i| far(corner_l, &pts[i])).unwrap_or(n);
-                let last = (0..n - ext).rev().find(|&i| far(corner_r, &pts[i])).unwrap_or(0);
-                let arc = |to: Vector2| D2D1_ARC_SEGMENT {
-                    point: to,
-                    size: D2D_SIZE_F { width: shoulder, height: shoulder },
-                    rotationAngle: 0.0,
-                    sweepDirection: D2D1_SWEEP_DIRECTION_CLOCKWISE,
-                    arcSize: D2D1_ARC_SIZE_SMALL,
-                };
-                sink.BeginFigure(step(corner_l, down_l, out_l, 0.0, shoulder), D2D1_FIGURE_BEGIN_FILLED);
-                sink.AddArc(&arc(step(corner_l, down_l, out_l, shoulder, 0.0)));
-                if first <= last {
-                    let mid: Vec<Vector2> = pts[first..=last].iter().map(at).collect();
-                    sink.AddLines(&mid);
-                }
-                sink.AddLine(step(corner_r, down_r, out_r, shoulder, 0.0));
-                sink.AddArc(&arc(step(corner_r, down_r, out_r, 0.0, shoulder)));
-                if ext == 1 {
-                    sink.AddLine(at(&pts[n - 1]));
-                    sink.AddLine(at(&pts[0]));
-                }
-                sink.EndFigure(D2D1_FIGURE_END_CLOSED);
-            } else if let Some((first, rest)) = pts.split_first() {
+            if let Some((first, rest)) = pts.split_first() {
                 let rest: Vec<Vector2> = rest.iter().map(at).collect();
                 sink.BeginFigure(at(first), D2D1_FIGURE_BEGIN_FILLED);
                 sink.AddLines(&rest);
                 sink.EndFigure(D2D1_FIGURE_END_CLOSED);
             }
             sink.Close()?;
+            path
+        };
+        let shoulder = shoulder_depth(s);
+        if style != Style::Notch || shoulder <= 0.0 {
+            return Ok(body);
+        }
+        // The body's top corners before the swing, the squeeze having moved them.
+        let half = s.w / 2.0 * (1.0 - squeeze);
+        let (left, right) = (s.x + s.w / 2.0 - half, s.x + s.w / 2.0 + half);
+        let left = self.shoulder_path(s.y, left, -1.0, shoulder)?;
+        let right = self.shoulder_path(s.y, right, 1.0, shoulder)?;
+        self.union(&self.union(&body, &left)?, &right)
+    }
+
+    /// One shoulder of the Notch: the fillet from the screen edge (`y`) at
+    /// `out` x `shoulder` beside the body's top corner `x` down to the side
+    /// (`out` is -1 on the left, 1 on the right), built as `notch_path`
+    /// builds it. It runs `SHOULDER_TUCK` into the body, so a swinging body
+    /// whose side leans off `x` leaves no sliver between them.
+    fn shoulder_path(&self, y: f32, x: f32, out: f32, shoulder: f32) -> Result<ID2D1PathGeometry> {
+        let tucked = x - out * SHOULDER_TUCK;
+        let arc = |to: Vector2| D2D1_ARC_SEGMENT {
+            point: to,
+            size: D2D_SIZE_F { width: shoulder, height: shoulder },
+            rotationAngle: 0.0,
+            sweepDirection: D2D1_SWEEP_DIRECTION_CLOCKWISE,
+            arcSize: D2D1_ARC_SIZE_SMALL,
+        };
+        unsafe {
+            let path = self.d2d.CreatePathGeometry()?;
+            let sink = path.Open()?;
+            if out < 0.0 {
+                sink.BeginFigure(Vector2::new(x - shoulder, y), D2D1_FIGURE_BEGIN_FILLED);
+                sink.AddArc(&arc(Vector2::new(x, y + shoulder)));
+                sink.AddLine(Vector2::new(tucked, y + shoulder));
+                sink.AddLine(Vector2::new(tucked, y));
+            } else {
+                sink.BeginFigure(Vector2::new(tucked, y), D2D1_FIGURE_BEGIN_FILLED);
+                sink.AddLine(Vector2::new(tucked, y + shoulder));
+                sink.AddLine(Vector2::new(x, y + shoulder));
+                sink.AddArc(&arc(Vector2::new(x + shoulder, y)));
+            }
+            sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+            sink.Close()?;
             Ok(path)
         }
     }
 
-    /// The island as a geometry: the play's outline when `pts` is given,
-    /// the resting shape otherwise.
+    /// The area `a` and `b` cover together, as one path.
+    fn union(&self, a: &ID2D1PathGeometry, b: &ID2D1PathGeometry) -> Result<ID2D1PathGeometry> {
+        unsafe {
+            let path = self.d2d.CreatePathGeometry()?;
+            let sink = path.Open()?;
+            // Fine enough to keep the shoulders' arcs as round as the resting
+            // island's.
+            a.CombineWithGeometry(b, D2D1_COMBINE_MODE_UNION, None, 0.02, &sink)?;
+            sink.Close()?;
+            Ok(path)
+        }
+    }
+
+    /// The island as a geometry: a play's deformed island when `play` is
+    /// given, the resting shape otherwise.
     fn island_geometry(
         &self,
         style: Style,
         s: ShapeRect,
-        pts: Option<&[(f32, f32)]>,
+        play: Option<&Deform>,
     ) -> Result<ID2D1Geometry> {
-        match pts {
-            Some(pts) => self.played_path(style, s, pts)?.cast(),
+        match play {
+            Some(d) => self
+                .played_path(style, s, d.squeeze, &outline(style, s, d))?
+                .cast(),
             None => self.shape_geometry(style, s),
         }
     }
@@ -3639,7 +3657,7 @@ impl Renderer {
         &self,
         style: Style,
         s: ShapeRect,
-        pts: Option<&[(f32, f32)]>,
+        play: Option<&Deform>,
     ) -> Result<ID2D1Geometry> {
         let size = self.target.as_ref().expect("target ensured by paint").size;
         let window = Rect {
@@ -3648,7 +3666,7 @@ impl Renderer {
             w: size.cx as f32 / self.scale,
             h: size.cy as f32 / self.scale,
         };
-        self.cut_out(window, &self.island_geometry(style, s, pts)?)
+        self.cut_out(window, &self.island_geometry(style, s, play)?)
     }
 
     /// `window` with `island` cut out: the alternate fill rule counts the
@@ -4531,8 +4549,7 @@ mod tests {
             for (w, h) in SIZES {
                 let s = shape(style, w, h);
                 let cx = s.x + s.w / 2.0;
-                let pts = outline(style, s, &dented());
-                let played = r.island_geometry(style, s, Some(&pts)).unwrap();
+                let played = r.island_geometry(style, s, Some(&dented())).unwrap();
                 let rest = r.island_geometry(style, s, None).unwrap();
                 let case = format!("{style:?} {w}x{h}");
                 // Just above the lip's middle: inside the resting island,
@@ -4562,14 +4579,13 @@ mod tests {
         // Every play starts and ends at rest, and the renderer swaps one path
         // builder for the other at those moments: any area on which they
         // differ is a pop. Compared on a grid across the island and the
-        // Notch's shoulders; a point within a hair of either outline is left
-        // out, since the played one is a polyline.
+        // Notch's shoulders; a point within a tenth of a dip of either
+        // outline is left out (the played one is a polyline, 0.04 off at most).
         let r = renderer();
         for style in [Style::Notch, Style::Pill] {
             for (w, h) in [(160.0, 28.0), (190.0, 34.0), (300.0, 44.0)] {
                 let s = shape(style, w, h);
-                let pts = outline(style, s, &Deform::default());
-                let played = r.island_geometry(style, s, Some(&pts)).unwrap();
+                let played = r.island_geometry(style, s, Some(&Deform::default())).unwrap();
                 let rest = r.island_geometry(style, s, None).unwrap();
                 let reach = crate::ui::geometry::shoulder_depth(s) + 4.0;
                 let (mut seen, mut wrong) = (0, Vec::new());
@@ -4578,19 +4594,76 @@ mod tests {
                     let mut x = s.x - reach + 0.07;
                     while x < s.x + s.w + reach {
                         let p = Vector2::new(x, y);
-                        if !near_edge(&rest, p, 0.5) && !near_edge(&played, p, 0.5) {
+                        if !near_edge(&rest, p, 0.2) && !near_edge(&played, p, 0.2) {
                             seen += 1;
                             if contains(&rest, x, y) != contains(&played, x, y) {
                                 wrong.push((x, y));
                             }
                         }
-                        x += 0.5;
+                        x += 0.4;
                     }
-                    y += 0.5;
+                    y += 0.4;
                 }
                 let case = format!("{style:?} {w}x{h}");
                 assert!(seen > 1000, "{case}: only {seen} points compared");
                 assert!(wrong.is_empty(), "{case}: {} of {seen} differ, first {:?}", wrong.len(), &wrong[..wrong.len().min(5)]);
+            }
+        }
+    }
+
+    #[test]
+    fn a_swinging_notch_grows_no_wedge_on_its_low_side() {
+        // The screen edge does not swing, so neither do the shoulders joining
+        // the body to it. Joined to the rotated body instead, the low corner
+        // (below the edge by w/2 * sin(swing)) drew a tooth outside the side
+        // line, inside the triangle (extension point, shoulder point, corner).
+        let r = renderer();
+        for (w, h) in [(190.0, 34.0), (300.0, 44.0)] {
+            for swing_deg in [-12.0, -3.4, 3.4, 12.0] {
+                let s = shape(Style::Notch, w, h);
+                let sh = crate::ui::geometry::shoulder_depth(s);
+                let deform = Deform { swing_deg, ..Deform::default() };
+                let pts = outline(Style::Notch, s, &deform);
+                let n = pts.len();
+                let island = r.island_geometry(Style::Notch, s, Some(&deform)).unwrap();
+                // Only the body, for telling it from a wedge.
+                let body = r.played_path(Style::Pill, s, 0.0, &pts).unwrap().cast().unwrap();
+                let unit = |from: (f32, f32), to: (f32, f32)| {
+                    let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+                    let len = dx.hypot(dy);
+                    (dx / len, dy / len)
+                };
+                let (down_l, down_r) = (unit(pts[0], pts[1]), unit(pts[n - 1], pts[n - 2]));
+                // The corner that swung below the edge.
+                let (corner, ext, out, edge, side) = if pts[1].1 > pts[n - 2].1 {
+                    (pts[1], pts[0], (-down_l.1, down_l.0), s.x, -1.0)
+                } else {
+                    (pts[n - 2], pts[n - 1], (down_r.1, -down_r.0), s.x + s.w, 1.0)
+                };
+                let outer = (corner.0 + out.0 * sh, corner.1 + out.1 * sh);
+                let mut seen = 0;
+                for i in 1..9 {
+                    for j in 1..9 {
+                        let (a, b) = (i as f32 / 10.0, j as f32 / 10.0);
+                        if a + b > 0.9 {
+                            continue;
+                        }
+                        let x = corner.0 + a * (outer.0 - corner.0) + b * (ext.0 - corner.0);
+                        let y = corner.1 + a * (outer.1 - corner.1) + b * (ext.1 - corner.1);
+                        // Below the edge, outside the side line, and neither under
+                        // the shoulder at rest (outside the circle of radius sh
+                        // about (edge -+ sh, sh), near it too) nor in the body.
+                        let (cx, cy) = (edge + side * sh, s.y + sh);
+                        let away = (x - edge) * side;
+                        let in_fillet = away <= sh && y <= s.y + sh && (x - cx).hypot(y - cy) >= sh - 0.5;
+                        if y < 1.0 || away < 0.3 || in_fillet || contains(&body, x, y) {
+                            continue;
+                        }
+                        seen += 1;
+                        assert!(!contains(&island, x, y), "{w}x{h} swing {swing_deg}: wedge at ({x:.1}, {y:.1})");
+                    }
+                }
+                assert!(seen > 5, "{w}x{h} swing {swing_deg}: only {seen} points in the wedge");
             }
         }
     }
@@ -4602,7 +4675,7 @@ mod tests {
         let sh = crate::ui::geometry::shoulder_depth(s);
         let deform = Deform { squeeze: 0.1, ..Deform::default() };
         let pts = outline(Style::Notch, s, &deform);
-        let played = r.island_geometry(Style::Notch, s, Some(&pts)).unwrap();
+        let played = r.island_geometry(Style::Notch, s, Some(&deform)).unwrap();
         let (left, right) = (pts[0].0, pts[pts.len() - 1].0);
         assert!(left > s.x + 5.0, "the premise: the body is squeezed in");
         for (edge, out) in [(left, -1.0), (right, 1.0)] {
@@ -4622,34 +4695,17 @@ mod tests {
         let r = renderer();
         for swing_deg in [-12.0, 12.0] {
             let s = shape(Style::Notch, 190.0, 34.0);
-            let pts = outline(Style::Notch, s, &Deform { swing_deg, ..Deform::default() });
+            let deform = Deform { swing_deg, ..Deform::default() };
+            let pts = outline(Style::Notch, s, &deform);
             assert!(pts.len() > crate::ui::play::shape::OUTLINE_PTS, "the premise");
-            let played = r.island_geometry(Style::Notch, s, Some(&pts)).unwrap();
+            let played = r.island_geometry(Style::Notch, s, Some(&deform)).unwrap();
             for x in [s.x + 3.0, s.x + s.w / 2.0, s.x + s.w - 3.0] {
                 assert!(contains(&played, x, 0.5), "swing {swing_deg}, x {x}");
             }
-            // The shoulders swing with the body: the same flare at each
-            // rotated top corner, as the squeezed one above.
-            let n = pts.len();
-            let unit = |from: (f32, f32), to: (f32, f32)| {
-                let (dx, dy) = (to.0 - from.0, to.1 - from.1);
-                let len = dx.hypot(dy);
-                (dx / len, dy / len)
-            };
-            let (down_l, down_r) = (unit(pts[0], pts[1]), unit(pts[n - 1], pts[n - 2]));
-            for (corner, d, out) in [
-                (pts[1], down_l, (-down_l.1, down_l.0)),
-                (pts[n - 2], down_r, (down_r.1, -down_r.0)),
-            ] {
-                let spot = |along: f32, away: f32| {
-                    (corner.0 + d.0 * along + out.0 * away, corner.1 + d.1 * along + out.1 * away)
-                };
-                let (x, y) = spot(0.5, 3.0);
-                assert!(contains(&played, x, y), "swing {swing_deg}: the flare");
-                let (x, y) = spot(8.0, 3.0);
-                assert!(!contains(&played, x, y), "swing {swing_deg}: below the flare");
-                let (x, y) = spot(8.0, -3.0);
-                assert!(contains(&played, x, y), "swing {swing_deg}: the body");
+            // The shoulders stay on the screen edge, where they rest.
+            for out in [-1.0, 1.0] {
+                let x = if out < 0.0 { s.x } else { s.x + s.w } + out * 3.0;
+                assert!(contains(&played, x, 0.5), "swing {swing_deg}: the flare at {x}");
             }
         }
     }
@@ -4663,7 +4719,7 @@ mod tests {
                 let cx = s.x + s.w / 2.0;
                 let window = Rect { x: s.x - 40.0, y: 0.0, w: s.w + 80.0, h: 150.0 };
                 let pts = outline(style, s, &dented());
-                let island = r.island_geometry(style, s, Some(&pts)).unwrap();
+                let island = r.island_geometry(style, s, Some(&dented())).unwrap();
                 let out = r.cut_out(window, &island).unwrap();
                 let case = format!("{style:?} {w}x{h}");
                 assert!(!contains(&out, cx, s.y + 3.0), "{case}: inside the island");
@@ -4676,7 +4732,7 @@ mod tests {
                 // However the outline winds: the same outline listed the other
                 // way round leaves the same island out.
                 let backwards: Vec<_> = pts.iter().rev().copied().collect();
-                let island = r.island_geometry(style, s, Some(&backwards)).unwrap();
+                let island = r.played_path(style, s, dented().squeeze, &backwards).unwrap().cast().unwrap();
                 let out = r.cut_out(window, &island).unwrap();
                 assert!(!contains(&out, cx, s.y + 3.0), "{case}: wound the other way");
                 // At rest it is the resting shape that is left out.
@@ -4720,6 +4776,167 @@ mod tests {
                 assert!(full.robot.unwrap().x >= s.x, "{case}");
                 assert!(full.clock.unwrap().right() <= s.x + s.w, "{case}");
             }
+        }
+    }
+
+    /// A `Frame` of nothing: the idle island with every list empty, running
+    /// `play` if given, for `f` to look at (its views borrow locals).
+    fn with_frame<R>(play: Option<PlayFrame>, f: impl FnOnce(&Frame) -> R) -> R {
+        use crate::calendar::CalStatus;
+        let today = NaiveDate::from_ymd_opt(2026, 11, 14).unwrap();
+        let now = today.and_hms_opt(12, 0, 0).unwrap();
+        let (output, echoes) = (Output::default(), Echoes::default());
+        let (set, vetoes) = (Default::default(), Default::default());
+        let rec_devices = [String::new(), String::new()];
+        let (details, logos) = (Default::default(), Default::default());
+        let frame = Frame {
+            view: &View::Idle,
+            media: None,
+            pomodoro: &Pomodoro::new(Default::default()),
+            rec: None,
+            caption: None,
+            now: Instant::now(),
+            today,
+            page: Page::ALL[0],
+            strip: None,
+            cal_view: CalView::Month,
+            cal_anchor: today,
+            cal_selected: today,
+            calendar: &CalendarSnapshot::empty(CalStatus::Ok, today),
+            mixer: None,
+            shelf: &[],
+            shelf_drag: false,
+            shelf_motion: &ShelfMotion::default(),
+            phone: None,
+            phone_on: false,
+            devices: DevicesView {
+                list: &[],
+                ejecting: &set,
+                vetoes: &vetoes,
+                expanded: None,
+                scroll: 0.0,
+            },
+            record: RecordView {
+                sources: crate::model::RecSources { mic: true, system: false },
+                recent: &[],
+                devices: &rec_devices,
+                tab: crate::model::RecKind::Audio,
+                discard_armed: false,
+                captions_on: false,
+                total: 0,
+                missing: [false; 2],
+                quality: String::new(),
+                mute_hotkey: None,
+                start_hotkey: None,
+                today,
+            },
+            notes: &[],
+            notes_page: 0,
+            reminders: &[],
+            reminders_page: 0,
+            day_page: 0,
+            page_slide: 0.0,
+            page_trail: [None, None],
+            page_from: None,
+            pages: Vec::new(),
+            dock: DockFrame::default(),
+            tiles: Vec::new(),
+            palette: theme::island(Accent::default(), theme::Surface::Espresso),
+            cat: CatLook::default(),
+            fill_alpha: 1.0,
+            legibility: 0.0,
+            clock: None,
+            idle_lead: 0.0,
+            lyric: None,
+            lyric_scroll: 0.0,
+            lyric_prev_scroll: 0.0,
+            lyrics_on: false,
+            lyrics_card_open: false,
+            volume: None,
+            cli: CliView {
+                output: &output,
+                echoes: &echoes,
+                scroll: 0,
+                run: Default::default(),
+                shell: Default::default(),
+                cwd: "",
+                input: "",
+                selection: (0, 0),
+                focused: false,
+                suggestions: Vec::new(),
+                selected: 0,
+                tall: false,
+                from_explorer: false,
+                menu: None,
+            },
+            clip: ClipView::empty(now),
+            notif: NotifView {
+                items: &[],
+                logos: &logos,
+                selected: None,
+                scroll: 0,
+                cap: 0,
+                record: false,
+                paused: false,
+                no_access: false,
+                armed: false,
+                now: Local::now(),
+            },
+            search: SearchView {
+                query: "",
+                selection: (0, 0),
+                focused: false,
+                results: &[],
+                selected: 0,
+                details: &details,
+                indexing: false,
+            },
+            arrange: Default::default(),
+            progress: None,
+            robot: None,
+            eyes: false,
+            eyes_pose: Default::default(),
+            eq_heights: None,
+            robot_fades: false,
+            system: None,
+            cleaner: None,
+            shot: None,
+            clip_notice: None,
+            video_notice: None,
+            toast_logo: None,
+            toast_slot_w: 0.0,
+            toast_slot: None,
+            toast_dot: false,
+            strip_badge: None,
+            strip_motion: None,
+            notice_close: None,
+            transit: Transit::default(),
+            full_redraw: false,
+            play,
+        };
+        f(&frame)
+    }
+
+    #[test]
+    fn a_frame_with_a_play_is_signed_as_one() {
+        // The dirty test builds its `Drawn` by hand; this is the one that
+        // asks the renderer's own signature, so a play that fell back to the
+        // dirty-rect path (a signature that forgot it) is caught.
+        let r = renderer();
+        let s = shape(Style::Notch, 190.0, 34.0);
+        let sign = |play| {
+            with_frame(play, |frame| {
+                r.signature(SIZE { cx: 640, cy: 200 }, POINT { x: 0, y: 0 }, Style::Notch, s, frame, 1.0)
+            })
+        };
+        let rest = sign(None);
+        let playing = sign(Some(play_frame(1.0)));
+        assert!(!rest.play);
+        assert!(playing.play);
+        // Without the play the same two frames are a dirty redraw.
+        assert!(matches!(dirty::plan(Some(&rest), &rest.clone()), Plan::Dirty(_)));
+        for (prev, cur) in [(&rest, &playing), (&playing, &playing), (&playing, &rest)] {
+            assert_eq!(dirty::plan(Some(prev), cur), Plan::Full);
         }
     }
 }

@@ -407,9 +407,9 @@ struct Scene {
     /// The notice's ✕ is drawn (at `DI_DEMO_CLOSE`'s alpha, else fully); the
     /// flag says the pointer is on it. A notice that is not closable draws none.
     close: Option<bool>,
-    /// A mid-play frame, frozen: the island dented in its lip and squeezed, the
-    /// mascot and the clock at its ends (`demo_play`). Nothing is captured.
-    play: bool,
+    /// A mid-play frame, frozen (`demo_play`): the mascot and the clock at the
+    /// island's ends, the island deformed. Nothing is captured.
+    play: DemoPlay,
 }
 
 /// The cleaner's states (deepclean-opsi-d.html p10 and d1).
@@ -493,6 +493,16 @@ enum CliDemo {
     /// keputusan-v3.1 p2: the folder menu open (2 windows, 1 favourite,
     /// 2 recent).
     FolderMenu,
+}
+
+/// What a play scene freezes (`bata-play-island`, `bata-play-swing`).
+#[derive(Clone, Copy, PartialEq)]
+enum DemoPlay {
+    No,
+    /// A dent in the lip and a small squeeze.
+    Dent,
+    /// The Notch swung by 3.4 degrees, so its low side shows.
+    Swing,
 }
 
 /// `View` without its payloads, so scenes can be `const`.
@@ -702,7 +712,7 @@ const BASE: Scene = Scene {
     offer_strip: false,
     dot: false,
     close: None,
-    play: false,
+    play: DemoPlay::No,
 };
 
 const fn clipboard(name: &'static str, which: ClipDemo) -> Scene {
@@ -984,12 +994,11 @@ const fn rec_hot_scene(name: &'static str, muted: [bool; 2], hot: Source) -> Sce
     }
 }
 
-/// A scene of Bata in the notch (studio-robot.html p3).
-/// The frozen frame of `bata-play-island`: one clear dent in the lip, a small
-/// squeeze, and the mascot and the clock spread to the island's ends.
-fn demo_play() -> PlayFrame {
-    PlayFrame {
-        deform: Deform {
+/// The frozen frames of the play scenes (`Scene::play`): the mascot and the
+/// clock spread to the island's ends, and the island deformed as `which` says.
+fn demo_play(which: DemoPlay) -> PlayFrame {
+    let deform = match which {
+        DemoPlay::No | DemoPlay::Dent => Deform {
             dents: vec![Dent {
                 u: 0.5,
                 depth: -0.25,
@@ -998,6 +1007,14 @@ fn demo_play() -> PlayFrame {
             squeeze: 0.06,
             ..Deform::default()
         },
+        // As far as any story swings the Notch (the cat's Petak umpet).
+        DemoPlay::Swing => Deform {
+            swing_deg: 3.4,
+            ..Deform::default()
+        },
+    };
+    PlayFrame {
+        deform,
         beat: Beat {
             spread: 1.0,
             alpha: 1.0,
@@ -1006,6 +1023,7 @@ fn demo_play() -> PlayFrame {
     }
 }
 
+/// A scene of Bata in the notch (studio-robot.html p3).
 const fn bata(name: &'static str, kind: ShapeKind, view: View0, expr: Expr) -> Scene {
     Scene {
         name,
@@ -1197,7 +1215,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 211] = [
+const SCENES: [Scene; 212] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -1812,8 +1830,12 @@ const SCENES: [Scene; 211] = [
     },
     bata("bata-kosong", ShapeKind::Idle, View0::Idle, Expr::Idle),
     Scene {
-        play: true,
+        play: DemoPlay::Dent,
         ..bata("bata-play-island", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    Scene {
+        play: DemoPlay::Swing,
+        ..bata("bata-play-swing", ShapeKind::Idle, View0::Idle, Expr::Idle)
     },
     Scene {
         clock: Some("23:48"),
@@ -3053,7 +3075,7 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                     || slide != 0.0
                     || scene.reveal.is_some()
                     || scene.fade_from.is_some(),
-                play: scene.play.then(demo_play),
+                play: (scene.play != DemoPlay::No).then(|| demo_play(scene.play)),
             };
             if let Err(error) = renderer.draw(&win, style, shape, &frame, opacity) {
                 eprintln!("demo: draw failed: {error}");
