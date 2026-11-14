@@ -1138,6 +1138,9 @@ struct Target {
     /// A story's fading figure, inside either of the others (`push_fade`).
     /// Figures never nest, so one is enough.
     fade: ID2D1Layer,
+    /// A `Draw::Clipped`'s clip, inside any of the others. Clipped parts
+    /// never nest.
+    clip: ID2D1Layer,
 }
 
 /// 32-bpp top-down DIB selected into a memory DC; the layered window is
@@ -2156,6 +2159,7 @@ impl Renderer {
             let layer = rt.CreateLayer(None)?;
             let layer2 = rt.CreateLayer(None)?;
             let fade = rt.CreateLayer(None)?;
+            let clip = rt.CreateLayer(None)?;
             self.target = Some(Target {
                 rt,
                 bitmap,
@@ -2164,6 +2168,7 @@ impl Renderer {
                 layer,
                 layer2,
                 fade,
+                clip,
             });
         }
         Ok(())
@@ -2970,13 +2975,11 @@ impl Renderer {
                 });
             }
             Draw::Clipped { clip, items } => {
-                // A layer of its own: the back layer's mask and a figure's
-                // fade may already be pushed on the shared ones. Only while
-                // a play draws a clipped part (the Calico cat's patches).
+                // Its own layer: the back layer's mask and a figure's fade
+                // may already be pushed on the shared ones.
                 let mask = super::robot::path_filled(&self.d2d, clip, D2D1_FILL_MODE_WINDING)
                     .and_then(|m| m.cast::<ID2D1Geometry>());
-                let layer = unsafe { target.rt.CreateLayer(None) };
-                let (Ok(mask), Ok(layer)) = (mask, layer) else {
+                let Ok(mask) = mask else {
                     return;
                 };
                 let params = D2D1_LAYER_PARAMETERS {
@@ -2993,7 +2996,7 @@ impl Renderer {
                     opacityBrush: ManuallyDrop::new(None),
                     layerOptions: D2D1_LAYER_OPTIONS_NONE,
                 };
-                unsafe { target.rt.PushLayer(&params, &layer) };
+                unsafe { target.rt.PushLayer(&params, &target.clip) };
                 // The layer keeps its own reference while pushed.
                 drop(ManuallyDrop::into_inner(params.geometricMask));
                 for item in items {
@@ -6280,7 +6283,7 @@ mod tests {
                 let dip = (crate::ui::geometry::WINDOW_W, s.y + s.h + 80.0);
                 let pose = CatPose {
                     dk: 0.0,
-                    rise: 1.0,
+                    rise: Some(1.0),
                     head: (0.0, 0.0, 0.0),
                     face: MascotShot {
                         dx: 0.0,

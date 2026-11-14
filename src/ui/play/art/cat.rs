@@ -5,7 +5,7 @@
 //! painter, so its coat and accessory come along.
 
 use crate::theme::{CatColor, Mascot};
-use crate::ui::cat_style::{CatLook, PATCH_DARK, PATCH_ORANGE};
+use crate::ui::cat_style::{CatLook, PATCH_DARK, PATCH_ORANGE, RIM_WIDTH};
 use crate::ui::geometry::ROBOT_COMPACT;
 use crate::ui::mascot::mix;
 use crate::ui::play::art::tube::{LimbStyle, Stripes, along, catmull_rom, curl, limb, plen};
@@ -19,17 +19,16 @@ pub const SEAT: (f32, f32) = (32.0, 86.0);
 
 /// The mockup's island fill, which `dk` mixes the coat toward (its `tint`).
 const NOTCH: u32 = 0x17120F;
-/// The mockup's `CS` table, one coat (terracotta): the fur, and the darker
-/// tones each coat takes in the same proportion to its own head colour. Its
-/// `body` (#DB633A) is the fur here: every coat's body is its head colour.
+/// The mockup's `CS` table, one coat (terracotta): the fur (the head's
+/// colour: legs, paws, tail), and the darker tones each coat takes in the
+/// same proportion to its own head colour.
 const FUR: u32 = 0xE2683C;
+const BODY: u32 = 0xDB633A;
 const HAUNCH: u32 = 0xCB582F;
 const SIDE: u32 = 0xC4532D;
 const SHADE: u32 = 0xB04526;
 /// The toe beans, pink on every coat.
 const BEAN: u32 = 0xEE9C94;
-/// How far the Black cat's rim reaches past the body.
-const RIM_OUT: f32 = 0.8;
 /// The neck the head turns about.
 const NECK: (f32, f32) = (32.0, 52.0);
 /// The front legs' tops, left then right; each ends in its paw 26 lower.
@@ -72,13 +71,13 @@ impl Default for Tail {
 
 /// The mockup's `catSlim` options. `dk` is how deep in the island's dark
 /// the body is (0 out, 1 deep; the tail drops from 0.6), `rise` how tall it
-/// sits (0 crouched, 1 tall), `head` the head's (hx, hy, hr): moved on the
+/// sits (0 crouched, 1 tall; `None` is the mockup's `1 - dk`), `head` the head's (hx, hy, hr): moved on the
 /// grid and turned (degrees, clockwise) about the neck. `face` is the head
 /// as the slot head's shot has it; its own turn and scale add to `hr`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CatPose {
     pub dk: f32,
-    pub rise: f32,
+    pub rise: Option<f32>,
     pub head: (f32, f32, f32),
     pub face: MascotShot,
     pub paws: [Paw; 2],
@@ -104,6 +103,7 @@ pub fn cat_at(at: (f32, f32), rot_deg: f32, sx: f32, sy: f32, pose: &CatPose, lo
 #[derive(Clone, Copy)]
 struct Coat {
     fur: u32,
+    body: u32,
     haunch: u32,
     side: u32,
     shade: u32,
@@ -115,6 +115,7 @@ impl Coat {
         let t = |rgb| tint(rgb, dk);
         Coat {
             fur: t(head),
+            body: t(tone(head, BODY)),
             haunch: t(tone(head, HAUNCH)),
             side: t(tone(head, SIDE)),
             shade: t(tone(head, SHADE)),
@@ -148,7 +149,9 @@ fn tail_width(s: f32) -> f32 {
 /// the chin's shadow, the head, the paws.
 fn figure(pose: &CatPose, look: CatLook) -> Vec<Draw> {
     let c = Coat::of(look.head_rgb(), pose.dk);
-    let rim = look.rim();
+    // The Black cat's rim darkens in the dark with the body. A stroke
+    // `RIM_WIDTH` wide under the fill: 0.8 of it shows past the body.
+    let rim = look.rim().map(|rgb| tint(rgb, pose.dk));
     let mut out = Vec::new();
     // The long S-shaped tail rises behind the right haunch.
     if let Some(t) = pose.tail.filter(|_| pose.dk < 0.6) {
@@ -160,7 +163,8 @@ fn figure(pose: &CatPose, look: CatLook) -> Vec<Draw> {
         let p = curl(&along(&d, plen(&d), 26), t.curl, 9.0, 10, (w * 0.6).to_radians());
         let style = LimbStyle {
             wf: Some(tail_width),
-            wm: t.puff,
+            // The mockup's `tl.puff || 1`.
+            wm: if t.puff == 0.0 { 1.0 } else { t.puff },
             fluff: 0.05,
             side_shade: Some((1, 0.3)),
             stripes: Some(Stripes { start: 8.0, every: 7.5, w: 3.2, skip_base: 5.0, rgb: c.shade }),
@@ -169,19 +173,19 @@ fn figure(pose: &CatPose, look: CatLook) -> Vec<Draw> {
         };
         let tail = limb(&p, &style, c.fur);
         if let (Some(rgb), Some(Draw::Fill { path, .. })) = (rim, tail.first()) {
-            out.push(Draw::Stroke { path: path.clone(), rgb, width: 2.0 * RIM_OUT });
+            out.push(Draw::Stroke { path: path.clone(), rgb, width: RIM_WIDTH });
         }
         out.extend(tail);
     }
     let (body, side, hips) = (svg(SL_BODY), svg(SL_SIDE), [svg(SL_HL), svg(SL_HR)]);
     if let Some(rgb) = rim {
         for path in [&body, &hips[0], &hips[1]] {
-            out.push(Draw::Stroke { path: path.clone(), rgb, width: 2.0 * RIM_OUT });
+            out.push(Draw::Stroke { path: path.clone(), rgb, width: RIM_WIDTH });
         }
     }
     let flank = |c: Coat| {
         vec![
-            Draw::Fill { path: body.clone(), rgb: c.fur },
+            Draw::Fill { path: body.clone(), rgb: c.body },
             Draw::Fill { path: side.clone(), rgb: c.side },
             Draw::Fill { path: hips[0].clone(), rgb: c.haunch },
             Draw::Fill { path: hips[1].clone(), rgb: c.haunch },
@@ -198,8 +202,7 @@ fn figure(pose: &CatPose, look: CatLook) -> Vec<Draw> {
     // Slim front legs that always end in their paw.
     let leg = LimbStyle { w0: 5.8, w1: 5.2, cap: true, side_shade: None, ..LimbStyle::default() };
     for (x0, p) in LEG_X.iter().zip(&pose.paws) {
-        let (px, py) = (x0 + p.dx, 84.0 + p.dy - 1.5);
-        out.extend(limb(&[(*x0, 58.0), ((x0 + px) / 2.0, (58.0 + py) / 2.0), (px, py)], &leg, c.fur));
+        out.extend(limb(&leg_line(*x0, p), &leg, c.fur));
     }
     // The chin's shadow on the chest.
     out.push(Draw::Ellipse { c: (32.0, 55.6), r: (8.6, 2.3), rgb: c.side });
@@ -210,7 +213,7 @@ fn figure(pose: &CatPose, look: CatLook) -> Vec<Draw> {
     out.push(Draw::Head {
         at: (
             NECK.0 + v.0 * cos - v.1 * sin + hx,
-            NECK.1 + v.0 * sin + v.1 * cos + hy + 14.0 * (1.0 - pose.rise),
+            NECK.1 + v.0 * sin + v.1 * cos + hy + 14.0 * (1.0 - pose.rise.unwrap_or(1.0 - pose.dk)),
         ),
         shot: MascotShot { rot_deg: pose.face.rot_deg + hr, ..pose.face },
     });
@@ -218,6 +221,12 @@ fn figure(pose: &CatPose, look: CatLook) -> Vec<Draw> {
         out.push(paw((x0 + p.dx, 84.0 + p.dy), c, p));
     }
     out
+}
+
+/// A front leg's centreline: from the chest at `x0` to just above its paw.
+fn leg_line(x0: f32, p: &Paw) -> [(f32, f32); 3] {
+    let (px, py) = (x0 + p.dx, 84.0 + p.dy - 1.5);
+    [(x0, 58.0), ((x0 + px) / 2.0, (58.0 + py) / 2.0), (px, py)]
 }
 
 /// The mockup's `smallPaw`: a small neat paw, two toe lines, or its pink
@@ -341,7 +350,7 @@ mod tests {
     fn sitting() -> CatPose {
         CatPose {
             dk: 0.0,
-            rise: 1.0,
+            rise: Some(1.0),
             head: (0.0, 0.0, 0.0),
             face: face(),
             paws: [Paw::default(); 2],
@@ -399,19 +408,32 @@ mod tests {
         assert_eq!(body[3], Seg::Line(42.5, 86.0));
     }
 
+    /// The first leg's fill: the first `Fill` after the haunches (and
+    /// Calico's patches).
+    fn leg_fill(d: &[Draw]) -> Option<u32> {
+        let (body, _) = body_fill(d)?;
+        d[body + 4..].iter().find_map(|x| match x {
+            Draw::Fill { rgb, .. } => Some(*rgb),
+            _ => None,
+        })
+    }
+
     #[test]
     fn the_body_takes_every_coats_colours() {
+        // The mockup's body is a shade under its fur; the fur (legs, paws,
+        // tail) is the head's colour, so the legs read on the body.
         let mut seen = Vec::new();
         for color in [CatColor::Terracotta, CatColor::Calico, CatColor::White, CatColor::Black] {
             let l = look(color);
             let fig = cat(&sitting(), l);
-            let (_, rgb) = body_fill(items(&fig)).unwrap_or_else(|| panic!("{color:?}: no body"));
-            assert_eq!(rgb, l.head_rgb(), "{color:?}");
-            seen.push(rgb);
+            let (_, body) = body_fill(items(&fig)).unwrap_or_else(|| panic!("{color:?}: no body"));
+            let leg = leg_fill(items(&fig)).unwrap_or_else(|| panic!("{color:?}: no leg"));
+            assert_eq!(leg, l.head_rgb(), "{color:?}: the legs");
+            assert_ne!(body, leg, "{color:?}: the body is the legs' colour");
+            seen.push(body);
         }
-        seen.sort();
-        seen.dedup();
-        assert_eq!(seen.len(), 4, "{seen:x?}");
+        // Terracotta is the mockup's table; White and Black darken alike.
+        assert_eq!(seen, vec![0xDB633A, 0xECE2DC, 0xEEE5E2, 0x1D1A21], "{seen:x?}");
         // The terracotta's darker tones are the mockup's own.
         let fig = cat(&sitting(), look(CatColor::Terracotta));
         let fills: Vec<u32> = flat(items(&fig))
@@ -439,7 +461,8 @@ mod tests {
                 })
                 .collect::<Vec<_>>()
         };
-        assert_eq!(patches(CatColor::Calico), vec![PATCH_ORANGE, PATCH_DARK]);
+        // Each patch's body is a shade under its colour, as the coat's is.
+        assert_eq!(patches(CatColor::Calico), vec![0xDB633A, 0x2A221F]);
         for color in [CatColor::Terracotta, CatColor::White, CatColor::Black] {
             assert!(patches(color).is_empty(), "{color:?}");
         }
@@ -459,7 +482,7 @@ mod tests {
             let fig = cat(&sitting(), look(color));
             let d = items(&fig);
             let body = svg(SL_BODY);
-            let at = d.iter().position(|x| matches!(x, Draw::Stroke { path, rgb, width } if *path == body && *rgb == RIM && (*width - 1.6).abs() < 1e-6));
+            let at = d.iter().position(|x| matches!(x, Draw::Stroke { path, rgb, width } if *path == body && *rgb == RIM && *width == RIM_WIDTH));
             at.map(|i| (i, body_fill(d).expect("a body").0))
         };
         let (stroke, body) = rim(CatColor::Black).expect("the Black cat's rim");
@@ -467,6 +490,83 @@ mod tests {
         for color in [CatColor::Terracotta, CatColor::Calico, CatColor::White] {
             assert!(rim(color).is_none(), "{color:?}");
         }
+    }
+
+    #[test]
+    fn the_rim_darkens_with_the_body_in_the_dark() {
+        let fig = cat(&CatPose { dk: 0.5, ..sitting() }, look(CatColor::Black));
+        let rims: Vec<u32> = items(&fig)
+            .iter()
+            .filter_map(|d| match d {
+                Draw::Stroke { rgb, width, .. } if *width == RIM_WIDTH => Some(*rgb),
+                _ => None,
+            })
+            .collect();
+        // The tail's rim, the body's and the two haunches'.
+        assert_eq!(rims, vec![crate::ui::mascot::mix(RIM, 0x17120F, 0.45); 4]);
+    }
+
+    #[test]
+    fn the_legs_end_in_their_paws() {
+        let p = Paw { dx: 2.0, dy: -3.0, lift: 0.0, sq: 0.5 };
+        // From the chest to just above the paw, through the middle.
+        assert_eq!(leg_line(35.4, &p), [(35.4, 58.0), (36.4, 68.75), (37.4, 79.5)]);
+        let fig = cat(&CatPose { paws: [Paw::default(), p], ..sitting() }, look(CatColor::Terracotta));
+        let paws: Vec<_> = items(&fig)
+            .iter()
+            .filter_map(|d| match d {
+                Draw::Group { at, scale, rot_deg, pivot, .. } => Some((*at, *scale, *rot_deg, *pivot)),
+                _ => None,
+            })
+            .collect();
+        let near = |a: (f32, f32), b: (f32, f32)| (a.0 - b.0).abs() < 1e-5 && (a.1 - b.1).abs() < 1e-5;
+        assert_eq!(paws.len(), 2);
+        assert!(near(paws[0].0, (28.6, 84.0)) && near(paws[0].1, (1.0, 1.0)), "{:?}", paws[0]);
+        assert!(near(paws[1].0, (37.4, 81.0)) && near(paws[1].1, (1.1, 0.89)), "{:?}", paws[1]);
+        assert!(paws.iter().all(|p| p.2 == 0.0 && p.3 == (0.0, 0.0)), "{paws:?}");
+    }
+
+    #[test]
+    fn the_figure_paints_in_the_mockups_order() {
+        let order = |color| {
+            let fig = cat(&sitting(), look(color));
+            let (body, side, hl, hr) = (svg(SL_BODY), svg(SL_SIDE), svg(SL_HL), svg(SL_HR));
+            let mut seen_body = false;
+            let mut out: Vec<&str> = Vec::new();
+            for d in items(&fig) {
+                let label = match d {
+                    Draw::Stroke { rgb, .. } if *rgb == RIM => "rim",
+                    Draw::Fill { path, .. } if *path == body => {
+                        seen_body = true;
+                        "body"
+                    }
+                    Draw::Fill { path, .. } if *path == side => "side",
+                    Draw::Fill { path, .. } if *path == hl || *path == hr => "haunch",
+                    Draw::Clipped { .. } => "patch",
+                    Draw::Ellipse { c, .. } if *c == (32.0, 55.6) => "chin",
+                    Draw::Head { .. } => "head",
+                    Draw::Group { .. } => "paw",
+                    Draw::Fill { .. } | Draw::Tint { .. } if seen_body => "leg",
+                    Draw::Fill { .. } | Draw::Tint { .. } => "tail",
+                    other => panic!("{other:?}"),
+                };
+                if out.last() != Some(&label) {
+                    out.push(label);
+                }
+            }
+            out
+        };
+        assert_eq!(order(CatColor::Terracotta), ["tail", "body", "side", "haunch", "leg", "chin", "head", "paw"]);
+        assert_eq!(order(CatColor::Calico), ["tail", "body", "side", "haunch", "patch", "leg", "chin", "head", "paw"]);
+        assert_eq!(order(CatColor::Black), ["rim", "tail", "rim", "body", "side", "haunch", "leg", "chin", "head", "paw"]);
+    }
+
+    #[test]
+    fn a_tail_of_no_puff_is_a_plain_tail() {
+        // The mockup's `tl.puff || 1`.
+        let with = |puff: f32| cat(&CatPose { tail: Some(Tail { puff, ..Tail::default() }), ..sitting() }, look(CatColor::Terracotta));
+        assert_eq!(with(0.0), with(1.0));
+        assert_ne!(with(1.4), with(1.0));
     }
 
     #[test]
@@ -483,8 +583,8 @@ mod tests {
 
     #[test]
     fn the_head_sits_on_the_neck_whatever_the_rise() {
-        let head = |rise: f32, h: (f32, f32, f32)| {
-            let fig = cat(&CatPose { rise, head: h, ..sitting() }, look(CatColor::Terracotta));
+        let head_at = |dk: f32, rise: Option<f32>, h: (f32, f32, f32)| {
+            let fig = cat(&CatPose { dk, rise, head: h, ..sitting() }, look(CatColor::Terracotta));
             items(&fig)
                 .iter()
                 .find_map(|d| match d {
@@ -493,6 +593,7 @@ mod tests {
                 })
                 .expect("a head")
         };
+        let head = |rise: f32, h| head_at(0.0, Some(rise), h);
         let near = |a: (f32, f32), b: (f32, f32)| (a.0 - b.0).abs() < 1e-4 && (a.1 - b.1).abs() < 1e-4;
         // The head's pivot (32, 40) on the grid, lowered 14 * (1 - rise).
         for (rise, y) in [(1.0, 40.0), (0.5, 47.0), (0.0, 54.0)] {
@@ -504,6 +605,13 @@ mod tests {
         let (at, rot) = head(1.0, (3.0, -2.0, 90.0));
         assert!(near(at, (32.0 + 12.0 + 3.0, 52.0 - 2.0)), "{at:?}");
         assert_eq!(rot, 90.0);
+        // No rise given: the mockup's `1 - dk`, whatever the rise of a deep body.
+        for (dk, y) in [(0.0, 40.0), (0.5, 47.0), (1.0, 54.0)] {
+            let (at, _) = head_at(dk, None, (0.0, 0.0, 0.0));
+            assert!(near(at, (32.0, y)), "dk {dk}: {at:?}");
+        }
+        let (at, _) = head_at(1.0, Some(1.0), (0.0, 0.0, 0.0));
+        assert!(near(at, (32.0, 40.0)), "a given rise wins: {at:?}");
     }
 
     #[test]
@@ -524,7 +632,8 @@ mod tests {
         // The mockup's `tint`: 0.9 of the way to the notch at dk 1.
         let fig = cat(&CatPose { dk: 1.0, ..sitting() }, look(CatColor::White));
         let (_, rgb) = body_fill(items(&fig)).expect("a body");
-        assert_eq!(rgb, crate::ui::mascot::mix(0xF6F1EA, 0x17120F, 0.9));
+        assert_eq!(rgb, crate::ui::mascot::mix(0xEEE5E2, 0x17120F, 0.9));
+        assert_eq!(leg_fill(items(&fig)), Some(crate::ui::mascot::mix(0xF6F1EA, 0x17120F, 0.9)));
     }
 
     #[test]

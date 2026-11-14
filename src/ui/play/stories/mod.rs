@@ -246,8 +246,10 @@ impl Draw {
             }
             Draw::Clipped { clip, items } => {
                 let mut boxes = items.iter().map(|d| d.bounds_at(unit));
+                // Empty, the clip's own box: never a point that pulls a
+                // group's union to the origin.
                 let Some(first) = boxes.next() else {
-                    return Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 };
+                    return path_box(clip, 0.0);
                 };
                 let (a, b) = (boxes.fold(first, union), path_box(clip, 0.0));
                 let (x, y) = (a.x.max(b.x), a.y.max(b.y));
@@ -598,6 +600,12 @@ mod tests {
         // clip's where the items reach past it.
         let cut = Draw::Clipped { clip, items: vec![dot(8.0), dot(15.0)] };
         assert!(near(cut.bounds(), Rect { x: 6.0, y: 8.0, w: 9.0, h: 4.0 }), "{:?}", cut.bounds());
+        // With nothing in it, its box is the clip's own: in a group it never
+        // pulls the union to the grid's origin.
+        let empty = Draw::Clipped { clip: circle_segs((10.0, 10.0), 5.0), items: Vec::new() };
+        assert!(near(empty.bounds(), Rect { x: 5.0, y: 5.0, w: 10.0, h: 10.0 }), "{:?}", empty.bounds());
+        let group = Draw::Group { at: (0.0, 0.0), rot_deg: 0.0, scale: (1.0, 1.0), pivot: (0.0, 0.0), items: vec![empty, dot(8.0)] };
+        assert!(near(group.bounds(), Rect { x: 5.0, y: 5.0, w: 10.0, h: 10.0 }), "{:?}", group.bounds());
     }
 
     #[test]

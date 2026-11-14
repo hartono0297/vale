@@ -1040,7 +1040,7 @@ fn demo_play(which: DemoPlay, style: Style, shape: ShapeRect, cat: CatLook) -> P
             let beat = Beat { spread: 0.0, ..beat };
             let pose = CatPose {
                 dk: 0.0,
-                rise: 1.0,
+                rise: Some(1.0),
                 head: (0.0, 0.0, 0.0),
                 face: MascotShot {
                     dx: 0.0,
