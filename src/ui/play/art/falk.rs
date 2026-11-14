@@ -336,7 +336,8 @@ pub fn bird_parts(pose: &BirdPose, coat: FalkColor) -> BirdParts {
 
 /// The whole bird in one `Group` on its local dip (origin between the
 /// feet), in the mockup's order: tail, body and the wings behind, feet,
-/// head, the wings in front.
+/// head, the wings in front. Only the demo and the tests draw it whole.
+#[cfg(any(test, debug_assertions))]
 pub fn bird(pose: &BirdPose, coat: FalkColor) -> Draw {
     let p = bird_parts(pose, coat);
     let mut items = vec![p.tail];
