@@ -335,6 +335,9 @@ impl App {
             self.shelf.preview = Some(Preview::new(key.clone()));
             if let Some(path) = self.shelf.shelf.get(i).map(PathBuf::from) {
                 self.shelf_decode(vec![(key, path, shelf_thumb::PREVIEW_SIDE, true)]);
+            } else if let Some(p) = self.shelf.preview.as_mut() {
+                // No path to decode: it would stay "Loading" for good.
+                p.set(&key, None);
             }
         }
         self.refresh(Instant::now());
