@@ -11,6 +11,7 @@ pub mod penasaran_jam;
 pub mod petak_umpet;
 pub mod piano_ekor;
 pub mod syal_ekor;
+pub mod terbang_keliling;
 
 use std::f32::consts::{PI, TAU};
 
@@ -41,6 +42,7 @@ pub fn ready(story: Story) -> bool {
             | Story::PelukPulau
             | Story::Bungee
             | Story::Kelelawar
+            | Story::TerbangKeliling
     )
 }
 
@@ -551,8 +553,7 @@ pub fn whistle_arcs(at: (f32, f32)) -> [((f32, f32), f32, f32, f32); 3] {
     })
 }
 
-/// `story`'s shot on `stage`. A story that is not ready leaves everything at
-/// rest.
+/// `story`'s shot on `stage`.
 pub fn shot(story: Story, stage: &Stage) -> Shot {
     let shot = match story {
         Story::MalingAngka => maling_angka::shot(stage),
@@ -564,7 +565,7 @@ pub fn shot(story: Story, stage: &Stage) -> Shot {
         Story::PelukPulau => peluk_pulau::shot(stage),
         Story::Bungee => bungee::shot(stage),
         Story::Kelelawar => kelelawar::shot(stage),
-        _ => Shot::rest(stage.style, stage.shape),
+        Story::TerbangKeliling => terbang_keliling::shot(stage),
     };
     debug_assert!(bare_heads_fit(story, &shot), "{story:?} draws a bare head");
     shot

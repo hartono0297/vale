@@ -213,14 +213,12 @@ mod tests {
                 assert_eq!(pool(m, clock_on), want, "{m:?} clock_on={clock_on}");
             }
         }
-        // Derived, no per-mascot lists (P27): every story is ready but the
-        // ones still to land, and the pool is the rest of what the mascot
-        // owns, never empty and never a clock story with the clock off.
-        let later = [Story::TerbangKeliling];
+        // Derived, no per-mascot lists (P27): every story is ready, so the
+        // pool is all the mascot owns, never empty and never a clock story
+        // with the clock off.
         for m in [Mascot::Cat, Mascot::Falk, Mascot::Octopus] {
             for clock_on in [true, false] {
-                let want: Vec<Story> = owned(m, clock_on).into_iter().filter(|s| !later.contains(s)).collect();
-                assert_eq!(pool(m, clock_on), want, "{m:?} clock_on={clock_on}");
+                assert_eq!(pool(m, clock_on), owned(m, clock_on), "{m:?} clock_on={clock_on}");
                 assert!(!pool(m, clock_on).is_empty(), "{m:?} clock_on={clock_on}");
             }
             assert!(pool(m, false).iter().all(|s| !s.needs_clock()), "{m:?}");
