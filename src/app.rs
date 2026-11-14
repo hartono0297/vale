@@ -7229,8 +7229,9 @@ impl App {
                 .or_else(|| self.strip_motion.as_ref().and_then(|m| m.leaving.as_ref())),
         };
         let phone_view = App::phone_view(state, &self.phone, self.config.phone_net, now);
-        // The image preview, while the Shelf page is the page (it stays
-        // while the panel fades out, as the phone link does).
+        // The image preview, while the Shelf page is the page. `sync_shelf`
+        // clears it as soon as the view leaves the Shelf page, so while the
+        // panel fades out the frame shows the cards.
         let shelf_preview = self
             .shelf
             .preview

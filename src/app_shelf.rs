@@ -163,6 +163,8 @@ impl App {
     pub(super) fn on_shelf_drag(&mut self, on: bool) -> Option<Event> {
         self.shelf.dragging = on;
         if on {
+            // The drop zone is drawn by the cards' page, not the preview.
+            self.shelf.preview = None;
             // A drag that comes back cancels the pending close.
             unsafe {
                 let _ = KillTimer(Some(self.hwnd), TIMER_SHELF_HOLD);
@@ -235,6 +237,7 @@ impl App {
     /// arriving whatever the pointer does next.
     pub(super) fn on_shelf_drop(&mut self, paths: Vec<PathBuf>, now: Instant) {
         self.shelf.dragging = false;
+        self.shelf.preview = None;
         let old = self.shelf.cards.clone();
         self.shelf.shelf.add(paths);
         self.shelf_look();
