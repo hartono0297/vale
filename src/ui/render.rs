@@ -6236,6 +6236,53 @@ mod tests {
                 }
             }
         }
+        // Upright, three times the slot's size so a pixel is under one grid
+        // unit, every face but the typing laptop: the ink's extremes on the
+        // grid (each pixel's far edge), against `HEAD_INK` less its margin.
+        use crate::ui::play::stories::HEAD_INK;
+        let unit = 3.0 * crate::ui::geometry::ROBOT_COMPACT / crate::ui::robot::GRID;
+        let at = (200.0, 100.0);
+        let (mut l, mut t, mut rt, mut b) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for &mascot in Mascot::ALL {
+            for &accessory in CatAccessory::ALL {
+                r.cat.set(CatLook { mascot, accessory, ..CatLook::default() });
+                let draw = |r: &mut Renderer, play: PlayFrame| {
+                    with_frame_all(Some(play), None, robot, 1.0, |frame| {
+                        painted(r, (crate::ui::geometry::WINDOW_W, 160.0), |r| r.paint_island(Style::Pill, s, frame).unwrap())
+                    })
+                };
+                let without = draw(&mut r, play_frame(1.0));
+                for expr in Expr::ALL.into_iter().filter(|e| *e != Expr::Typing) {
+                    let shot = MascotShot {
+                        dx: 0.0,
+                        dy: 0.0,
+                        rot_deg: 0.0,
+                        sx: 3.0,
+                        sy: 3.0,
+                        expr,
+                        crest: CrestPose { rot_deg: 10.0, scale: 1.0 },
+                        glance: (2.4, 0.66),
+                        blink: false,
+                        beak_open: true,
+                        bare_octopus: false,
+                        flush: 0.0,
+                    };
+                    let head = Draw::Head { at, shot };
+                    let with = draw(&mut r, PlayFrame { parts: vec![Part { layer: Layer::Front, draw: head, alpha: 1.0 }], ..play_frame(1.0) });
+                    for y in 0..with.h {
+                        for x in 0..with.w {
+                            if pixel(&with, (x, y)) != pixel(&without, (x, y)) {
+                                let gx = |e: f32| HEAD_PIVOT.0 + ((x as f32 + e) / k - at.0) / unit;
+                                let gy = |e: f32| HEAD_PIVOT.1 + ((y as f32 + e) / k - at.1) / unit;
+                                (l, t, rt, b) = (l.min(gx(0.0)), t.min(gy(0.0)), rt.max(gx(1.0)), b.max(gy(1.0)));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let (bl, bt, br, bb) = HEAD_INK;
+        assert!(bl <= l - 2.0 && bt <= t - 2.0 && br >= rt + 2.0 && bb >= b + 2.0, "ink {l} {t} {rt} {b} in {HEAD_INK:?}");
     }
 
     #[test]

@@ -9,6 +9,7 @@ use std::f32::consts::{PI, TAU};
 use windows_numerics::{Matrix3x2, Vector2};
 
 use crate::config::Style;
+use crate::theme::Mascot;
 use crate::ui::geometry::{ROBOT_COMPACT, Rect, ShapeRect, shoulder_depth};
 use crate::ui::mascot::CrestPose;
 use crate::ui::play::shape::{Deform, outline, turn_about};
@@ -178,11 +179,12 @@ pub enum Draw {
     Clipped { clip: Vec<Seg>, items: Vec<Draw> },
 }
 
-/// The head's ink on its 64-unit grid, whichever mascot, face, crest (up to
-/// the startle's 1.75) and accessory: (left, top, right, bottom). Measured
-/// -6.2, -15.4 (the falk's startled crest), 70.2 (the octopus's arms), 60.9,
-/// plus 3 units for the pixels the measure rounds to.
-pub(crate) const HEAD_INK: (f32, f32, f32, f32) = (-9.0, -19.0, 73.0, 64.0);
+/// The head's ink on its 64-unit grid, whichever mascot, face but the typing
+/// laptop, crest (up to the startle's 1.75) and accessory: (left, top, right,
+/// bottom). Measured -6.6, -15.4 (the falk's startled crest), 70.6 (the
+/// octopus's arms), 64.6, plus 2.4 to 3.6 units for the pixels the measure
+/// rounds to (`a_head_part_stays_inside_its_bounds` measures it).
+pub(crate) const HEAD_INK: (f32, f32, f32, f32) = (-9.0, -19.0, 73.0, 68.0);
 
 /// `HEAD_INK` for the octopus as its mantle alone (`MascotShot::bare_octopus`),
 /// any face but the typing laptop, any accessory, flushed or not. Measured
@@ -428,10 +430,27 @@ pub fn whistle_arcs(at: (f32, f32)) -> [((f32, f32), f32, f32, f32); 3] {
 /// `story`'s shot at `beat` on the island `s`. A story that is not ready
 /// leaves everything at rest.
 pub fn shot(story: Story, style: Style, s: ShapeRect, beat: Beat) -> Shot {
-    match story {
+    let shot = match story {
         Story::MalingAngka => maling_angka::shot(style, s, beat),
         _ => Shot::rest(style, s),
+    };
+    debug_assert!(bare_heads_fit(story, &shot), "{story:?} draws a bare head");
+    shot
+}
+
+/// Every head of `shot` asking for the bare mantle is in an octopus story:
+/// only the octopus's painter drops the arms, so only there does the bare
+/// box (`BARE_OCTOPUS_INK`) hold what is painted.
+fn bare_heads_fit(story: Story, shot: &Shot) -> bool {
+    fn bare(d: &Draw) -> bool {
+        match d {
+            Draw::Head { shot, .. } => shot.bare_octopus,
+            Draw::Group { items, .. } | Draw::Clipped { items, .. } => items.iter().any(bare),
+            _ => false,
+        }
     }
+    let any = shot.mascot.is_some_and(|m| m.bare_octopus) || shot.parts.iter().any(|p| bare(&p.draw));
+    !any || story.mascot() == Mascot::Octopus
 }
 
 /// The deformed island's box: its outline, and the Notch's shoulders.
@@ -736,6 +755,50 @@ mod tests {
         assert_eq!(shot.pose(alert).flush, 0.7);
         assert_eq!(MascotShot { flush: 0.2, ..shot }.pose(alert).flush, 0.7);
         assert_eq!(MascotShot { flush: 1.0, ..shot }.pose(alert).flush, 1.0);
+    }
+
+    #[test]
+    fn a_bare_head_belongs_to_an_octopus_story() {
+        let face = MascotShot {
+            dx: 0.0,
+            dy: 0.0,
+            rot_deg: 0.0,
+            sx: 1.0,
+            sy: 1.0,
+            expr: Expr::Idle,
+            crest: CrestPose { rot_deg: 10.0, scale: 1.0 },
+            glance: (0.0, 0.0),
+            blink: false,
+            beak_open: false,
+            bare_octopus: false,
+            flush: 0.0,
+        };
+        let s = crate::ui::play::testing::shape(Style::Notch, 190.0, 34.0);
+        // A bare head deep in a figure, or the slot head bare.
+        let nested = |bare: bool| {
+            let head = Draw::Head { at: (0.0, 0.0), shot: MascotShot { bare_octopus: bare, ..face } };
+            let clipped = Draw::Clipped { clip: circle_segs((0.0, 0.0), 5.0), items: vec![head] };
+            let mut shot = Shot::rest(Style::Notch, s);
+            shot.parts.push(Part {
+                layer: Layer::Back,
+                draw: Draw::Group { at: (0.0, 0.0), rot_deg: 0.0, scale: (1.0, 1.0), pivot: (0.0, 0.0), items: vec![clipped] },
+                alpha: 1.0,
+            });
+            shot
+        };
+        let slot = |bare: bool| Shot { mascot: Some(MascotShot { bare_octopus: bare, ..face }), ..Shot::rest(Style::Notch, s) };
+        // Only the octopus's painter drops the arms; any other mascot paints
+        // its whole head, which the bare box would not hold.
+        for shot in [nested(true), slot(true)] {
+            assert!(bare_heads_fit(Story::Bungee, &shot));
+            assert!(!bare_heads_fit(Story::Kelelawar, &shot));
+            assert!(!bare_heads_fit(Story::PianoEkor, &shot));
+        }
+        for shot in [nested(false), slot(false), Shot::rest(Style::Notch, s)] {
+            for story in [Story::Bungee, Story::Kelelawar, Story::PianoEkor] {
+                assert!(bare_heads_fit(story, &shot), "{story:?}");
+            }
+        }
     }
 
     #[test]
