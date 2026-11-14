@@ -129,6 +129,7 @@ use crate::ui::render::{
     CleanerView, CliView, DevicesView, DigitFx, FolderMenuView, Frame, MoleView, NoticeCloseView,
     PlayFrame, Progress, RecFrame, RecordView, Renderer, RobotFrame, SearchView, SystemView,
 };
+use crate::ui::play::{click_through, swallows};
 use crate::ui::play::gate::{Env, instant_stop, may_start, must_stop};
 use crate::ui::play::shape::Deform;
 use crate::ui::play::state::Play;
@@ -2383,8 +2384,13 @@ impl App {
             return self.pointer_near;
         }
         let mut pt = POINT::default();
-        match (self.win.as_ref(), self.notch_span()) {
-            (Some(win), Some(span)) if unsafe { GetCursorPos(&mut pt) }.is_ok() => {
+        self.near_top_at(unsafe { GetCursorPos(&mut pt) }.is_ok().then_some(pt))
+    }
+
+    /// `pointer_near_now` for a cursor already read. Unknown counts as near.
+    fn near_top_at(&self, cursor: Option<POINT>) -> bool {
+        match (self.win.as_ref(), self.notch_span(), cursor) {
+            (Some(win), Some(span), Some(pt)) => {
                 pointer_watch::near_top(pt.x, pt.y - win.screen_origin().1, span, win.scale())
             }
             _ => true,
@@ -2518,18 +2524,44 @@ impl App {
         if self.play.is_none() {
             return;
         }
-        let env = self.play_env(now, true);
+        // The one pointer reading of this frame feeds the presence gate and
+        // the click-through test.
+        let mut pt = POINT::default();
+        let cursor = unsafe { GetCursorPos(&mut pt) }.is_ok().then_some(pt);
+        let near = if self.pointer_ms != 0 {
+            self.pointer_near
+        } else {
+            self.near_top_at(cursor)
+        };
+        let env = Env {
+            pointer_near: near,
+            ..self.play_env(now, false)
+        };
         let shape = play_shape_of(self.config.style, self.notch_size(), self.config.mascot);
         let jumped = std::mem::take(&mut self.play_clock_jumped);
-        let Some(active) = self.play.as_mut() else {
-            return;
-        };
-        let changed = active.shape != shape;
-        if step_play(&env, &mut active.play, active.moment, changed, jumped, now) {
-            self.last_story = Some(active.play.story());
+        let inside = self.cursor_on_island(cursor, now);
+        let buttons = [VK_LBUTTON, VK_RBUTTON, VK_MBUTTON]
+            .into_iter()
+            .any(|vk| (unsafe { GetAsyncKeyState(i32::from(vk.0)) }) as u16 & 0x8000 != 0);
+        let out = advance_slot(&mut self.play, &env, shape, jumped, buttons, inside, now);
+        if let Some(story) = out.finished {
+            self.last_story = Some(story);
             self.last_play_at = Some(now);
-            self.play = None;
         }
+        if let Some(win) = self.win.as_mut() {
+            win.set_click_through(out.click_through);
+        }
+    }
+
+    /// The cursor is on the island's resting shape. Unknown counts as on it,
+    /// so the island stays clickable.
+    fn cursor_on_island(&self, cursor: Option<POINT>, now: Instant) -> bool {
+        let (Some(pt), Some(win)) = (cursor, self.win.as_ref()) else {
+            return true;
+        };
+        let (origin, k) = (win.screen_origin(), win.scale());
+        let (x, y) = ((pt.x - origin.0) as f32 / k, (pt.y - origin.1) as f32 / k);
+        swallows(self.config.style, self.idle_shape(now), true, x, y)
     }
 
     /// What the renderer gets for the running story. Until the stories
@@ -8764,6 +8796,44 @@ fn step_play(
     play.done(now)
 }
 
+/// What one frame of a running story leaves behind.
+struct Advance {
+    /// The story that was just dropped.
+    finished: Option<Story>,
+    /// The island window should pass clicks through its pixels.
+    click_through: bool,
+}
+
+/// One frame of the story in `slot`: a mouse button down ends it, `step_play`
+/// runs, and a finished story is dropped. The click-through state is derived
+/// from the slot after all that, so the frame that drops a story, by any path,
+/// is the frame that clears it.
+fn advance_slot(
+    slot: &mut Option<ActivePlay>,
+    env: &Env,
+    shape: PlayShape,
+    clock_jumped: bool,
+    clicked: bool,
+    inside: bool,
+    now: Instant,
+) -> Advance {
+    let mut finished = None;
+    if let Some(active) = slot.as_mut() {
+        if clicked {
+            active.play.end(now);
+        }
+        let changed = active.shape != shape;
+        if step_play(env, &mut active.play, active.moment, changed, clock_jumped, now) {
+            finished = Some(active.play.story());
+            *slot = None;
+        }
+    }
+    Advance {
+        finished,
+        click_through: click_through(slot.is_some(), inside),
+    }
+}
+
 /// How long the island's morph still has to run at `now`; `None` once it has
 /// reached its shape. A greeting play waits for that.
 fn morph_left(running: bool, start: Instant, ms: u64, now: Instant) -> Option<Duration> {
@@ -11716,6 +11786,91 @@ mod tests {
         let mut p = Play::start(Story::Kelelawar, t0);
         assert!(!step_play(&ok_env(), &mut p, Moment::Idle, false, false, t0 + ms(100)));
         assert_eq!(p.beat(t0 + ms(300)).alpha, 1.0, "nothing wrong: it plays on");
+    }
+
+    /// A story just started at `t0` for the Notch style.
+    fn slot_at(t0: Instant) -> (Option<ActivePlay>, PlayShape) {
+        use crate::theme::Mascot;
+        use crate::ui::play::state::Play;
+        use crate::ui::play::trigger::Story;
+        let size = NotchSize::from_config(&Config::default());
+        let shape = play_shape_of(Style::Notch, size, Mascot::Cat);
+        let play = Play::start(Story::Kelelawar, t0);
+        (Some(ActivePlay { play, moment: Moment::Idle, shape }), shape)
+    }
+
+    #[test]
+    fn however_a_play_ends_the_window_is_not_click_through_on_that_frame() {
+        use crate::theme::Mascot;
+        use crate::ui::play::gate::Env;
+        use crate::ui::play::testing::ok_env;
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        let size = NotchSize::from_config(&Config::default());
+        let other = play_shape_of(Style::Pill, size, Mascot::Cat);
+        // (name, env, island changed, clock jumped, clicked)
+        let paths = [
+            ("done", ok_env(), false, false, false),
+            ("finish_now", Env { energy_saver: true, ..ok_env() }, false, false, false),
+            ("config change", ok_env(), true, false, false),
+            ("clock jump", ok_env(), false, true, false),
+            ("click", ok_env(), false, false, true),
+        ];
+        for (name, env, changed, jumped, clicked) in paths {
+            let (mut slot, shape) = slot_at(t0);
+            let frame_shape = if changed { other } else { shape };
+            // With a cursor outside the island: the flag is up while it plays.
+            let first = advance_slot(&mut slot, &env, frame_shape, jumped, clicked, false, t0 + ms(100));
+            if slot.is_some() {
+                assert!(first.click_through, "{name}: a running play, cursor outside, must pass clicks");
+            }
+            let mut dropped = slot.is_none();
+            let mut t = 100;
+            while !dropped {
+                t += 100;
+                assert!(t < 60_000, "{name}: the play never ended");
+                let out = advance_slot(&mut slot, &env, frame_shape, false, false, false, t0 + ms(t));
+                dropped = slot.is_none();
+                assert_eq!(out.finished.is_some(), dropped, "{name}");
+                assert_eq!(
+                    out.click_through,
+                    !dropped,
+                    "{name}: the frame that drops the play must clear the flag, and only that one"
+                );
+            }
+            // With no play left, nothing ever sets it again.
+            let after = advance_slot(&mut slot, &ok_env(), frame_shape, false, false, false, t0 + ms(70_000));
+            assert!(!after.click_through && after.finished.is_none(), "{name}");
+        }
+    }
+
+    #[test]
+    fn the_cursor_on_the_island_keeps_it_clickable_during_a_play() {
+        use crate::ui::play::testing::ok_env;
+        let t0 = Instant::now();
+        let (mut slot, shape) = slot_at(t0);
+        let out = advance_slot(&mut slot, &ok_env(), shape, false, false, true, t0 + Duration::from_millis(100));
+        assert!(slot.is_some() && !out.click_through);
+        let out = advance_slot(&mut slot, &ok_env(), shape, false, false, false, t0 + Duration::from_millis(200));
+        assert!(out.click_through, "back outside it: click-through again");
+    }
+
+    #[test]
+    fn a_button_down_ends_a_running_play_and_does_nothing_without_one() {
+        use crate::ui::play::testing::ok_env;
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        let (mut clicked, shape) = slot_at(t0);
+        advance_slot(&mut clicked, &ok_env(), shape, false, false, false, t0 + ms(100));
+        advance_slot(&mut clicked, &ok_env(), shape, false, true, false, t0 + ms(150));
+        let beat = |slot: &Option<ActivePlay>, at| slot.as_ref().unwrap().play.beat(t0 + at);
+        assert!(beat(&clicked, ms(300)).alpha < 1.0, "the click began the wind-down");
+        let (mut calm, shape) = slot_at(t0);
+        advance_slot(&mut calm, &ok_env(), shape, false, false, false, t0 + ms(150));
+        assert_eq!(beat(&calm, ms(300)).alpha, 1.0, "no click: it plays on");
+        let mut none = None;
+        let out = advance_slot(&mut none, &ok_env(), shape, false, true, false, t0);
+        assert!(none.is_none() && out.finished.is_none() && !out.click_through);
     }
 
     #[test]
