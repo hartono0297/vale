@@ -24,12 +24,18 @@ phone page's thumbnails ([[shelf-phone]]). Code: `src/shelf_thumb.rs` (decode),
   fullscreen and capture rules and a second place to keep the theme right.
   Limit: the image is as big as the panel, and is never scaled above 1:1.
 - **Thumbnails are lazy, on one worker, only while the Shelf page is open.**
-  No timer, no thread and no file IO while the page is closed, none on the UI
-  thread ([[bata-idle-power-budget]]). One short-lived thread per batch posts
-  one event per result and exits.
+  No timer and no file IO on the UI thread ([[bata-idle-power-budget]]). One
+  short-lived thread per batch posts one event per result and exits. A batch
+  already started keeps decoding after the page closes (up to 12 photos at
+  192 px); results for a card that is gone are ignored. Each open of a preview
+  starts its own decode (nothing is cached for it).
 - **Sizes:** card thumbnail 192 px on the long side (`CARD_SIDE`), preview
   1024 px (`PREVIEW_SIDE`), files over 64 MiB are not decoded (the phone
-  thumbnail's cap). EXIF orientation is applied. A card thumbnail is
+  thumbnail's cap), and neither are images that declare more than 250 M pixels
+  (`MAX_PIXELS`: a small, highly compressed file can ask for gigabytes). EXIF
+  orientation is applied. The pixels are premultiplied BGRA (WIC `PBGRA`), which
+  is what `thumb_bitmap` declares, so a transparent PNG shows the card colour
+  through its clear areas instead of going dark. A card thumbnail is
   cover-cropped into the card's picture box.
 - **Network paths get no card thumbnail** (the icon stays, so a dead share
   never makes the page decode slowly); a preview of one is allowed because the
@@ -44,6 +50,9 @@ phone page's thumbnails ([[shelf-phone]]). Code: `src/shelf_thumb.rs` (decode),
 - **Bitmap caches are cleared with the render target**, like `clip_thumbs`
   ([[d2d-bitmaps-vs-pixels]]); the preview's pixels are dropped when the
   preview closes.
+- **A drag over the island closes the preview** (`on_shelf_drag(true)` and
+  `on_shelf_drop`): only the cards' page draws the drop zone, so files dropped
+  on an open preview would land unseen.
 - **`MenuOpen` holds the panel while the menu is open.** The menu is modal, so
   the pointer leaves the island and the panel would close under it (`app.rs`,
   next to `open_note_card_menu`).
@@ -52,9 +61,11 @@ phone page's thumbnails ([[shelf-phone]]). Code: `src/shelf_thumb.rs` (decode),
 
 - A ghost card (one taken off, fading out) is drawn as its icon, not its
   thumbnail: the ghost has no cache slot any more.
-- The renderer's preview bitmap is keyed by the card key only. A file with the
-  same path put on the shelf again after it changed shows the old picture
-  until the cache entry is evicted (the same trade-off as "no mtime stamp").
+- Both D2D bitmap caches (the card thumbnails and the preview's big bitmap)
+  match on the card key AND the very same decode (`Arc::ptr_eq`,
+  `shelf_thumbs::bitmap_is_current`). A card taken off and put back keeps its
+  key but gets a new decode, so a key-only match would draw the old picture;
+  with the check a new decode rebuilds the bitmap and replaces the entry.
 - The menu is modal and the pick carries the card's index: if the shelf
   changes while it is open (a phone upload, a card removed), that index can
   point at another card. `shelf_preview_open` only checks that the card at the
