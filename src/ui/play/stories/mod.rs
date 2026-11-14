@@ -3,6 +3,7 @@
 //! paints a shot, nothing here touches Direct2D.
 
 pub mod maling_angka;
+pub mod syal_ekor;
 
 use std::f32::consts::{PI, TAU};
 
@@ -22,7 +23,7 @@ use crate::ui::robot::{Expr, GRID, Pose, Seg};
 /// The story has a timeline to play. Only ready stories enter the pool
 /// (`trigger::pool`), so a mascot with none never plays.
 pub fn ready(story: Story) -> bool {
-    matches!(story, Story::MalingAngka)
+    matches!(story, Story::MalingAngka | Story::SyalEkor)
 }
 
 /// One moment of a story, for the renderer.
@@ -415,8 +416,6 @@ pub struct MascotShot {
 impl MascotShot {
     /// The head at rest in its slot with the idle face (the falk's idle
     /// crest; the other mascots have none).
-    // Built on by the stories that hand the slot head to a figure (next commit).
-    #[cfg_attr(not(test), allow(dead_code))]
     pub const REST: MascotShot = MascotShot {
         dx: 0.0,
         dy: 0.0,
@@ -473,6 +472,7 @@ pub fn whistle_arcs(at: (f32, f32)) -> [((f32, f32), f32, f32, f32); 3] {
 pub fn shot(story: Story, style: Style, s: ShapeRect, beat: Beat, look: CatLook) -> Shot {
     let shot = match story {
         Story::MalingAngka => maling_angka::shot(style, s, beat, look),
+        Story::SyalEkor => syal_ekor::shot(style, s, beat, look),
         _ => Shot::rest(style, s),
     };
     debug_assert!(bare_heads_fit(story, &shot), "{story:?} draws a bare head");

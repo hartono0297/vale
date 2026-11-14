@@ -73,6 +73,12 @@
 //!   (2.46 s, the second tap), `-bawa` (4.1 s, the digit carried home),
 //!   `-tumbuh` (4.85 s, the clock regrowing it), `-kaget` (5.3 s, the crest
 //!   shot up and the stolen digit falling) and `-siul` (6.55 s, the whistle).
+//! - The cat's Syal ekor story, frozen at two moments, always with the cat
+//!   (its coat from `DI_CAT_COLOR`, `DI_CAT_ACCESSORY` as above):
+//!   `bata-play-syal-wrap` (4.3 s, the tail hugging the left end, the end
+//!   pulled in, the cat's happy eyes) and `bata-play-syal-sneeze` (5.64 s,
+//!   the sneeze at its height: the island jolted sideways, the lip pushed
+//!   down, the tail letting go).
 //! - `bata-play-cat-body`: the seated cat (body, legs, paws, tail) beside
 //!   the island at rest, tail up and one paw lifted, always the cat (its coat
 //!   from `DI_CAT_COLOR`, `DI_CAT_ACCESSORY` as above).
@@ -525,7 +531,8 @@ enum CliDemo {
 }
 
 /// What a play scene freezes (`bata-play-island`, `bata-play-swing`,
-/// `bata-play-digits`, the `bata-maling-angka-*` moments, `bata-play-cat-body`,
+/// `bata-play-digits`, the `bata-maling-angka-*` and `bata-play-syal-*`
+/// moments, `bata-play-cat-body`,
 /// `bata-play-octopus-arms`, `bata-play-falk-open`, `bata-play-falk-hang`).
 #[derive(Clone, Copy, PartialEq)]
 enum DemoPlay {
@@ -540,6 +547,8 @@ enum DemoPlay {
     Digits,
     /// The falk's Maling angka at this many seconds, always with the falk.
     MalingAngka(f32),
+    /// The cat's Syal ekor at this many seconds, always with the cat.
+    SyalEkor(f32),
     /// The seated cat beside the island at rest, tail up, one paw lifted,
     /// always the cat.
     CatBody,
@@ -1141,6 +1150,11 @@ fn demo_play(which: DemoPlay, style: Style, shape: ShapeRect, cat: CatLook) -> P
             let look = CatLook { mascot: Mascot::Falk, ..cat };
             return PlayFrame::of(stories::shot(Story::MalingAngka, style, shape, beat, look), beat);
         }
+        DemoPlay::SyalEkor(t) => {
+            let beat = Beat { t, ..beat };
+            let look = CatLook { mascot: Mascot::Cat, ..cat };
+            return PlayFrame::of(stories::shot(Story::SyalEkor, style, shape, beat, look), beat);
+        }
         DemoPlay::CatBody => {
             let beat = Beat { spread: 0.0, ..beat };
             let pose = CatPose {
@@ -1428,7 +1442,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 227] = [
+const SCENES: [Scene; 229] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -2082,6 +2096,15 @@ const SCENES: [Scene; 227] = [
     Scene {
         play: DemoPlay::MalingAngka(6.55),
         ..bata("bata-maling-angka-siul", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    // Syal ekor, frozen: the tail hugging the left end, the sneeze.
+    Scene {
+        play: DemoPlay::SyalEkor(4.3),
+        ..bata("bata-play-syal-wrap", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    Scene {
+        play: DemoPlay::SyalEkor(5.64),
+        ..bata("bata-play-syal-sneeze", ShapeKind::Idle, View0::Idle, Expr::Idle)
     },
     Scene {
         play: DemoPlay::CatBody,
@@ -3221,7 +3244,7 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                         mascot: Mascot::Falk,
                         ..cat
                     },
-                    DemoPlay::CatBody => CatLook {
+                    DemoPlay::CatBody | DemoPlay::SyalEkor(_) => CatLook {
                         mascot: Mascot::Cat,
                         ..cat
                     },

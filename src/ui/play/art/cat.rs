@@ -171,11 +171,7 @@ fn figure(pose: &CatPose, look: CatLook) -> Vec<Draw> {
             tip: Some((6.0, c.shade)),
             ..LimbStyle::default()
         };
-        let tail = limb(&p, &style, c.fur);
-        if let (Some(rgb), Some(Draw::Fill { path, .. })) = (rim, tail.first()) {
-            out.push(Draw::Stroke { path: path.clone(), rgb, width: RIM_WIDTH });
-        }
-        out.extend(tail);
+        out.extend(striped(&p, &style, c.fur, c.shade, rim));
     }
     let (body, side, hips) = (svg(SL_BODY), svg(SL_SIDE), [svg(SL_HL), svg(SL_HR)]);
     if let Some(rgb) = rim {
@@ -220,6 +216,32 @@ fn figure(pose: &CatPose, look: CatLook) -> Vec<Draw> {
     for (x0, p) in LEG_X.iter().zip(&pose.paws) {
         out.push(paw((x0 + p.dx, 84.0 + p.dy), c, p));
     }
+    out
+}
+
+/// A tail of a story's own, off the body (the scarf of Syal ekor): `style`'s
+/// tube about `p` in the coat's fur, its stripes and tip in the coat's
+/// shade, the Black cat's rim round it. Never darkened by the island.
+pub fn tail(p: &[(f32, f32)], style: &LimbStyle, look: CatLook) -> Vec<Draw> {
+    let head = look.head_rgb();
+    striped(p, style, head, tone(head, SHADE), look.rim())
+}
+
+/// `style`'s tube about `p` in `fur`, its stripes and tip in `shade`, and
+/// `rim` (the Black cat's) as a stroke `RIM_WIDTH` wide under it: 0.8 of it
+/// shows past the tube.
+fn striped(p: &[(f32, f32)], style: &LimbStyle, fur: u32, shade: u32, rim: Option<u32>) -> Vec<Draw> {
+    let style = LimbStyle {
+        stripes: style.stripes.map(|s| Stripes { rgb: shade, ..s }),
+        tip: style.tip.map(|(len, _)| (len, shade)),
+        ..*style
+    };
+    let tube = limb(p, &style, fur);
+    let mut out = Vec::new();
+    if let (Some(rgb), Some(Draw::Fill { path, .. })) = (rim, tube.first()) {
+        out.push(Draw::Stroke { path: path.clone(), rgb, width: RIM_WIDTH });
+    }
+    out.extend(tube);
     out
 }
 
@@ -387,6 +409,33 @@ mod tests {
             Draw::Fill { path, rgb } if *path == body => Some((i, *rgb)),
             _ => None,
         })
+    }
+
+    #[test]
+    fn a_tail_of_its_own_takes_the_coat_and_the_black_cats_rim() {
+        // A story's tail off the body (the scarf): the fur and the shade of
+        // the coat, as the seated cat's tail has them, never darkened.
+        let path: Vec<(f32, f32)> = (0..20).map(|i| (i as f32 * 2.0, (i as f32 * 0.3).sin() * 4.0)).collect();
+        let style = LimbStyle {
+            w0: 3.4,
+            w1: 2.4,
+            stripes: Some(Stripes { start: 5.5, every: 4.4, w: 1.8, skip_base: 3.0, rgb: 0 }),
+            tip: Some((3.6, 0)),
+            ..LimbStyle::default()
+        };
+        for color in [CatColor::Terracotta, CatColor::Calico, CatColor::White, CatColor::Black] {
+            let l = look(color);
+            let d = tail(&path, &style, l);
+            let shade = tone(l.head_rgb(), SHADE);
+            let fills: Vec<u32> = d.iter().filter_map(|x| match x {
+                Draw::Fill { rgb, .. } => Some(*rgb),
+                _ => None,
+            }).collect();
+            assert_eq!(fills[0], l.head_rgb(), "{color:?}: the tube is the fur");
+            assert!(fills.len() > 3 && fills[1..].iter().all(|rgb| *rgb == shade), "{color:?}: stripes and tip in the shade: {fills:?}");
+            let rim = matches!(d.first(), Some(Draw::Stroke { rgb, width, .. }) if *rgb == RIM && *width == RIM_WIDTH);
+            assert_eq!(rim, color == CatColor::Black, "{color:?}");
+        }
     }
 
     #[test]

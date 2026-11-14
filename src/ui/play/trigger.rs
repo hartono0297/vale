@@ -213,10 +213,12 @@ mod tests {
                 assert_eq!(pool(m, clock_on), want, "{m:?} clock_on={clock_on}");
             }
         }
-        // Part 1 ships the falk's Maling angka alone.
+        // Part 1 ships the falk's Maling angka; part 2 adds the cat's Syal
+        // ekor first.
         assert_eq!(pool(Mascot::Falk, true), vec![Story::MalingAngka]);
         assert!(pool(Mascot::Falk, false).is_empty(), "Maling angka needs the clock");
-        assert!(pool(Mascot::Cat, true).is_empty(), "no cat story yet");
+        assert_eq!(pool(Mascot::Cat, true), vec![Story::SyalEkor]);
+        assert_eq!(pool(Mascot::Cat, false), vec![Story::SyalEkor], "Syal ekor needs no clock");
         assert!(pool(Mascot::Octopus, true).is_empty(), "no octopus story yet");
     }
 

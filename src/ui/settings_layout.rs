@@ -8512,7 +8512,8 @@ mod tests {
     }
 
     /// A mascot with no ready story gets the row dimmed and an honest line
-    /// instead of the promise; the falk, whose story is ready, gets both.
+    /// instead of the promise; the falk and the cat, whose stories are
+    /// ready, get both.
     #[test]
     fn mascot_play_row_is_dimmed_for_a_mascot_with_no_ready_story() {
         use crate::theme::MascotPlay as P;
@@ -8545,7 +8546,7 @@ mod tests {
                 let enabled = l.controls.iter().any(|c| {
                     matches!(c, Control::Segmented { group: Group::MascotPlay, enabled: true, .. })
                 });
-                let ready = mascot == Mascot::Falk;
+                let ready = mascot != Mascot::Octopus;
                 assert_eq!(enabled, ready, "{lang:?} {mascot:?}");
                 let key = if ready { Key::MascotPlayDesc } else { Key::MascotPlayComing };
                 assert_eq!(desc, text(lang, key), "{lang:?} {mascot:?}");
