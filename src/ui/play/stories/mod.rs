@@ -4,6 +4,7 @@
 
 pub mod bantal_angka;
 pub mod maling_angka;
+pub mod penasaran_jam;
 pub mod petak_umpet;
 pub mod piano_ekor;
 pub mod syal_ekor;
@@ -28,7 +29,12 @@ use crate::ui::robot::{Expr, GRID, Pose, Seg};
 pub fn ready(story: Story) -> bool {
     matches!(
         story,
-        Story::MalingAngka | Story::SyalEkor | Story::PetakUmpet | Story::BantalAngka | Story::PianoEkor
+        Story::MalingAngka
+            | Story::SyalEkor
+            | Story::PetakUmpet
+            | Story::BantalAngka
+            | Story::PianoEkor
+            | Story::PenasaranJam
     )
 }
 
@@ -548,6 +554,7 @@ pub fn shot(story: Story, stage: &Stage) -> Shot {
         Story::PetakUmpet => petak_umpet::shot(stage),
         Story::BantalAngka => bantal_angka::shot(stage),
         Story::PianoEkor => piano_ekor::shot(stage),
+        Story::PenasaranJam => penasaran_jam::shot(stage),
         _ => Shot::rest(stage.style, stage.shape),
     };
     debug_assert!(bare_heads_fit(story, &shot), "{story:?} draws a bare head");
