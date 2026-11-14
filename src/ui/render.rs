@@ -74,7 +74,7 @@ use super::play::shape::{Deform, outline, rigid, top_corners, turn_about};
 use super::play::state::{Beat, spread_offsets};
 use super::play::stories::{
     Draw, HEAD_PIVOT, Layer, MascotShot, PAINT_ORDER, Part, Pass, Shot, Slot, group_matrix, head_matrix,
-    whistle_arcs,
+    path_box, whistle_arcs,
 };
 use super::robot::{
     Expr, EyesPose, GRID, Pose, RobotPainter, eyes_area, eyes_centre, eyes_offset_in,
@@ -2758,7 +2758,8 @@ impl Renderer {
             self.paint_robot(area, frame);
         } else if m.alpha > 0.0 {
             // Head and halo fade as one; a faded story head is never held back.
-            self.push_fade(m.alpha);
+            // Its halo and the typing laptop reach past the head's ink: no bound.
+            self.push_fade(m.alpha, None);
             self.paint_robot_at(area, frame, 1.0);
             unsafe { rt.PopLayer() };
         }
@@ -2844,9 +2845,12 @@ impl Renderer {
         if alpha <= 0.0 {
             return;
         }
-        let figure = matches!(part.draw, Draw::Group { .. } | Draw::Head { .. });
+        let figure = matches!(
+            part.draw,
+            Draw::Group { .. } | Draw::Head { .. } | Draw::Clipped { .. }
+        );
         if figure && alpha < 1.0 {
-            self.push_fade(alpha);
+            self.push_fade(alpha, Some(part.draw.bounds()));
             self.paint_draw(&part.draw, 1.0, unit, at);
             let target = self.target.as_ref().expect("target ensured by paint");
             unsafe { target.rt.PopLayer() };
@@ -2857,16 +2861,14 @@ impl Renderer {
 
     /// Everything drawn until `PopLayer` at `opacity`, on the target's own
     /// fade layer: it nests in whatever is already pushed (a mask, the
-    /// view's fade).
-    fn push_fade(&self, opacity: f32) {
+    /// view's fade). `ink` is the box the content stays in, in the current
+    /// user space: the layer is only that big (a layer on the software
+    /// target is an intermediate bitmap), with a margin for antialiasing.
+    /// `None`: no bound.
+    fn push_fade(&self, opacity: f32, ink: Option<Rect>) {
         let target = self.target.as_ref().expect("target ensured by paint");
         let params = D2D1_LAYER_PARAMETERS {
-            contentBounds: D2D_RECT_F {
-                left: -f32::MAX,
-                top: -f32::MAX,
-                right: f32::MAX,
-                bottom: f32::MAX,
-            },
+            contentBounds: layer_bounds(ink),
             geometricMask: ManuallyDrop::new(None),
             maskAntialiasMode: D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
             maskTransform: Matrix3x2::identity(),
@@ -3016,12 +3018,7 @@ impl Renderer {
                     return;
                 };
                 let params = D2D1_LAYER_PARAMETERS {
-                    contentBounds: D2D_RECT_F {
-                        left: -f32::MAX,
-                        top: -f32::MAX,
-                        right: f32::MAX,
-                        bottom: f32::MAX,
-                    },
+                    contentBounds: layer_bounds(Some(path_box(clip, 0.0))),
                     geometricMask: ManuallyDrop::new(Some(mask)),
                     maskAntialiasMode: D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
                     maskTransform: Matrix3x2::identity(),
@@ -4906,6 +4903,29 @@ fn d2d_rect(r: Rect) -> D2D_RECT_F {
     }
 }
 
+/// The `contentBounds` of a layer holding ink inside `ink`: grown by
+/// `LAYER_MARGIN` for the antialiased edge, or unbounded for `None`. The
+/// software target makes an intermediate bitmap of the bounds on every push.
+fn layer_bounds(ink: Option<Rect>) -> D2D_RECT_F {
+    let Some(r) = ink else {
+        return D2D_RECT_F {
+            left: -f32::MAX,
+            top: -f32::MAX,
+            right: f32::MAX,
+            bottom: f32::MAX,
+        };
+    };
+    D2D_RECT_F {
+        left: r.x - LAYER_MARGIN,
+        top: r.y - LAYER_MARGIN,
+        right: r.right() + LAYER_MARGIN,
+        bottom: r.bottom() + LAYER_MARGIN,
+    }
+}
+
+/// Dip a layer's bounds keep clear of the ink it holds.
+const LAYER_MARGIN: f32 = 2.0;
+
 /// `a` moved `t` of the way to `b`, channel by channel (0xRRGGBB): the
 /// tinted text on tinted fills (event blocks) without new colours.
 fn mix(a: u32, b: u32, t: f32) -> u32 {
@@ -6264,6 +6284,126 @@ mod tests {
             assert!((120..=135).contains(&one[3]), "{style:?}: not half: {one:?}");
             assert!(same(one, both), "{style:?}: the overlap {both:?} is darker than {one:?}");
         }
+    }
+
+    #[test]
+    fn a_fading_clipped_figure_does_not_darken_where_its_pieces_overlap() {
+        // The same, for a part that is a `Clipped` (a bat cut to the window,
+        // the Peluk pulau's mantle): one fade layer round the clip's own.
+        use crate::ui::robot::Seg::{Close, Line, Move};
+        let mut r = renderer();
+        for style in [Style::Notch, Style::Pill] {
+            let s = shape(style, 190.0, 34.0);
+            let below = s.y + s.h + 20.0;
+            let rect = |x: f32, w: f32| vec![Move(x, below), Line(x + w, below), Line(x + w, below + 10.0), Line(x, below + 10.0), Close];
+            let fill = |x: f32| Draw::Fill { path: rect(x, 20.0), rgb: GREEN };
+            let clipped = Draw::Clipped { clip: rect(100.0, 60.0), items: vec![fill(100.0), fill(110.0)] };
+            let play = PlayFrame { parts: vec![Part { layer: Layer::Front, draw: clipped, alpha: 0.5 }], ..play_frame(1.0) };
+            let px = with_frame_all(Some(play), None, None, 1.0, |frame| {
+                painted(&mut r, (crate::ui::geometry::WINDOW_W, below + 20.0), |r| r.paint_island(style, s, frame).unwrap())
+            });
+            let k = r.scale;
+            let at = |x: f32| ((x * k) as usize, ((below + 5.0) * k) as usize);
+            let (one, both) = (pixel(&px, at(105.0)), pixel(&px, at(115.0)));
+            assert!((120..=135).contains(&one[3]), "{style:?}: not half: {one:?}");
+            assert!(same(one, both), "{style:?}: the overlap {both:?} is darker than {one:?}");
+        }
+    }
+
+    #[test]
+    fn a_fading_figure_loses_no_ink_to_its_layer_bounds() {
+        // A fade layer is only as big as the figure's bounds. Faded to half,
+        // every pixel must be halfway between the island without the figure
+        // and with it at full: nothing at its edge is cut off. A turned and
+        // scaled Calico cat (patches cut to its body), a fat stroke with
+        // round caps, a bare clipped stroke and every mascot's head, turned
+        // and stretched.
+        use crate::theme::{CatAccessory, CatColor, Mascot};
+        use crate::ui::mascot::CrestPose;
+        use crate::ui::play::art::cat::{CatPose, Paw, Tail, cat_at};
+        use crate::ui::robot::Seg::{Close, Line, Move};
+        let mut r = renderer();
+        let k = r.scale;
+        let robot = Some(RobotFrame { expr: Expr::Idle, pose: Pose::default() });
+        let s = shape(Style::Pill, 190.0, 34.0);
+        let dip = (crate::ui::geometry::WINDOW_W, s.y + s.h + 90.0);
+        let at = (s.x + s.w + 30.0, s.y + s.h + 50.0);
+        let cat_look = CatLook { mascot: Mascot::Cat, color: CatColor::Calico, accessory: CatAccessory::Bow, ..CatLook::default() };
+        let pose = CatPose {
+            dk: 0.0,
+            rise: Some(1.0),
+            head: (0.0, 0.0, 0.0),
+            face: MascotShot::REST,
+            paws: [Paw::default(), Paw { dx: 1.5, dy: -6.0, lift: 0.8, sq: 0.0 }],
+            tail: Some(Tail::default()),
+        };
+        let stroke = vec![Move(0.0, 0.0), Line(30.0, 14.0)];
+        let mut cases = vec![
+            ("cat", cat_at(at, 25.0, 1.2, 0.9, &pose, cat_look)),
+            (
+                "stroke",
+                Draw::Group { at, rot_deg: 30.0, scale: (1.0, 2.0), pivot: (0.0, 0.0), items: vec![Draw::Stroke { path: stroke.clone(), rgb: GREEN, width: 9.0 }] },
+            ),
+            (
+                "clipped stroke",
+                Draw::Clipped {
+                    clip: vec![Move(at.0 - 5.0, at.1 - 5.0), Line(at.0 + 20.0, at.1 - 5.0), Line(at.0 + 20.0, at.1 + 30.0), Line(at.0 - 5.0, at.1 + 30.0), Close],
+                    items: vec![Draw::Stroke { path: stroke.iter().map(|g| match *g { Move(x, y) => Move(x + at.0, y + at.1), Line(x, y) => Line(x + at.0, y + at.1), o => o }).collect(), rgb: GREEN, width: 40.0 }],
+                },
+            ),
+        ];
+        let shot = MascotShot {
+            rot_deg: 20.0,
+            sx: 1.3,
+            sy: 0.8,
+            crest: CrestPose { rot_deg: 10.0, scale: 1.75 },
+            expr: Expr::Happy,
+            ..MascotShot::REST
+        };
+        cases.push(("head", Draw::Head { at, shot }));
+        for (name, draw) in cases {
+            for &mascot in Mascot::ALL {
+                r.cat.set(CatLook { mascot, ..cat_look });
+                let paint = |r: &mut Renderer, alpha: Option<f32>| {
+                    let parts = alpha.map(|a| Part { layer: Layer::Front, draw: draw.clone(), alpha: a }).into_iter().collect();
+                    let play = PlayFrame { parts, ..play_frame(1.0) };
+                    with_frame_all(Some(play), None, robot, 1.0, |frame| {
+                        painted(r, dip, |r| r.paint_island(Style::Pill, s, frame).unwrap())
+                    })
+                };
+                let (none, full, half) = (paint(&mut r, None), paint(&mut r, Some(1.0)), paint(&mut r, Some(0.5)));
+                let (mut worst, mut ink) = (0, 0);
+                for i in 0..none.bgra.len() {
+                    let want = (none.bgra[i] as f32 + full.bgra[i] as f32) / 2.0;
+                    worst = worst.max((half.bgra[i] as f32 - want).abs().ceil() as u32);
+                    ink += usize::from(full.bgra[i] != none.bgra[i]);
+                }
+                assert!(ink > 100 * (k as usize), "{name} {mascot:?}: the figure drew nothing ({ink})");
+                assert!(worst <= 3, "{name} {mascot:?}: faded ink off by {worst} from half of the full figure's");
+            }
+        }
+    }
+
+    #[test]
+    fn a_clip_whose_box_holds_the_ink_changes_no_pixel() {
+        // A `Clipped` layer is only its clip's box big: with a clip that
+        // holds a turned fat stroke, the part is the stroke alone, pixel
+        // for pixel.
+        use crate::ui::robot::Seg::{Close, Line, Move};
+        let mut r = renderer();
+        let s = shape(Style::Pill, 190.0, 34.0);
+        let below = s.y + s.h + 20.0;
+        let stroke = Draw::Stroke { path: vec![Move(100.0, below), Line(140.0, below + 20.0)], rgb: GREEN, width: 9.0 };
+        let clip = vec![Move(90.0, below - 10.0), Line(150.0, below - 10.0), Line(150.0, below + 30.0), Line(90.0, below + 30.0), Close];
+        let paint = |r: &mut Renderer, draw: Draw| {
+            let play = PlayFrame { parts: vec![Part { layer: Layer::Front, draw, alpha: 1.0 }], ..play_frame(1.0) };
+            with_frame_all(Some(play), None, None, 1.0, |frame| {
+                painted(r, (crate::ui::geometry::WINDOW_W, below + 40.0), |r| r.paint_island(Style::Pill, s, frame).unwrap())
+            })
+        };
+        let bare = paint(&mut r, stroke.clone());
+        let clipped = paint(&mut r, Draw::Clipped { clip, items: vec![stroke] });
+        assert!(bare.bgra.iter().zip(&clipped.bgra).all(|(a, b)| a.abs_diff(*b) <= 1), "the clip cut the stroke");
     }
 
     #[test]

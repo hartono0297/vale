@@ -282,13 +282,11 @@ pub(crate) const BARE_OCTOPUS_INK: (f32, f32, f32, f32) = (-6.5, -9.5, 71.5, 56.
 
 impl Draw {
     /// The box the part's ink stays in, window dip.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn bounds(&self) -> Rect {
         self.bounds_at(ROBOT_COMPACT / GRID)
     }
 
     /// `bounds`, a head being `unit` per grid unit.
-    #[cfg_attr(not(test), allow(dead_code))]
     fn bounds_at(&self, unit: f32) -> Rect {
         match self {
             Draw::Fill { path, .. } | Draw::Tint { path, .. } => path_box(path, 0.0),
@@ -410,7 +408,6 @@ pub fn group_matrix(
 }
 
 /// The box `r` covers once moved by `m`.
-#[cfg_attr(not(test), allow(dead_code))]
 fn moved(m: &Matrix3x2, r: Rect) -> Rect {
     let corners = [(r.x, r.y), (r.x + r.w, r.y), (r.x, r.y + r.h), (r.x + r.w, r.y + r.h)];
     let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
@@ -428,8 +425,7 @@ fn moved(m: &Matrix3x2, r: Rect) -> Rect {
 
 /// The box of `path`'s points and control points (a curve stays inside
 /// them), grown by `pad`.
-#[cfg_attr(not(test), allow(dead_code))]
-fn path_box(path: &[Seg], pad: f32) -> Rect {
+pub(crate) fn path_box(path: &[Seg], pad: f32) -> Rect {
     let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
     let mut add = |x: f32, y: f32| (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
     for seg in path {
