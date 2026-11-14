@@ -106,6 +106,7 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[settings-transfer]]: Settings → Tentang → Pindah ke PC lain (2026-11-13): export the general settings to one JSON file and import it on another PC; allowlist with a test that every config key is classified, own tiles and private / PC-only fields stay on the target, key-by-key merge, backup, refused while recording, `--imported` restart
 - [[whats-new]]: "What's new" per patch (2026-11-13): a hand-written table in `src/whats_new.rs` (ID + EN, a test fails when `Cargo.toml`'s version has no entry), `config.whats_new_seen`, the "Diperbarui" notice becomes a link (`NoticeKind::WhatsNew`) that opens the Tentang card, fresh install silent
 - [[lyrics-lookup]]: LRCLIB 503 + Retry-After retry (30 s budget), step order (field search, get, free-text search), None vs transient, the Artist - Title split, tight-window consensus pick of the best-synced version, intro shift for a longer video, `.lrc2` / `.none4`
+- [[mascot-play]]: mascot stories around the island, part 1 (2026-11-14): `src/ui/play/` engine (rim, Deform, gates, triggers, one module per story, clipped to the island), `mascot_play` preset (Settings → Maskot → Otomatis), right-click "Mainkan maskot", ends on pointer/button/key, one one-shot timer; only the falk's "Maling angka" is ready, cat and octopus wait for part 2
 
 ## Gotchas
 
@@ -132,6 +133,8 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[config-parse-default-fallback]]: `config::parse` gives `Config::default()` when one non-lenient field is bad; build configs from outside data key by key and finish with `try_parse`
 - [[tray-dark-menu]]: the tray menu follows the Windows app mode via uxtheme ordinals 135/136/104 (AllowDark), not Vale's window theme
 - [[native-menu-holds-panel]]: the tray menu and the Notes card menu are modal native popups; they must run inside `hold_panel_over_app` (`MenuOpen`) or the hover panel collapses under them
+- [[play-click-through]]: a playing island passes clicks with `WS_EX_TRANSPARENT` (HTTRANSPARENT only reaches the same thread), derived from the play slot at one place so it cannot stick
+- [[test-tmp-leak]]: a full `cargo test` leaves ~513 MB in `target/test-tmp`; delete it after a run; the `app::record` missing-drive test fails on a PC with a Z: drive
 
 ## Conventions
 
@@ -139,3 +142,4 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[screenshot-capture-script]]
 - [[settings-spacing]]: one spacing rule and one button size on every Settings page (2026-11-12): text buttons label + 16 each side, min 64, 30 high; fields 30; list rows divided; 24 above a section title, 8 to its card; footnotes 12/12; blocks 16 under; 8 px fade under the title while scrolled; the tests that hold it
 - [[logo]]: the cat head is the logo (icon, tray, Settings, README); Windows icon caches
+- [[repo-not-rustfmt-clean]]: never run `cargo fmt` on the repo (it reformats ~156 files); format new code by hand
