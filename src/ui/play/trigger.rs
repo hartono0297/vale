@@ -220,7 +220,7 @@ mod tests {
         let cat = vec![Story::PetakUmpet, Story::SyalEkor];
         assert_eq!(pool(Mascot::Cat, true), cat);
         assert_eq!(pool(Mascot::Cat, false), cat, "neither needs the clock");
-        assert!(pool(Mascot::Octopus, true).is_empty(), "no octopus story yet");
+        assert!(pool(Mascot::Octopus, false).contains(&Story::Bungee), "the bungee needs no clock");
     }
 
     #[test]

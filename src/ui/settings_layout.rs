@@ -8546,7 +8546,7 @@ mod tests {
                 let enabled = l.controls.iter().any(|c| {
                     matches!(c, Control::Segmented { group: Group::MascotPlay, enabled: true, .. })
                 });
-                let ready = mascot != Mascot::Octopus;
+                let ready = crate::ui::play::trigger::has_ready(mascot, true);
                 assert_eq!(enabled, ready, "{lang:?} {mascot:?}");
                 let key = if ready { Key::MascotPlayDesc } else { Key::MascotPlayComing };
                 assert_eq!(desc, text(lang, key), "{lang:?} {mascot:?}");
