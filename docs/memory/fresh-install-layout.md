@@ -46,9 +46,13 @@ shown page is not Calendar now starts on that page.
 ## Tests that hold it
 
 `fresh_*` in `pages.rs` and `tiles.rs` (counts, order, every item once, survives
-a save); `config.rs`: `fresh_is_a_notch_with_the_new_layout`,
-`no_file_or_a_blank_one_loads_the_fresh_layout`, `classify_tells_missing_invalid_and_valid_apart`,
-`fresh_survives_a_save`; `state.rs`: `start_page_is_the_first_shown_page`.
+a save); in `config.rs` `fresh_is_a_notch_with_the_new_layout`,
+`no_file_or_a_blank_one_loads_the_fresh_layout`,
+`a_corrupt_file_or_a_read_error_loads_the_plain_defaults`,
+`a_partial_file_keeps_its_style_and_every_page` and `fresh_survives_a_save`; in
+`state.rs` `start_page_is_the_first_shown_page`,
+`start_page_with_the_default_list_is_calendar` and
+`a_tile_for_a_hidden_page_still_opens_it`.
 
 ## Not verified live
 
