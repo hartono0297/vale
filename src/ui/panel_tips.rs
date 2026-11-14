@@ -92,6 +92,7 @@ pub fn has_tip(hit: &Hit) -> bool {
             | Hit::NotifRemove(_)
             | Hit::ShelfRemove(_)
             | Hit::PhoneBack
+            | Hit::ShelfPreviewBack
             | Hit::PhoneShowQr
             | Hit::ArrangePlay(_)
             | Hit::RecPause
@@ -226,7 +227,7 @@ pub fn tip_for(hit: &Hit, ctx: &TipCtx) -> Option<Tip> {
 
         // Esc closes the search; the phone link and the cleaner have no key.
         Hit::SearchBack => Tip::named(Key::TipBack).key(KeyHint::Raw("Esc")),
-        Hit::PhoneBack => Tip::named(Key::TipBack),
+        Hit::PhoneBack | Hit::ShelfPreviewBack => Tip::named(Key::TipBack),
         Hit::PhoneShowQr => Tip::named(Key::TipPhoneShowQr).about(Key::TipPhoneShowQrAbout),
         Hit::CleanBack => Tip::named(Key::TipCleanBack),
         Hit::ArrangePlay(_) => Tip::named(Key::TipArrangePlay).about(Key::TipArrangePlayAbout),
@@ -416,6 +417,7 @@ mod tests {
             Hit::NotifRemove(7),
             Hit::ShelfRemove(1),
             Hit::PhoneBack,
+            Hit::ShelfPreviewBack,
             Hit::PhoneShowQr,
             Hit::ArrangePlay(2),
             Hit::RecPause,
@@ -740,6 +742,7 @@ mod tests {
                 Hit::NotifOpen(7),
                 Hit::ShelfCard(1),
                 Hit::ShelfClear,
+                Hit::ShelfPreviewImage,
                 Hit::DeviceEject(0),
                 Hit::CliInput,
                 Hit::CliStop,
@@ -1049,6 +1052,11 @@ mod tests {
         assert_eq!(search.keys, [KeyHint::Raw("Esc")]);
         // Esc does nothing on the phone link or the cleaner (the handlers).
         assert!(tip_for(&Hit::PhoneBack, &c).unwrap().keys.is_empty());
+        // The preview's back button says "Back" with no key; the image none.
+        let preview = tip_for(&Hit::ShelfPreviewBack, &c).unwrap();
+        assert_eq!(preview.name.as_deref(), Some(tr(Key::TipBack)));
+        assert!(preview.keys.is_empty());
+        assert!(tip_for(&Hit::ShelfPreviewImage, &c).is_none());
         let clean = tip_for(&Hit::CleanBack, &c).unwrap();
         assert_eq!(clean.name.as_deref(), Some(tr(Key::TipCleanBack)));
         assert!(clean.keys.is_empty());

@@ -38,11 +38,16 @@ const QUALITY: f32 = 0.8;
 /// The size a `w` x `h` image is scaled to: the long side at most
 /// `MAX_SIDE`, the other in proportion (at least 1), never enlarged.
 pub fn scaled_size(w: u32, h: u32) -> (u32, u32) {
+    scaled_to(w, h, MAX_SIDE)
+}
+
+/// The same for any `max_side`.
+pub(crate) fn scaled_to(w: u32, h: u32, max_side: u32) -> (u32, u32) {
     let long = w.max(h);
-    if long <= MAX_SIDE || long == 0 {
+    if long <= max_side || long == 0 {
         return (w.max(1), h.max(1));
     }
-    let scale = |side: u32| ((u64::from(side) * u64::from(MAX_SIDE) + u64::from(long) / 2) / u64::from(long)).max(1) as u32;
+    let scale = |side: u32| ((u64::from(side) * u64::from(max_side) + u64::from(long) / 2) / u64::from(long)).max(1) as u32;
     (scale(w), scale(h))
 }
 
@@ -83,10 +88,12 @@ pub(crate) fn orientation(
     }
 }
 
-fn decode_and_encode(file: &File) -> Option<Vec<u8>> {
+/// The first frame of the image in `file`, with its EXIF rotation applied.
+pub(crate) unsafe fn oriented_source(
+    wic: &IWICImagingFactory,
+    file: &File,
+) -> Option<IWICBitmapSource> {
     unsafe {
-        let wic: IWICImagingFactory =
-            CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).ok()?;
         let handle = file.as_raw_handle() as usize;
         let decoder = wic
             .CreateDecoderFromFileHandle(handle, std::ptr::null(), WICDecodeMetadataCacheOnDemand)
@@ -104,6 +111,15 @@ fn decode_and_encode(file: &File) -> Option<Vec<u8>> {
                 .ok()?;
             source = rotator.cast().ok()?;
         }
+        Some(source)
+    }
+}
+
+fn decode_and_encode(file: &File) -> Option<Vec<u8>> {
+    unsafe {
+        let wic: IWICImagingFactory =
+            CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).ok()?;
+        let source = oriented_source(&wic, file)?;
         let (mut w, mut h) = (0u32, 0u32);
         source.GetSize(&mut w, &mut h).ok()?;
         if w == 0 || h == 0 {
@@ -224,6 +240,12 @@ pub(crate) mod tests {
         // A very thin image keeps at least one pixel.
         assert_eq!(scaled_size(100_000, 10), (192, 1));
         assert_eq!(scaled_size(0, 0), (1, 1));
+    }
+
+    #[test]
+    fn scaled_to_uses_the_given_side() {
+        assert_eq!(scaled_to(4000, 3000, 1024), (1024, 768));
+        assert_eq!(scaled_to(100, 50, 1024), (100, 50));
     }
 
     #[test]

@@ -127,7 +127,8 @@ use crate::ui::panel_tips::{self, TipCtx};
 use crate::ui::tooltip;
 use crate::ui::render::{
     CleanerView, CliView, DevicesView, FolderMenuView, Frame, MoleView, NoticeCloseView,
-    PlayFrame, Progress, RecFrame, RecordView, Renderer, RobotFrame, SearchView, SystemView,
+    PlayFrame, Progress, RecFrame, RecordView, Renderer, RobotFrame, SearchView,
+    ShelfPreviewView, SystemView,
 };
 use crate::ui::play::{click_through, swallows};
 use crate::ui::play::gate::{Env, instant_stop, may_start, must_stop};
@@ -1540,6 +1541,7 @@ impl App {
                     | Event::Arrange(_)
                     | Event::Toast(_)
                     | Event::ClipPacked { .. }
+                    | Event::ShelfDecoded { .. }
                     | Event::Update(_)
                     | Event::Rec(..)
                     | Event::Screen(..)
@@ -1654,6 +1656,10 @@ impl App {
                 }
                 Event::ClipPacked { id, fingerprint, packed } => {
                     self.on_clip_packed(id, fingerprint, packed);
+                    continue;
+                }
+                Event::ShelfDecoded { key, preview, thumb } => {
+                    self.on_shelf_decoded(&key, preview, thumb, now);
                     continue;
                 }
                 // The self-update's workers: `App` decides what shows.
@@ -2000,6 +2006,9 @@ impl App {
         };
         if self.clip_right_click(hit.as_ref()) {
             return RightClick::Done;
+        }
+        if let Some(i) = shelf_menu_target(self.state.view(), hit.as_ref(), &self.shelf.cards) {
+            return RightClick::ShelfMenu(i);
         }
         if let Some(id) = note_card_menu_target(self.state.view(), hit.as_ref()) {
             return RightClick::NoteMenu(id);
@@ -2739,6 +2748,7 @@ impl App {
             Effect::ShelfOpen(i) => self.shelf_open(i),
             Effect::ShelfRemove(i) => self.shelf_remove(i),
             Effect::ShelfClear => self.shelf_clear(),
+            Effect::ShelfPreviewClose => self.shelf_preview_close(),
             Effect::PhoneStart => return self.phone_pill(),
             Effect::PhoneNewQr => self.phone_new_qr(),
             Effect::PhoneNet(n) => self.phone_switch(n),
@@ -2922,6 +2932,7 @@ impl App {
                 mole_log: cleaner.is_some_and(|c| c.mole_log),
                 cli_menu: s.cli_menu(),
                 phone: s.phone_stage(),
+                shelf_preview: self.shelf.preview.is_some(),
             },
         }
     }
@@ -7544,6 +7555,22 @@ impl App {
                 .or_else(|| self.strip_motion.as_ref().and_then(|m| m.leaving.as_ref())),
         };
         let phone_view = App::phone_view(state, &self.phone, self.config.phone_net, now);
+        // The image preview, while the Shelf page is the page. `sync_shelf`
+        // clears it as soon as the view leaves the Shelf page, so while the
+        // panel fades out the frame shows the cards.
+        let shelf_preview = self
+            .shelf
+            .preview
+            .as_ref()
+            .filter(|_| state.page() == Page::Shelf)
+            .and_then(|p| {
+                let card = self.shelf.cards.iter().find(|c| c.key == p.key)?;
+                Some(ShelfPreviewView {
+                    name: &card.name,
+                    state: &p.state,
+                    key: &p.key,
+                })
+            });
         // Anything that moves outside the shape, or the shape itself: the
         // renderer redraws the whole surface (`ui::dirty`).
         let full_redraw = self.anim.running
@@ -7586,10 +7613,12 @@ impl App {
             calendar: &self.calendar,
             mixer: self.mixer.as_deref(),
             shelf: &self.shelf.cards,
+            shelf_thumbs: &self.shelf.thumbs,
             shelf_drag: self.shelf.dragging,
             shelf_motion: &self.shelf.motion,
             phone: phone_view.as_ref(),
             phone_on: self.phone.running(),
+            shelf_preview,
             arrange: App::arrange_view(&self.arrange, &self.config, self.search_input.as_ref()),
             record: RecordView {
                 sources: self.rec_sources,
@@ -8614,6 +8643,8 @@ enum RightClick {
     NoteMenu(String),
     /// The transcript menu opens for this Rekam row.
     RecRowMenu(usize),
+    /// The "Pratinjau gambar" menu opens for this shelf card.
+    ShelfMenu(usize),
 }
 
 /// The note whose card a right-click at `hit` is on, on the Notes page.
@@ -8621,6 +8652,20 @@ fn note_card_menu_target(view: View, hit: Option<&Hit>) -> Option<String> {
     match hit {
         Some(Hit::NoteOpen(id) | Hit::NoteSticky(id)) if view == View::Panel(Page::Notes) => {
             Some(id.clone())
+        }
+        _ => None,
+    }
+}
+
+/// The shelf card a right-click at `hit` asks the preview menu for: an image
+/// that is still there, on the Shelf page only.
+fn shelf_menu_target(view: View, hit: Option<&Hit>, cards: &[crate::shelf::ShelfCard]) -> Option<usize> {
+    match hit {
+        Some(Hit::ShelfCard(i))
+            if view == View::Panel(Page::Shelf)
+                && cards.get(*i).is_some_and(crate::shelf::previewable) =>
+        {
+            Some(*i)
         }
         _ => None,
     }
@@ -9308,6 +9353,28 @@ fn open_note_card_menu(hwnd: HWND, id: &str) {
     if chosen {
         with_app(|app| app.apply_now(Event::Click(Hit::NoteSticky(id.to_owned()))));
     }
+}
+
+/// The shelf card menu: one item, "Pratinjau gambar". Modal like
+/// `open_note_card_menu`, but it also holds the panel (`Event::MenuOpen`): the
+/// pointer is on the menu, off the island, and a Hover panel would collapse
+/// before the pick and take the preview with it.
+fn open_shelf_card_menu(hwnd: HWND, i: usize) {
+    if MENU_OPEN.get() {
+        return;
+    }
+    let label = i18n::text(i18n::lang(), Key::ShelfPreview);
+    MENU_OPEN.set(true);
+    with_app(|app| app.apply_now(Event::MenuOpen(true)));
+    let chosen = tray::note_card_menu(hwnd, label);
+    MENU_OPEN.set(false);
+    // The pick first, so the panel is released onto the preview it opened.
+    with_app(|app| {
+        if chosen {
+            app.shelf_preview_open(i);
+        }
+        app.apply_now(Event::MenuOpen(false));
+    });
 }
 
 /// The device dropdown of `source` (from the Rekam page), under the device
@@ -10315,6 +10382,7 @@ unsafe extern "system" fn wnd_proc(
                 Some(RightClick::Tray) | None => open_menu(hwnd),
                 Some(RightClick::NoteMenu(id)) => open_note_card_menu(hwnd, &id),
                 Some(RightClick::RecRowMenu(i)) => open_rec_row_menu(hwnd, i),
+                Some(RightClick::ShelfMenu(i)) => open_shelf_card_menu(hwnd, i),
                 Some(RightClick::Done) => {}
             }
             LRESULT(0)
@@ -12912,6 +12980,56 @@ mod tests {
             ),
             None
         );
+    }
+
+    fn shelf_test_card(kind: crate::shelf::ShelfKind, stale: bool) -> crate::shelf::ShelfCard {
+        crate::shelf::ShelfCard {
+            key: "k".into(),
+            name: "n".into(),
+            kind,
+            stale,
+            from_phone: false,
+        }
+    }
+
+    #[test]
+    fn a_right_click_on_an_image_card_gives_the_shelf_menu() {
+        use crate::shelf::ShelfKind;
+        let cards = [
+            shelf_test_card(ShelfKind::Code, false),
+            shelf_test_card(ShelfKind::Image, false),
+        ];
+        assert_eq!(
+            shelf_menu_target(View::Panel(Page::Shelf), Some(&Hit::ShelfCard(1)), &cards),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn a_right_click_on_a_stale_card_a_document_the_wrong_page_or_nothing_gives_no_shelf_menu() {
+        use crate::shelf::ShelfKind;
+        let cards = [
+            shelf_test_card(ShelfKind::Image, true),
+            shelf_test_card(ShelfKind::Code, false),
+            shelf_test_card(ShelfKind::Folder, false),
+            shelf_test_card(ShelfKind::Image, false),
+        ];
+        let shelf = View::Panel(Page::Shelf);
+        // Stale image, document, folder.
+        for i in 0..3 {
+            assert_eq!(shelf_menu_target(shelf.clone(), Some(&Hit::ShelfCard(i)), &cards), None);
+        }
+        // Past the end of the list.
+        assert_eq!(shelf_menu_target(shelf.clone(), Some(&Hit::ShelfCard(9)), &cards), None);
+        // Not a card.
+        assert_eq!(shelf_menu_target(shelf.clone(), Some(&Hit::ShelfClear), &cards), None);
+        assert_eq!(shelf_menu_target(shelf, None, &cards), None);
+        // Another page.
+        assert_eq!(
+            shelf_menu_target(View::Panel(Page::Notes), Some(&Hit::ShelfCard(3)), &cards),
+            None
+        );
+        assert_eq!(shelf_menu_target(View::Idle, Some(&Hit::ShelfCard(3)), &cards), None);
     }
 
     #[test]

@@ -42,6 +42,10 @@
 //!   card) and `phone-receive` (two files in, one at 62 %, one that
 //!   failed). The `shelf` scene has two cards tagged "dari HP". The real
 //!   flow in a browser on this PC: `--phone-debug` (see `phone/debug.rs`).
+//! - The shelf's image thumbnails and the preview (generated gradients, no
+//!   files): `shelf-thumbs` (image cards with a picture, one gone, one from a
+//!   phone, one that could not be read, among cards without), `shelf-preview`
+//!   (a long file name), `shelf-preview-loading` and `shelf-preview-failed`.
 //! - `DI_LANG=en` draws the UI in English (also for `--demo-editor`).
 //! - `DI_ACCENT=orange` and `DI_SURFACE=graphite` pick the island theme
 //!   (`espresso`, `graphite`, `sea`, `night`, `plum`; without it, or `auto`,
@@ -228,7 +232,7 @@ use super::notch_fill::{self, fill_alpha};
 use super::render::{
     CleanerView, CliView, ClipNoticeView, ClipView, DevicesView, FolderMenuView, Frame, MoleView, RecFrame, RecordView, VideoThumbView,
     DigitFx, NoticeCloseView, NotifView, PlayFrame, Progress, Renderer, RobotFrame, SearchView, SheetKind, ShotView,
-    SystemView, ToastBadgeView, ToastLogoView,
+    ShelfPreviewView, SystemView, ToastBadgeView, ToastLogoView,
 };
 use super::play::shape::{Deform, Dent};
 use super::play::state::Beat;
@@ -1254,7 +1258,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 219] = [
+const SCENES: [Scene; 223] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -1594,6 +1598,11 @@ const SCENES: [Scene; 219] = [
     panel("shelf-enter", Page::Shelf),
     panel("shelf-exit", Page::Shelf),
     panel("shelf-move", Page::Shelf),
+    // The image thumbnails and the preview, with generated pictures.
+    panel("shelf-thumbs", Page::Shelf),
+    panel("shelf-preview", Page::Shelf),
+    panel("shelf-preview-loading", Page::Shelf),
+    panel("shelf-preview-failed", Page::Shelf),
     // The phone link over the shelf, with made-up data and no network.
     Scene {
         phone: PhoneDemo::Qr,
@@ -2827,6 +2836,23 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                 super::panel_layout::devices_reveal(shape, scene.strip, &shapes, 0.0, at)
             });
             let mixer_rows = demo_mixer();
+            let shelf_images = matches!(
+                scene.name,
+                "shelf-thumbs" | "shelf-preview" | "shelf-preview-loading" | "shelf-preview-failed"
+            );
+            let shelf_thumbs = if shelf_images {
+                demo_shelf_thumbs()
+            } else {
+                crate::shelf_thumbs::ShelfThumbs::default()
+            };
+            let preview_state = match scene.name {
+                "shelf-preview" => Some(crate::shelf_thumbs::PreviewState::Ready(
+                    std::sync::Arc::new(demo_gradient(640, 426, [0x2F, 0x6B, 0xC9], [0xF0, 0x9A, 0x4B])),
+                )),
+                "shelf-preview-loading" => Some(crate::shelf_thumbs::PreviewState::Loading),
+                "shelf-preview-failed" => Some(crate::shelf_thumbs::PreviewState::Failed),
+                _ => None,
+            };
             let shelf_elapsed = shelf_span.map_or(0, |ms| match frozen_shelf {
                 Some(p) => (p.clamp(0.0, 1.0) * ms as f32) as u64,
                 None => into as u64,
@@ -2834,10 +2860,12 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
             let (shelf_cards, shelf_motion) =
                 demo_shelf_motion(scene.name, style, scene.strip, now, shelf_elapsed)
                     .unwrap_or_else(|| {
-                        (
-                            demo_shelf(matches!(scene.name, "shelf" | "shelf-drop-files")),
-                            ShelfMotion::default(),
-                        )
+                        let cards = if shelf_images {
+                            demo_shelf_image_cards()
+                        } else {
+                            demo_shelf(matches!(scene.name, "shelf" | "shelf-drop-files"))
+                        };
+                        (cards, ShelfMotion::default())
                     });
             let demo_phone = DemoPhone::new(scene.phone);
             let phone_view = demo_phone.view();
@@ -2921,10 +2949,16 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                 calendar: &snapshot,
                 mixer: Some(&mixer_rows),
                 shelf: &shelf_cards,
+                shelf_thumbs: &shelf_thumbs,
                 shelf_drag: scene.shelf_drag,
                 shelf_motion: &shelf_motion,
                 phone: phone_view.as_ref(),
                 phone_on: scene.phone != PhoneDemo::No,
+                shelf_preview: preview_state.as_ref().map(|state| ShelfPreviewView {
+                    name: DEMO_PREVIEW_NAME,
+                    state,
+                    key: DEMO_PREVIEW_KEY,
+                }),
                 record: RecordView {
                     sources: rec_idle_sources(&name("DI_REC_SOURCES")),
                     recent: &rec_recent,
@@ -5053,6 +5087,82 @@ fn demo_shelf(filled: bool) -> Vec<crate::shelf::ShelfCard> {
         });
     }
     cards
+}
+
+/// The preview scenes' card: a long name that has to be cut, and its key.
+const DEMO_PREVIEW_NAME: &str = "foto-lokasi-tapak-proyek-gedung-b-lantai-2-revisi-final-v3.jpg";
+const DEMO_PREVIEW_KEY: &str = "foto-lokasi-tapak-proyek-gedung-b-lantai-2-revisi-final-v3.jpg";
+
+/// The `shelf-thumbs` and preview scenes' cards: pictures, one of them gone
+/// (it shows its icon), one from a phone and one that could not be read,
+/// among cards that are not pictures. The preview scenes' card is the first.
+fn demo_shelf_image_cards() -> Vec<crate::shelf::ShelfCard> {
+    use crate::shelf::{ShelfCard, ShelfKind};
+    let card = |name: &str, kind, stale, from_phone| ShelfCard {
+        key: name.to_lowercase(),
+        name: name.into(),
+        kind,
+        stale,
+        from_phone,
+    };
+    vec![
+        card(DEMO_PREVIEW_NAME, ShelfKind::Image, false, false),
+        card("denah-lantai-2-revisi-final.pdf", ShelfKind::Document, false, false),
+        card("moodboard-fasad.jpg", ShelfKind::Image, false, false),
+        card("Gambar kerja", ShelfKind::Folder, false, false),
+        card("sketsa-lama.png", ShelfKind::Image, true, false),
+        card("IMG_0531.png", ShelfKind::Image, false, true),
+        card("foto-rusak.jpg", ShelfKind::Image, false, false),
+        card("render.mp4", ShelfKind::Video, false, false),
+    ]
+}
+
+/// Pictures for `demo_shelf_image_cards` as the worker would have made them:
+/// a wide one, a tall one, a square one, and one that failed. The stale card
+/// has one too (a card that is gone must not draw it).
+fn demo_shelf_thumbs() -> crate::shelf_thumbs::ShelfThumbs {
+    use crate::shelf_thumbs::Slot;
+    let ready = |w, h, a, b| Slot::Ready(std::sync::Arc::new(demo_gradient(w, h, a, b)));
+    crate::shelf_thumbs::ShelfThumbs::with_slots([
+        (
+            DEMO_PREVIEW_KEY.to_owned(),
+            ready(192, 128, [0x2F, 0x6B, 0xC9], [0xF0, 0x9A, 0x4B]),
+        ),
+        (
+            "moodboard-fasad.jpg".to_owned(),
+            ready(96, 192, [0x3F, 0x9E, 0x6B], [0xE8, 0xD8, 0x6A]),
+        ),
+        (
+            "sketsa-lama.png".to_owned(),
+            ready(128, 128, [0xB8, 0x3F, 0x6B], [0x4B, 0x2F, 0xC9]),
+        ),
+        (
+            "img_0531.png".to_owned(),
+            ready(192, 144, [0x8A, 0x4B, 0xE0], [0x4B, 0xD0, 0xE0]),
+        ),
+        ("foto-rusak.jpg".to_owned(), Slot::Failed),
+    ])
+}
+
+/// A diagonal gradient with a light disc near the top left and a dark bar
+/// along the bottom, so that the crop, the contain and the top-down order
+/// can be told in a screenshot. Opaque BGRA.
+fn demo_gradient(w: u32, h: u32, from: [u8; 3], to: [u8; 3]) -> Thumb {
+    let mut bgra = Vec::with_capacity((w * h * 4) as usize);
+    let (disc_x, disc_y, disc_r) = (w as f32 * 0.28, h as f32 * 0.3, w.min(h) as f32 * 0.14);
+    for y in 0..h {
+        for x in 0..w {
+            let t = (x as f32 / w as f32 + y as f32 / h as f32) / 2.0;
+            let mut rgb = [0, 1, 2].map(|c| from[c] as f32 + (to[c] as f32 - from[c] as f32) * t);
+            if (x as f32 - disc_x).hypot(y as f32 - disc_y) < disc_r {
+                rgb = [245.0, 245.0, 235.0];
+            } else if y >= h - h / 8 {
+                rgb = rgb.map(|v| v * 0.45);
+            }
+            bgra.extend([rgb[2] as u8, rgb[1] as u8, rgb[0] as u8, 255]);
+        }
+    }
+    Thumb { w, h, bgra }
 }
 
 /// The phone link's made-up data for a scene: a QR code of an invented link,

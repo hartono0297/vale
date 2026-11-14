@@ -219,6 +219,8 @@ pub struct ShelfCardLayout {
     pub remove: Rect,
     pub glyph: Rect,
     pub label: Rect,
+    /// Where an image card's thumbnail sits: the card above its name.
+    pub thumb: Rect,
     /// Where "hilang" sits on a card whose file is gone.
     pub missing: Rect,
 }
@@ -902,6 +904,8 @@ pub enum PageLayout {
     PhoneQr(PhoneQrLayout),
     PhoneWarn(PhoneWarnLayout),
     PhoneRecv(PhoneRecvLayout),
+    /// The image preview over the Shelf page.
+    ShelfPreview(ShelfPreviewLayout),
     Devices(DevicesLayout),
     Arrange(ArrangeLayout),
     Record(RecordLayout),
@@ -3099,12 +3103,19 @@ pub fn shelf_card_layout(card: Rect, lines: usize) -> ShelfCardLayout {
         card.w - 12.0,
         lines as f32 * SHELF_LINE_H,
     );
+    let thumb = rect(
+        card.x + 4.0,
+        card.y + 4.0,
+        card.w - 8.0,
+        label.y - 3.0 - (card.y + 4.0),
+    );
     let missing = rect(card.x + 6.0, card.y + 6.0, 40.0, 15.0);
     ShelfCardLayout {
         card,
         remove,
         glyph,
         label,
+        thumb,
         missing,
     }
 }
@@ -3486,6 +3497,29 @@ pub fn phone_page_layout(s: ShapeRect, strip: bool, v: &PhoneView) -> PageLayout
             PageLayout::PhoneRecv(phone_recv_layout(s, strip, v.recv.rows.len()))
         }
     }
+}
+
+/// The shelf's image preview: the back button and the file name in the
+/// header row (as the phone link's receiving view), the image's box under it
+/// down to the dots.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShelfPreviewLayout {
+    pub back: Rect,
+    /// The file name, widened to the Settings button's gap.
+    pub title: Rect,
+    /// Where the image is contained, and where the loading or failed text is
+    /// centred. A click anywhere in it closes the preview.
+    pub image: Rect,
+}
+
+/// The preview view in `s`.
+pub fn shelf_preview_layout(s: ShapeRect, strip: bool) -> ShelfPreviewLayout {
+    let (top, back, title) = phone_head(s, strip);
+    let title = title_until(title, header_right(s));
+    let body = top + PHONE_HEAD_H + 8.0;
+    let (l, r) = (left(s), right(s));
+    let image = rect(l, body, r - l, (content_bottom(s) - body).max(0.0));
+    ShelfPreviewLayout { back, title, image }
 }
 
 /// The Mixer page for `n` rows (at least one): rows of up to
@@ -4884,6 +4918,10 @@ pub fn regions(s: ShapeRect, layout: &PageLayout, strip: impl Into<StripKind>) -
             add(l.cancel, Hit::PhoneCancel);
             add(l.done, Hit::PhoneDone);
         }
+        PageLayout::ShelfPreview(l) => {
+            add(l.back, Hit::ShelfPreviewBack);
+            add(l.image, Hit::ShelfPreviewImage);
+        }
         PageLayout::Arrange(l) => {
             for (i, r) in l.chips.iter().enumerate() {
                 add(*r, Hit::ArrangeMonitor(i));
@@ -5336,6 +5374,10 @@ mod tests {
                 PageLayout::PhoneRecv(phone_recv_layout(s, strip, n)),
             ));
         }
+        out.push((
+            "shelf preview".into(),
+            PageLayout::ShelfPreview(shelf_preview_layout(s, strip)),
+        ));
         for n in [0, 1, 3, crate::search::MAX_RESULTS] {
             out.push((
                 format!("search {n}"),
@@ -7448,6 +7490,27 @@ mod tests {
     }
 
     #[test]
+    fn a_shelf_cards_thumb_rect_sits_inside_the_card_above_its_label() {
+        for style in [Style::Pill, Style::Notch] {
+            let s = panel(style);
+            for strip in [false, true] {
+                for n in [3, 12] {
+                    let l = shelf_layout(s, strip, n);
+                    for lines in [1, 2] {
+                        for c in &l.cards {
+                            let c = shelf_card_layout(c.card, lines);
+                            let t = c.thumb;
+                            assert!(t.x >= c.card.x && t.right() <= c.card.right());
+                            assert!(t.y >= c.card.y && t.bottom() < c.label.y);
+                            assert!(t.w >= 40.0, "{style:?} strip={strip} n={n}: {t:?}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn the_phone_pill_sits_left_of_clear_on_every_shelf_and_ends_at_the_header_edge() {
         for style in [Style::Pill, Style::Notch] {
             let s = panel(style);
@@ -7549,6 +7612,43 @@ mod tests {
                         Hit::PhoneNewQr
                     ]
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn the_preview_back_button_and_image_fit_the_panel() {
+        for style in [Style::Pill, Style::Notch] {
+            let s = panel(style);
+            for strip in [false, true] {
+                let l = shelf_preview_layout(s, strip);
+                let tag = format!("{style:?} strip={strip}");
+                assert!(l.back.right() < l.title.x, "{tag}: the title is after the back button");
+                assert!(l.title.right() <= header_right(s), "{tag}: the title ends before Settings");
+                assert!(disjoint(l.title, settings_button(s, strip)), "{tag}");
+                assert!(disjoint(l.back, settings_button(s, strip)), "{tag}");
+                assert!(l.image.x >= left(s) && l.image.right() <= right(s), "{tag}");
+                assert!(l.image.y >= l.back.bottom() && l.image.y >= l.title.bottom(), "{tag}");
+                assert!(l.image.bottom() <= content_bottom(s) + 0.01, "{tag}");
+                assert!(l.image.w >= 200.0, "{tag}: {:?}", l.image);
+                assert!(l.image.h >= 100.0, "{tag}: {:?}", l.image);
+            }
+        }
+    }
+
+    #[test]
+    fn the_preview_view_has_a_back_hit_and_an_image_hit() {
+        for style in [Style::Pill, Style::Notch] {
+            let s = panel(style);
+            for strip in [false, true] {
+                let layout = PageLayout::ShelfPreview(shelf_preview_layout(s, strip));
+                let hits: Vec<Hit> = regions(s, &layout, strip)
+                    .into_iter()
+                    .map(|r| r.hit)
+                    .filter(|h| !matches!(h, Hit::Strip | Hit::OpenSettings))
+                    .collect();
+                assert_eq!(hits, [Hit::ShelfPreviewBack, Hit::ShelfPreviewImage]);
+                assert!(!hits.iter().any(|h| matches!(h, Hit::ShelfCard(_))));
             }
         }
     }
@@ -8160,6 +8260,7 @@ mod tests {
                     drawn.extend([r.row, r.icon, r.name, r.size, r.status]);
                 }
             }
+            PageLayout::ShelfPreview(l) => drawn.extend([l.back, l.title, l.image]),
             PageLayout::Shelf(l) => {
                 drawn.push(l.header);
                 drawn.push(l.phone);

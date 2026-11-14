@@ -14,6 +14,7 @@
 //! so the frame clock runs only while something moves.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{POINT, WPARAM};
@@ -21,8 +22,11 @@ use windows::Win32::Graphics::Gdi::ScreenToClient;
 use windows::Win32::System::SystemServices::MK_LBUTTON;
 use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, KillTimer, SetTimer};
 
-use super::{App, Event, Page, View, client_xy};
+use super::{App, Event, Page, View, WM_APP_EVENT, client_xy, poster};
+use crate::clipboard::image::Thumb;
 use crate::shelf::{self, Probe, Shelf, ShelfCard};
+use crate::shelf_thumb;
+use crate::shelf_thumbs::{Preview, ShelfThumbs, shelf_jobs};
 use crate::shortcuts;
 use crate::ui::geometry::{Rect, ShapeKind, shape_for};
 use crate::ui::panel_layout::shelf_layout;
@@ -54,6 +58,10 @@ pub(super) struct ShelfState {
     press: Option<(usize, i32, i32)>,
     /// Cards coming in, going out or sliding; empty at rest.
     pub motion: ShelfMotion,
+    /// The cards' thumbnails, decoded only while the page is open.
+    pub thumbs: ShelfThumbs,
+    /// The large preview of one card, when open.
+    pub preview: Option<Preview>,
 }
 
 impl App {
@@ -64,12 +72,99 @@ impl App {
     pub(super) fn shelf_look(&mut self) {
         self.shelf.cards = self.shelf.shelf.cards(shelf::probe);
         self.phone_sync_shared();
+        // Slots of cards that left go first, so the cache stays the size of
+        // the shelf.
+        self.shelf.thumbs.retain(&self.shelf.cards);
+        if self
+            .shelf
+            .preview
+            .as_ref()
+            .is_some_and(|p| !p.still_open(&self.shelf.cards))
+        {
+            self.shelf.preview = None;
+        }
+        if self.state.view() == View::Panel(Page::Shelf) {
+            let items = &self.shelf.shelf;
+            // A network path is never touched on the UI thread.
+            let wanted = self.shelf.thumbs.wanted(&self.shelf.cards, |i| {
+                items.get(i).is_some_and(shelf::is_network)
+            });
+            let jobs = shelf_jobs(
+                &self.shelf.cards,
+                |i| self.shelf.shelf.get(i).map(PathBuf::from),
+                &wanted,
+            );
+            self.shelf_decode(jobs);
+        }
+    }
+
+    /// Hands the jobs (key, path, long side, is-preview) to one short-lived
+    /// worker thread, never the UI thread, in order; each answer comes back
+    /// as `Event::ShelfDecoded`.
+    pub(super) fn shelf_decode(&mut self, jobs: Vec<(String, PathBuf, u32, bool)>) {
+        if jobs.is_empty() {
+            return;
+        }
+        let keys: Vec<(String, bool)> = jobs.iter().map(|j| (j.0.clone(), j.3)).collect();
+        let (tx, wake) = (self.tx.clone(), poster(self.hwnd, WM_APP_EVENT));
+        let spawned = std::thread::Builder::new()
+            .name("shelf-thumb".into())
+            .spawn(move || {
+                for (key, path, side, preview) in jobs {
+                    let thumb = shelf_thumb::decode(&path, side).map(Arc::new);
+                    if tx
+                        .send(Event::ShelfDecoded {
+                            key,
+                            preview,
+                            thumb,
+                        })
+                        .is_ok()
+                    {
+                        wake();
+                    }
+                }
+            });
+        if spawned.is_err() {
+            // No thread: nothing stays waiting.
+            for (key, preview) in keys {
+                if preview {
+                    if let Some(p) = self.shelf.preview.as_mut() {
+                        p.set(&key, None);
+                    }
+                } else {
+                    self.shelf.thumbs.set(&key, None);
+                }
+            }
+        }
+    }
+
+    /// A worker's answer: the card's slot (or the open preview) takes it,
+    /// and the page draws it if it is showing.
+    pub(super) fn on_shelf_decoded(
+        &mut self,
+        key: &str,
+        preview: bool,
+        thumb: Option<Arc<Thumb>>,
+        now: Instant,
+    ) {
+        if preview {
+            if let Some(p) = self.shelf.preview.as_mut() {
+                p.set(key, thumb);
+            }
+        } else {
+            self.shelf.thumbs.set(key, thumb);
+        }
+        if self.state.view() == View::Panel(Page::Shelf) && !self.animating() {
+            self.draw(now);
+        }
     }
 
     /// The OLE drop target saw files enter the island or leave it.
     pub(super) fn on_shelf_drag(&mut self, on: bool) -> Option<Event> {
         self.shelf.dragging = on;
         if on {
+            // The drop zone is drawn by the cards' page, not the preview.
+            self.shelf.preview = None;
             // A drag that comes back cancels the pending close.
             unsafe {
                 let _ = KillTimer(Some(self.hwnd), TIMER_SHELF_HOLD);
@@ -95,6 +190,10 @@ impl App {
             self.shelf_look();
         }
         self.shelf.shown = wanted;
+        // A preview ends with the page: the 1024 px pixels are dropped.
+        if !wanted {
+            self.shelf.preview = None;
+        }
         // Nothing animates while the page is not on screen (or with
         // Windows' animation effects off): the state is simply dropped.
         if (!wanted || !self.animations) && !self.shelf.motion.is_empty() {
@@ -138,6 +237,7 @@ impl App {
     /// arriving whatever the pointer does next.
     pub(super) fn on_shelf_drop(&mut self, paths: Vec<PathBuf>, now: Instant) {
         self.shelf.dragging = false;
+        self.shelf.preview = None;
         let old = self.shelf.cards.clone();
         self.shelf.shelf.add(paths);
         self.shelf_look();
@@ -217,6 +317,33 @@ impl App {
             self.shelf_animate(&old, now, Duration::ZERO);
             self.refresh(now);
         }
+    }
+
+    /// The preview's back button or its image was clicked: the cards come
+    /// back (and the decoded image goes with the preview).
+    pub(super) fn shelf_preview_close(&mut self) {
+        self.shelf.preview = None;
+    }
+
+    /// "Pratinjau gambar" was picked on card `i`: the panel shows the large
+    /// image, decoded on the worker (a network path too). A card that is not
+    /// an image any more, or whose preview is already open, changes nothing.
+    pub(super) fn shelf_preview_open(&mut self, i: usize) {
+        let Some(card) = self.shelf.cards.get(i).filter(|c| shelf::previewable(c)) else {
+            return;
+        };
+        let already = self.shelf.preview.as_ref().is_some_and(|p| p.key == card.key);
+        if !already {
+            let key = card.key.clone();
+            self.shelf.preview = Some(Preview::new(key.clone()));
+            if let Some(path) = self.shelf.shelf.get(i).map(PathBuf::from) {
+                self.shelf_decode(vec![(key, path, shelf_thumb::PREVIEW_SIDE, true)]);
+            } else if let Some(p) = self.shelf.preview.as_mut() {
+                // No path to decode: it would stay "Loading" for good.
+                p.set(&key, None);
+            }
+        }
+        self.refresh(Instant::now());
     }
 
     /// A left press: on a card whose file is there, it may become a drag.

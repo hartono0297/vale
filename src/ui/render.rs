@@ -46,6 +46,7 @@ use windows::core::{Interface, Result};
 use windows_numerics::{Matrix3x2, Vector2};
 
 use std::mem::ManuallyDrop;
+use std::sync::Arc;
 use std::time::Instant;
 
 use chrono::{DateTime, Local, NaiveDate, NaiveDateTime};
@@ -95,6 +96,7 @@ use crate::reminders::Reminder;
 use crate::search::SearchResult;
 use crate::search_details::Detail;
 use crate::shelf::ShelfCard;
+use crate::shelf_thumbs::{PreviewState, ShelfThumbs};
 use crate::state::{MolePhase, notice_closable, notice_kind_closable};
 use crate::system::SystemSample;
 use crate::theme::{self, Accent, Palette, radius};
@@ -139,6 +141,16 @@ pub struct RecFrame {
     pub zoom: Option<f64>,
 }
 
+/// The shelf's image preview for one frame: the card's file name (the
+/// title), what the decode gives so far and the card's key (the bitmap
+/// cache's key).
+#[derive(Clone, Copy)]
+pub struct ShelfPreviewView<'a> {
+    pub name: &'a str,
+    pub state: &'a PreviewState,
+    pub key: &'a str,
+}
+
 /// Everything a frame draws besides the shape: the view and the data behind it.
 pub struct Frame<'a> {
     pub view: &'a View,
@@ -166,6 +178,8 @@ pub struct Frame<'a> {
     pub mixer: Option<&'a [MixerRow]>,
     /// The file shelf's cards.
     pub shelf: &'a [ShelfCard],
+    /// The decoded thumbnails of the shelf's image cards, by card key.
+    pub shelf_thumbs: &'a ShelfThumbs,
     /// Files are being dragged over the island: the shelf's drop zone lights.
     pub shelf_drag: bool,
     /// Cards coming in, going out or changing slot, as of `now` (empty at
@@ -175,6 +189,8 @@ pub struct Frame<'a> {
     pub phone: Option<&'a super::phone_view::PhoneView<'a>>,
     /// A phone session runs (the shelf's "HP" pill takes its "on" tint).
     pub phone_on: bool,
+    /// The shelf's image preview, while it takes the Shelf page over.
+    pub shelf_preview: Option<ShelfPreviewView<'a>>,
     /// The Devices page.
     pub devices: DevicesView<'a>,
     /// The Rekam page.
@@ -944,6 +960,12 @@ pub struct Renderer {
     /// Clipboard thumbnails as bitmaps of the current target, by entry id;
     /// entries no longer drawn are dropped each frame.
     clip_thumbs: std::cell::RefCell<Vec<(u64, ID2D1Bitmap)>>,
+    /// The shelf's card thumbnails as bitmaps of the current target, by card
+    /// key and decode: at most `SHELF_THUMB_CACHE`, the oldest dropped.
+    shelf_thumbs: std::cell::RefCell<Vec<(String, Arc<Thumb>, ID2D1Bitmap)>>,
+    /// The shelf preview's image as a bitmap of the current target, by card
+    /// key and decode: one, replaced when either changes.
+    shelf_preview_bm: std::cell::RefCell<Option<(String, Arc<Thumb>, ID2D1Bitmap)>>,
     /// App logos of the Notifikasi page as bitmaps of the current target, by
     /// logo key; keys no longer drawn are dropped each frame.
     notif_logos: std::cell::RefCell<Vec<(String, ID2D1Bitmap)>>,
@@ -1224,6 +1246,8 @@ impl Renderer {
                 clip_caret: std::cell::Cell::new(None),
                 search_caret: std::cell::Cell::new(None),
                 clip_thumbs: std::cell::RefCell::new(Vec::new()),
+                shelf_thumbs: std::cell::RefCell::new(Vec::new()),
+                shelf_preview_bm: std::cell::RefCell::new(None),
                 notif_logos: std::cell::RefCell::new(Vec::new()),
                 search_icons: std::cell::RefCell::new(Vec::new()),
                 arrange_icons: std::cell::RefCell::new(Vec::new()),
@@ -1329,6 +1353,8 @@ impl Renderer {
         self.target = None;
         self.art.clear();
         self.clip_thumbs.borrow_mut().clear();
+        self.shelf_thumbs.borrow_mut().clear();
+        *self.shelf_preview_bm.borrow_mut() = None;
         self.notif_logos.borrow_mut().clear();
         self.search_icons.borrow_mut().clear();
         self.arrange_icons.borrow_mut().clear();
@@ -5126,6 +5152,8 @@ mod tests {
             shelf: &[],
             shelf_drag: false,
             shelf_motion: &ShelfMotion::default(),
+            shelf_thumbs: &ShelfThumbs::default(),
+            shelf_preview: None,
             phone: None,
             phone_on: false,
             devices: DevicesView {

@@ -438,6 +438,14 @@ New: `src/config_transfer.rs` (classification, format, merge, file helpers),
 twenty strings. No change to `Cargo.toml`, `Cargo.lock` or `assets`. See
 [[settings-transfer]].
 
+## Shelf image preview (2026-11-14)
+
+[[shelf-image-preview]] (WIC decode, thumbnail cache, the preview view, the
+right-click item, the strings): the exe size was not measured. The release build
+(fat LTO) takes over an hour on this PC, so it is measured at release time. No new
+crate and no new `windows` feature were added (WIC was already enabled); the demo
+scenes are debug-only and not in the release exe.
+
 ## Shipped release sizes
 
 The `vale.exe` asset of each GitHub release (built by the release workflow,
