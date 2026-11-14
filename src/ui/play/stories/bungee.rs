@@ -30,6 +30,10 @@ const HOME: f32 = 5.6;
 const GONE: f32 = 5.72;
 /// The bounce on the rope starts at the bottom of the drop.
 const CATCH: f32 = 1.5;
+/// The rope reverses the fall at the catch in one instant: what the speed
+/// drives (the free arms streaming up, the stretch) swings over from the
+/// fall's end to the bounce over this long, never flipping in a frame.
+const SETTLE: f32 = 0.25;
 /// How squashed the slot head gathers itself before the jump, and how
 /// stretched it is pulled back in.
 const CROUCH: f32 = 0.86;
@@ -148,13 +152,19 @@ pub fn shot(stage: &Stage) -> Shot {
     // arms keep their tuck while the figure fades.
     let speed = |u: f32| (y_at(u) - y_at(u - 0.03)) / 0.03;
     let v = speed(t.min(HOME - 1e-3));
+    let fall_end = speed(CATCH - 1e-3);
+    let settle = Sio.at(((t - CATCH) / SETTLE).clamp(0.0, 1.0));
+    let caught = |live: f32, fall: f32| if t >= CATCH { lerp(fall, live, settle) } else { live };
     let tada = kf(t, &[(3.6, 0.0, Lin), (3.9, 1.0, Ob), (4.6, 1.0, Lin), (4.85, 0.2, Io)]);
     let (m_at, mr, msx, msy) = if out_of_slot {
-        let squashed = if t > CATCH && t < 4.85 { (-2.2 * tau).exp() * (TAU * 1.6 * tau).cos().max(0.0).powi(6) } else { 0.0 };
+        // The first impact's squash comes on over 50 ms, with the arms.
+        let attack = kf(t, &[(CATCH, 0.0, Lin), (CATCH + 0.05, 1.0, Lin)]);
+        let squashed = if t > CATCH && t < 4.85 { (-2.2 * tau).exp() * (TAU * 1.6 * tau).cos().max(0.0).powi(6) * attack } else { 0.0 };
         let pose_sy = kf(t, &[(3.6, 0.0, Lin), (3.9, 0.08, Ob), (4.6, 0.08, Lin), (4.85, -0.1, Io), (5.05, 0.0, Io)]);
         // The crouch it jumped from lets go over its first 0.12 s.
         let release = kf(t, &[(JUMP, CROUCH - 1.0, Lin), (JUMP + 0.12, 0.0, O)]);
-        let msy = 1.0 + (speed(t).abs() / 260.0).clamp(0.0, 0.28) - squashed * 0.3 + pose_sy + release;
+        let stretch = |v: f32| (v.abs() / 260.0).clamp(0.0, 0.28);
+        let msy = 1.0 + caught(stretch(speed(t)), stretch(fall_end)) - squashed * 0.3 + pose_sy + release;
         let mr = 6.0 * swing * (-0.3 * tau).exp();
         ((pivot.0 + 3.0 * swing, drop_y(t, from, to, bottom)), mr, 1.0 / msy.sqrt(), msy)
     } else {
@@ -182,7 +192,8 @@ pub fn shot(stage: &Stage) -> Shot {
 
     // The free arms: streaming up behind a fall, tucked while it rises, wide
     // open for the ta-da.
-    let up = (v / 90.0).clamp(-1.0, 1.0);
+    let streaming = |v: f32| (v / 90.0).clamp(-1.0, 1.0);
+    let up = caught(streaming(v), streaming(fall_end));
     let mut arms = Vec::new();
     for (n, o) in SPREAD.iter().enumerate() {
         let i = n + 1;
@@ -268,6 +279,47 @@ mod tests {
         let Seg::Move(x0, y0) = path[0] else { panic!("{path:?}") };
         let Some(Seg::Line(x1, y1)) = path.iter().rev().find(|s| !matches!(s, Seg::Close)) else { panic!("{path:?}") };
         (x1 - x0).hypot(y1 - y0)
+    }
+
+    /// Each free arm's heading, its root to its tip (radians), as drawn: the
+    /// body's outline starts and ends on the two sides of the root and turns
+    /// round the tip with its one cubic.
+    fn free_arm_headings(shot: &Shot) -> Vec<f32> {
+        let Some(p) = front(shot).into_iter().find(|p| matches!(p.draw, Draw::Group { .. })) else { return Vec::new() };
+        let Draw::Group { items, .. } = &p.draw else { unreachable!() };
+        items
+            .iter()
+            .filter_map(|d| {
+                let Draw::Fill { path, .. } = d else { return None };
+                let Seg::Move(x0, y0) = path[0] else { return None };
+                let Some(&Seg::Line(x1, y1)) = path.iter().rev().find(|s| !matches!(s, Seg::Close)) else { return None };
+                let Some(&Seg::Cubic(.., tx, ty)) = path.iter().find(|s| matches!(s, Seg::Cubic(..))) else { return None };
+                Some((ty - (y0 + y1) / 2.0).atan2(tx - (x0 + x1) / 2.0))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_free_arms_never_flip_from_one_frame_to_the_next() {
+        for style in [Style::Notch, Style::Pill] {
+            for (w, h) in SIZES {
+                let case = format!("{style:?} {w}x{h}");
+                let (mut last, mut t, mut seen) = (Vec::new(), 0.0, 0);
+                while t < Story::Bungee.secs() {
+                    let now = free_arm_headings(&at(style, w, h, t));
+                    if now.len() == 5 && last.len() == 5 {
+                        seen += 1;
+                        for (i, (a, b)) in last.iter().zip(&now).enumerate() {
+                            let turn = ((b - a + PI).rem_euclid(TAU) - PI).to_degrees();
+                            assert!(turn.abs() <= 60.0, "{case} t={t}: arm {i} turned {turn} degrees in a frame");
+                        }
+                    }
+                    last = now;
+                    t += 1.0 / 60.0;
+                }
+                assert!(seen > 250, "{case}: {seen} frames with the arms");
+            }
+        }
     }
 
     #[test]
