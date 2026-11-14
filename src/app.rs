@@ -2536,6 +2536,7 @@ impl App {
             play: Play::start(story, now),
             moment,
             shape: play_shape_of(self.config.style, self.notch_size(), self.config.mascot),
+            started: now,
         });
         self.play_clock_jumped = false;
         self.play_input = None;
@@ -2550,6 +2551,13 @@ impl App {
         if self.play.is_none() {
             return;
         }
+        // Input tick first, cursor second. Input landing between the two reads
+        // moves the cursor but not the tick we hold, so it can only show as a
+        // moved pointer (no key ends the play) and the tick catches up next
+        // frame. The other order could pair a new tick with a pointer that
+        // has not moved yet, and read a mouse move as a key.
+        // A failed read counts as no new input; the first frame only records.
+        let tick_now = last_input_tick();
         // The one pointer reading of this frame feeds the presence gate and
         // the click-through test.
         let mut pt = POINT::default();
@@ -2571,15 +2579,13 @@ impl App {
         let buttons = [VK_LBUTTON, VK_RBUTTON, VK_MBUTTON]
             .into_iter()
             .any(|vk| (unsafe { GetAsyncKeyState(i32::from(vk.0)) }) as u16 & 0x8000 != 0);
-        // Read after the pointer: input that lands between the two readings
-        // then shows as a moved pointer at the next frame, never as a key.
-        // A failed read counts as no new input; the first frame only records.
         let seen = cursor.map(|p| (p.x, p.y));
         let prev = self.play_input;
-        let tick = last_input_tick().or(prev.map(|p| p.0)).unwrap_or(0);
+        let tick = tick_now.or(prev.map(|p| p.0)).unwrap_or(0);
         let (tick0, seen0) = prev.unwrap_or((tick, seen));
         self.play_input = Some((tick, seen));
-        let ends = input_ends_play((tick0, tick), (seen0, seen), buttons);
+        let age = self.play.as_ref().map_or(Duration::ZERO, |a| now.saturating_duration_since(a.started));
+        let ends = input_ends_play((tick0, tick), (seen0, seen), buttons, age);
         let out = advance_slot(&mut self.play, &env, shape, jumped, ends, inside, now);
         if let Some(story) = out.finished {
             self.last_story = Some(story);
@@ -8835,6 +8841,8 @@ struct ActivePlay {
     play: Play,
     moment: Moment,
     shape: PlayShape,
+    /// When it started: a key in its first `KEY_GRACE` does not end it.
+    started: Instant,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -8885,16 +8893,22 @@ fn step_play(
     play.done(now)
 }
 
+/// A key in the first moments of a play does not end it: the Enter that picks
+/// "Mainkan maskot" from the menu is still going up when the play starts.
+const KEY_GRACE: Duration = Duration::from_millis(250);
+
 /// Between two frames of a story, the owner did something that ends it: a
 /// mouse button is down, or input arrived (the last-input tick moved) while
 /// the pointer stayed where it was, which is a key, a hotkey or the wheel.
-/// Moving the mouse alone does not end it.
+/// Moving the mouse alone does not end it, and neither does a key within
+/// `KEY_GRACE` of the start (`age`); a button always does.
 fn input_ends_play(
     tick: (u32, u32),
     cursor: (Option<(i32, i32)>, Option<(i32, i32)>),
     buttons: bool,
+    age: Duration,
 ) -> bool {
-    buttons || (tick.0 != tick.1 && cursor.0 == cursor.1)
+    buttons || (age >= KEY_GRACE && tick.0 != tick.1 && cursor.0 == cursor.1)
 }
 
 /// What one frame of a running story leaves behind.
@@ -12010,7 +12024,7 @@ mod tests {
         let size = NotchSize::from_config(&Config::default());
         let shape = play_shape_of(Style::Notch, size, Mascot::Cat);
         let play = Play::start(Story::Kelelawar, t0);
-        (Some(ActivePlay { play, moment: Moment::Idle, shape }), shape)
+        (Some(ActivePlay { play, moment: Moment::Idle, shape, started: t0 }), shape)
     }
 
     #[test]
@@ -12102,8 +12116,18 @@ mod tests {
             ((5, 9), (None, None), false, true, "no pointer to read either time"),
         ];
         for (tick, cursor, buttons, ends, name) in cases {
-            assert_eq!(input_ends_play(tick, cursor, buttons), ends, "{name}");
+            assert_eq!(input_ends_play(tick, cursor, buttons, Duration::from_secs(5)), ends, "{name}");
         }
+    }
+
+    #[test]
+    fn a_key_in_the_first_quarter_second_does_not_end_a_play() {
+        let (at, moved) = (Some((10, 20)), Some((11, 20)));
+        let ms = Duration::from_millis;
+        assert!(!input_ends_play((5, 9), (at, at), false, ms(100)), "the menu's Enter key-up");
+        assert!(input_ends_play((5, 9), (at, at), false, ms(300)), "a key later ends it");
+        assert!(input_ends_play((5, 5), (at, moved), true, ms(100)), "a mouse button ends it at once");
+        assert!(input_ends_play((5, 5), (at, at), true, ms(0)), "a button at the very start too");
     }
 
     #[test]
