@@ -78,7 +78,7 @@ impl Story {
     }
 }
 
-const ALL: [Story; 10] = [
+pub(crate) const ALL: [Story; 10] = [
     Story::PetakUmpet,
     Story::BantalAngka,
     Story::PianoEkor,
@@ -202,6 +202,18 @@ mod tests {
             assert!(owned(m, true).len() >= 3, "{m:?}");
             assert!(owned(m, false).len() >= 2, "{m:?} without the clock");
             assert!(owned(m, false).iter().all(|s| !s.needs_clock()), "{m:?}");
+        }
+    }
+
+    #[test]
+    fn with_the_clock_off_every_mascot_keeps_two_stories() {
+        // The real pool, ready stories only: the four clock stories drop out
+        // and each mascot still has two to choose between.
+        for m in [Mascot::Cat, Mascot::Falk, Mascot::Octopus] {
+            let pool = pool(m, false);
+            assert!(pool.len() >= 2, "{m:?}: {pool:?}");
+            assert!(pool.iter().all(|s| !s.needs_clock()), "{m:?}: {pool:?}");
+            assert!(has_ready(m, false), "{m:?}");
         }
     }
 

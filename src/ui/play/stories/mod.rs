@@ -1076,6 +1076,20 @@ mod tests {
     }
 
     #[test]
+    fn every_story_is_ready() {
+        // All ten have a timeline: each is in the pool and moves something
+        // halfway through, its own mascot with the clock on.
+        for story in crate::ui::play::trigger::ALL {
+            assert!(ready(story), "{story:?}");
+            let look = CatLook { mascot: story.mascot(), ..Default::default() };
+            let s = crate::ui::play::testing::shape(Style::Notch, 190.0, 34.0);
+            let beat = Beat { spread: 1.0, alpha: 1.0, t: story.secs() / 2.0, cut_at: None };
+            let mid = shot(story, &Stage::idle(Style::Notch, s, beat, look, true));
+            assert!(at_rest(Style::Notch, &mid).is_err(), "{story:?} plays nothing halfway");
+        }
+    }
+
+    #[test]
     fn layers_paint_in_the_mockups_order() {
         use Pass::*;
         // The mockup's `compose`: the inside under the clock.
