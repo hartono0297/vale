@@ -823,12 +823,20 @@ git commit -m "feat(play): arm the play from the island's own gates"
 ### Task 10: Clicks pass through the animation
 
 **Files:**
-- Modify: `src/app.rs` (the island window's hit handling)
+- Modify: `src/app.rs` (the play's per-frame step), `src/ui/window.rs` (a click-through toggle on the island window), `src/ui/play/mod.rs`
 
 **Interfaces:**
-- Produces: `pub fn swallows(style: Style, s: ShapeRect, playing: bool, x: f32, y: f32) -> bool` in `src/ui/play/mod.rs`.
+- Produces: `pub fn swallows(style: Style, s: ShapeRect, playing: bool, x: f32, y: f32) -> bool` in `src/ui/play/mod.rs` (true when the island should take a click at that point: inside its own shape), and `pub fn click_through(playing: bool, inside: bool) -> bool` (`playing && !inside`).
 
-While a play runs, a point outside the island's own shape is transparent to the mouse, so the click reaches whatever is underneath; the play then winds down.
+While a play runs, the animation's pixels must not swallow a click meant for whatever is underneath, and a click anywhere ends the play.
+
+**Why not `HTTRANSPARENT` (ruling R36).** The island is a per-pixel-alpha layered window (`UpdateLayeredWindow` with `ULW_ALPHA`; `WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE`, no `WM_NCHITTEST` handler). Windows already passes clicks through its alpha-0 pixels and gives every alpha > 0 pixel the click — so the tail, tentacles and wings **will** take clicks. `HTTRANSPARENT` cannot fix that: it forwards only to windows of the **same thread**, never to another application's window below a topmost island. The codebase already knows this — `docs/memory/arrange.md`, "Alpha-0 click-through gotcha" — and its hover outline is made click-through with `WS_EX_TRANSPARENT`. This task does the same, but dynamically.
+
+**The mechanism.**
+- While a play runs, set `WS_EX_TRANSPARENT` on the island window when the cursor is **outside** the island's own shape, and clear it when the cursor is **inside**. The cursor is already read once per frame during a play (Task 9's `play_env`), so this adds no polling. Call `SetWindowLongPtrW(GWL_EXSTYLE)` only when the desired state **changes**, never every frame.
+- **Whenever a play ends — on every path — clear `WS_EX_TRANSPARENT`.** A window left click-through after a play would make the island itself unclickable until the next play. This is the property that must not fail.
+- A mouse button down anywhere during a play ends it (`play.end(now)`): read `GetAsyncKeyState` for `VK_LBUTTON`, `VK_RBUTTON` and `VK_MBUTTON` in the same per-frame step. Check all three, so swapped buttons (`SM_SWAPBUTTON`) do not matter. With `WS_EX_TRANSPARENT` set the island never sees the click itself, which is why it is read here.
+- "Inside the island's own shape" uses the **resting** shape (`geometry::shape_contains`), which is pure and already exists. During a play the island is at most a few dip off its resting shape, and the resting shape is the conservative choice (it never makes the island harder to click).
 
 - [ ] **Step 1: Write the failing test** in `src/ui/play/mod.rs`
 
@@ -840,14 +848,26 @@ fn a_play_never_swallows_a_click_outside_the_island() {
     assert!(!swallows(Style::Notch, s, true, s.x + s.w / 2.0, s.y + s.h + 40.0), "a click under the island passes through");
     assert!(!swallows(Style::Notch, s, false, s.x - 60.0, s.y + 10.0));
 }
+
+#[test]
+fn the_window_is_click_through_only_during_a_play_with_the_cursor_outside() {
+    assert!(click_through(true, false), "a play, cursor on an animation pixel: pass clicks through");
+    assert!(!click_through(true, true), "a play, cursor on the island: the island takes the click");
+    assert!(!click_through(false, false), "no play: never click-through, the alpha rule governs");
+    assert!(!click_through(false, true));
+}
 ```
+
+In `src/app.rs`'s test module, pin the two properties that matter at the app level, through whatever pure step function the per-frame code calls:
+- **Ending a play always leaves the window not click-through**, for every way a play ends (`done`, `finish_now`, a config change, a click). Write it so a version that forgets to clear the flag on one path fails.
+- **A mouse button down during a play ends it**, and a button down with no play does nothing.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `cargo test --locked ui::play`
 Expected: FAIL, `swallows` not found.
 
-- [ ] **Step 3: Implement `swallows` and return `HTTRANSPARENT` from the island's hit test for those points; wind the play down on a click**
+- [ ] **Step 3: Implement `swallows`, `click_through`, the window toggle and the per-frame step, as the mechanism above describes**
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -857,7 +877,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/app.rs src/ui/play/mod.rs
+git add src/app.rs src/ui/window.rs src/ui/play/mod.rs
 git commit -m "fix(play): clicks on an animation reach what is underneath"
 ```
 
