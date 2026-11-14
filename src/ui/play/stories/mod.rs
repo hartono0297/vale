@@ -12,10 +12,10 @@ use windows_numerics::{Matrix3x2, Vector2};
 use crate::config::Style;
 use crate::theme::Mascot;
 use crate::ui::cat_style::CatLook;
-use crate::ui::geometry::{ROBOT_COMPACT, Rect, ShapeRect, shoulder_depth};
+use crate::ui::geometry::{IdleLayout, ROBOT_COMPACT, Rect, ShapeRect, shoulder_depth};
 use crate::ui::mascot::CrestPose;
 use crate::ui::play::shape::{Deform, outline, turn_about};
-use crate::ui::play::state::Beat;
+use crate::ui::play::state::{Beat, spread_offsets};
 use crate::ui::play::trigger::Story;
 use crate::ui::render::DigitFx;
 use crate::ui::robot::{Expr, GRID, Pose, Seg};
@@ -26,6 +26,34 @@ pub fn ready(story: Story) -> bool {
     matches!(story, Story::MalingAngka | Story::SyalEkor)
 }
 
+/// What a story plays on: the island, where the play stands, the mascot's
+/// look (its body's coat; the head's painter takes it from the renderer),
+/// and the idle layout the renderer places the slot and the clock by before
+/// the play spreads them (`idle_layout_lead` with the frame's own robot,
+/// clock and lead), so a story lines up with them whatever they are.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Stage {
+    pub style: Style,
+    pub shape: ShapeRect,
+    pub beat: Beat,
+    pub look: CatLook,
+    pub layout: IdleLayout,
+}
+
+impl Stage {
+    /// The slot and the clock where the renderer puts them at this beat.
+    pub fn room(&self) -> IdleLayout {
+        spread_offsets(self.layout, self.shape, self.beat.spread)
+    }
+
+    /// The idle island with the mascot, the clock on or off and no lead.
+    #[cfg(test)]
+    pub fn idle(style: Style, shape: ShapeRect, beat: Beat, look: CatLook, clock: bool) -> Stage {
+        let layout = crate::ui::geometry::idle_layout_lead(shape, true, clock, 0.0);
+        Stage { style, shape, beat, look, layout }
+    }
+}
+
 /// One moment of a story, for the renderer.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Shot {
@@ -34,6 +62,10 @@ pub struct Shot {
     pub digits: [DigitFx; 5],
     /// What the mascot's slot shows.
     pub slot: Slot,
+    /// How much of the see-through halo a story head in the slot keeps, 0 to
+    /// 1 (1 as the app draws it): a story fades it where its own figure,
+    /// which has none, takes over from the slot head.
+    pub halo: f32,
     /// Everything else the story draws, each part in its layer; within a
     /// layer in this order.
     pub parts: Vec<Part>,
@@ -51,6 +83,7 @@ impl Shot {
             deform,
             digits: [DigitFx::IDENTITY; 5],
             slot: Slot::App,
+            halo: 1.0,
             parts: Vec::new(),
         }
     }
@@ -87,7 +120,7 @@ pub enum Slot {
 /// Where a part is painted, as the mockup's `compose` stacks it (see
 /// `PAINT_ORDER`). Nothing leans on the island's fill being opaque: what
 /// must not show is clipped away.
-// Only Maling angka's front parts are built yet; the next stories build the rest.
+// `Dark` and `Wrap` wait for the stories that use them.
 #[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Layer {
@@ -153,8 +186,6 @@ pub struct Part {
 
 /// What a part draws, in window dip, or on the grid of the `Group` it is in.
 /// Colours are `0xRRGGBB`.
-// Only Maling angka's front parts are built yet; the next stories build the rest.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Debug, PartialEq)]
 pub enum Draw {
     /// The filled figures of `path` (each `Move` starts one), nonzero as the
@@ -466,14 +497,13 @@ pub fn whistle_arcs(at: (f32, f32)) -> [((f32, f32), f32, f32, f32); 3] {
     })
 }
 
-/// `story`'s shot at `beat` on the island `s`, the mascot's body in the
-/// coat of `look` (the head's own painter takes it from the renderer). A
-/// story that is not ready leaves everything at rest.
-pub fn shot(story: Story, style: Style, s: ShapeRect, beat: Beat, look: CatLook) -> Shot {
+/// `story`'s shot on `stage`. A story that is not ready leaves everything at
+/// rest.
+pub fn shot(story: Story, stage: &Stage) -> Shot {
     let shot = match story {
-        Story::MalingAngka => maling_angka::shot(style, s, beat, look),
-        Story::SyalEkor => syal_ekor::shot(style, s, beat, look),
-        _ => Shot::rest(style, s),
+        Story::MalingAngka => maling_angka::shot(stage),
+        Story::SyalEkor => syal_ekor::shot(stage),
+        _ => Shot::rest(stage.style, stage.shape),
     };
     debug_assert!(bare_heads_fit(story, &shot), "{story:?} draws a bare head");
     shot
@@ -633,6 +663,9 @@ pub(crate) fn at_rest(style: Style, shot: &Shot) -> Result<(), String> {
     if !matches!(shot.slot, Slot::App) && shot.slot != Slot::Story(MascotShot::REST) {
         return Err(format!("the slot is not at rest: {:?}", shot.slot));
     }
+    if shot.halo != 1.0 {
+        return Err(format!("the slot head's halo is {}", shot.halo));
+    }
     near_rest(shot, 0.0)
 }
 
@@ -655,6 +688,9 @@ pub(crate) fn near_rest(shot: &Shot, tol: f32) -> Result<(), String> {
         }
         Slot::Empty => return Err("the slot is empty".into()),
     }
+    if (shot.halo - 1.0).abs() > tol {
+        return Err(format!("the slot head's halo is {}", shot.halo));
+    }
     match shot.parts.iter().find(|p| p.alpha > tol) {
         Some(p) => Err(format!("a part shows: {p:?}")),
         None => Ok(()),
@@ -663,16 +699,23 @@ pub(crate) fn near_rest(shot: &Shot, tol: f32) -> Result<(), String> {
 
 /// The four tests every story passes, in its tests module:
 /// `story_contract_tests!(Story::X, shot)`, `shot` the story's
-/// `fn(Style, ShapeRect, Beat, CatLook) -> Shot`. It starts and ends exactly
-/// at rest; `alpha` 0 never deforms the island; nothing leaves the window;
-/// the mascot is at rest just after the start and just before the end.
+/// `fn(&Stage) -> Shot`. It starts and ends exactly at rest; `alpha` 0 is
+/// rest at any moment; nothing leaves the window, wound down or not; the
+/// mascot is at rest just after the start and just before the end. With the
+/// clock on and, unless the story needs it, off.
 #[cfg(test)]
 macro_rules! story_contract_tests {
     ($story:expr, $shot:expr) => {
-        /// The story played by its own mascot.
-        fn contract_shot(style: $crate::config::Style, w: f32, h: f32, beat: $crate::ui::play::state::Beat) -> $crate::ui::play::stories::Shot {
+        /// The story played by its own mascot, the clock on or off.
+        fn contract_shot(style: $crate::config::Style, w: f32, h: f32, beat: $crate::ui::play::state::Beat, clock: bool) -> $crate::ui::play::stories::Shot {
             let look = $crate::ui::cat_style::CatLook { mascot: $story.mascot(), ..Default::default() };
-            $shot(style, $crate::ui::play::testing::shape(style, w, h), beat, look)
+            let s = $crate::ui::play::testing::shape(style, w, h);
+            $shot(&$crate::ui::play::stories::Stage::idle(style, s, beat, look, clock))
+        }
+
+        /// The clock states the story plays with.
+        fn contract_clocks() -> Vec<bool> {
+            if $story.needs_clock() { vec![true] } else { vec![true, false] }
         }
 
         #[test]
@@ -681,11 +724,13 @@ macro_rules! story_contract_tests {
             use $crate::ui::play::state::Beat;
             for style in [Style::Notch, Style::Pill] {
                 for (w, h) in $crate::ui::play::stories::CONTRACT_SIZES {
-                    for t in [0.0, $story.secs()] {
-                        for spread in [0.0, 1.0] {
-                            let shot = contract_shot(style, w, h, Beat { spread, alpha: 1.0, t });
-                            if let Err(why) = $crate::ui::play::stories::at_rest(style, &shot) {
-                                panic!("{style:?} {w}x{h} t={t} spread={spread}: {why}");
+                    for clock in contract_clocks() {
+                        for t in [0.0, $story.secs()] {
+                            for spread in [0.0, 1.0] {
+                                let shot = contract_shot(style, w, h, Beat { spread, alpha: 1.0, t }, clock);
+                                if let Err(why) = $crate::ui::play::stories::at_rest(style, &shot) {
+                                    panic!("{style:?} {w}x{h} clock={clock} t={t} spread={spread}: {why}");
+                                }
                             }
                         }
                     }
@@ -694,15 +739,21 @@ macro_rules! story_contract_tests {
         }
 
         #[test]
-        fn alpha_zero_means_no_deformation_at_any_moment() {
+        fn alpha_zero_is_rest_at_any_moment() {
             use $crate::config::Style;
             use $crate::ui::play::state::Beat;
             for style in [Style::Notch, Style::Pill] {
-                let mut t = 0.0;
-                while t <= $story.secs() {
-                    let shot = contract_shot(style, 190.0, 34.0, Beat { spread: 1.0, alpha: 0.0, t });
-                    assert!($crate::ui::play::shape::is_rest(style, &shot.deform), "{style:?} t={t}: {:?}", shot.deform);
-                    t += 0.1;
+                for clock in contract_clocks() {
+                    let mut t = 0.0;
+                    while t <= $story.secs() {
+                        for spread in [0.0, 1.0] {
+                            let shot = contract_shot(style, 190.0, 34.0, Beat { spread, alpha: 0.0, t }, clock);
+                            if let Err(why) = $crate::ui::play::stories::at_rest(style, &shot) {
+                                panic!("{style:?} clock={clock} t={t} spread={spread}: {why}");
+                            }
+                        }
+                        t += 0.1;
+                    }
                 }
             }
         }
@@ -714,14 +765,20 @@ macro_rules! story_contract_tests {
             use $crate::ui::play::state::Beat;
             for style in [Style::Notch, Style::Pill] {
                 for (w, h) in $crate::ui::play::stories::CONTRACT_SIZES {
-                    let mut t = 0.0;
-                    while t <= $story.secs() {
-                        let b = contract_shot(style, w, h, Beat { spread: 1.0, alpha: 1.0, t }).bounds();
-                        // Above the screen's top edge is hidden by it, as the
-                        // mockup's bezel hides it.
-                        assert!(b.x >= 0.0 && b.x + b.w <= WINDOW_W && b.y + b.h <= WINDOW_H,
-                            "{style:?} {w}x{h} t={t}: {b:?}");
-                        t += 0.04;
+                    for clock in contract_clocks() {
+                        // Playing, and wound down part way (the spread falls with it).
+                        for alpha in [1.0, 0.5, 0.2] {
+                            let mut t = 0.0;
+                            while t <= $story.secs() {
+                                let beat = Beat { spread: alpha, alpha, t };
+                                let b = contract_shot(style, w, h, beat, clock).bounds();
+                                // Above the screen's top edge is hidden by it, as the
+                                // mockup's bezel hides it.
+                                assert!(b.x >= 0.0 && b.x + b.w <= WINDOW_W && b.y + b.h <= WINDOW_H,
+                                    "{style:?} {w}x{h} clock={clock} alpha={alpha} t={t}: {b:?}");
+                                t += 0.04;
+                            }
+                        }
                     }
                 }
             }
@@ -733,10 +790,12 @@ macro_rules! story_contract_tests {
             use $crate::ui::play::state::Beat;
             for style in [Style::Notch, Style::Pill] {
                 for (w, h) in $crate::ui::play::stories::CONTRACT_SIZES {
-                    for t in [0.001, $story.secs() - 0.001] {
-                        let shot = contract_shot(style, w, h, Beat { spread: 1.0, alpha: 1.0, t });
-                        if let Err(why) = $crate::ui::play::stories::near_rest(&shot, 1e-3) {
-                            panic!("{style:?} {w}x{h} t={t}: {why}");
+                    for clock in contract_clocks() {
+                        for t in [0.001, $story.secs() - 0.001] {
+                            let shot = contract_shot(style, w, h, Beat { spread: 1.0, alpha: 1.0, t }, clock);
+                            if let Err(why) = $crate::ui::play::stories::near_rest(&shot, 1e-3) {
+                                panic!("{style:?} {w}x{h} clock={clock} t={t}: {why}");
+                            }
                         }
                     }
                 }

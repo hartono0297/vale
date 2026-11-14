@@ -9,13 +9,11 @@
 use std::f32::consts::{PI, TAU};
 
 use super::{
-    Draw, Ease, HEAD_PIVOT, Layer, MascotShot, Part, Shot, Slot, blinks, bump, kf, lerp, ring, toward_rest,
+    Draw, Ease, HEAD_PIVOT, Layer, MascotShot, Part, Shot, Slot, Stage, blinks, bump, kf, lerp, ring,
+    toward_rest,
 };
-use crate::config::Style;
-use crate::ui::cat_style::CatLook;
-use crate::ui::geometry::{ShapeRect, idle_layout_lead};
+use crate::ui::geometry::IdleLayout;
 use crate::ui::mascot::CrestPose;
-use crate::ui::play::state::{Beat, spread_offsets};
 use crate::ui::play::trigger::Story;
 use crate::ui::render::DigitFx;
 use crate::ui::robot::{Expr, GRID};
@@ -39,10 +37,11 @@ const CREST_REST: CrestPose = CrestPose { rot_deg: 10.0, scale: 1.0 };
 /// The beak's tip on the head's grid; the stolen digit hangs from it.
 const BEAK: (f32, f32) = (32.0, 49.5);
 
-/// The head's resting pivot (`HEAD_PIVOT`) in the slot of `s` with the
-/// island `spread` open, and the head grid's scale (dip per unit).
-fn head_pivot(s: ShapeRect, spread: f32) -> Option<((f32, f32), f32)> {
-    let slot = spread_offsets(idle_layout_lead(s, true, true, 0.0), s, spread).robot?;
+/// The head's resting pivot (`HEAD_PIVOT`) in the slot of `room` (the
+/// layout as the play has spread it), and the head grid's scale (dip per
+/// unit).
+fn head_pivot(room: IdleLayout) -> Option<((f32, f32), f32)> {
+    let slot = room.robot?;
     let k = slot.w / GRID;
     Some(((slot.x + HEAD_PIVOT.0 * k, slot.y + HEAD_PIVOT.1 * k), k))
 }
@@ -55,19 +54,20 @@ fn beak_at(m: &MascotShot, rest: (f32, f32), k: f32) -> (f32, f32) {
     (rest.0 + m.dx + bx * cos - by * sin, rest.1 + m.dy + bx * sin + by * cos)
 }
 
-/// One moment of the story on `s`. `beat.alpha` eases the whole of it home
-/// and `beat.spread` is where the island has made room (the mascot at its
-/// left end, the clock at its right). Exactly at rest at 0 s, at the end
-/// and with `alpha` 0. The falk has no body here, so `_look` is unused.
-pub fn shot(style: Style, s: ShapeRect, beat: Beat, _look: CatLook) -> Shot {
+/// One moment of the story on `stage`. `beat.alpha` eases the whole of it
+/// home and `beat.spread` is where the island has made room (the mascot at
+/// its left end, the clock at its right). Exactly at rest at 0 s, at the end
+/// and with `alpha` 0. The falk has no body here, so the look is unused.
+pub fn shot(stage: &Stage) -> Shot {
+    let Stage { style, shape: s, beat, .. } = *stage;
     let (t, a) = (beat.t, beat.alpha.clamp(0.0, 1.0));
     let mut out = Shot::rest(style, s);
     if t <= 0.0 || t >= Story::MalingAngka.secs() || a == 0.0 {
         return out;
     }
     // Where the slot and the clock are once the island has made room.
-    let room = spread_offsets(idle_layout_lead(s, true, true, 0.0), s, beat.spread);
-    let (Some((rest, k)), Some(clock)) = (head_pivot(s, beat.spread), room.clock) else {
+    let room = stage.room();
+    let (Some((rest, k)), Some(clock)) = (head_pivot(room), room.clock) else {
         return out;
     };
     let mid = s.y + s.h / 2.0;
@@ -260,7 +260,8 @@ pub fn shot(style: Style, s: ShapeRect, beat: Beat, _look: CatLook) -> Shot {
 mod tests {
     use super::*;
     use crate::config::Style;
-    use crate::ui::geometry::ShapeRect;
+    use crate::ui::cat_style::CatLook;
+    use crate::ui::geometry::{IdleLayout, ShapeRect};
     use crate::ui::mascot::{CrestPose, beak_open, crest_pose};
     use crate::ui::play::shape::is_rest;
     use crate::ui::play::state::Beat;
@@ -270,18 +271,25 @@ mod tests {
     use crate::ui::render::DigitFx;
     use crate::ui::robot::{Expr, Pose};
 
-    crate::ui::play::stories::story_contract_tests!(Story::MalingAngka, shot);
+    crate::ui::play::stories::story_contract_tests!(Story::MalingAngka, super::shot);
 
-    fn look() -> CatLook {
-        CatLook { mascot: crate::theme::Mascot::Falk, ..CatLook::default() }
+    /// The story on the idle island with the clock, as the app plays it.
+    fn shot(style: Style, s: ShapeRect, beat: Beat) -> Shot {
+        let look = CatLook { mascot: crate::theme::Mascot::Falk, ..CatLook::default() };
+        super::shot(&Stage::idle(style, s, beat, look, true))
+    }
+
+    /// The idle layout with the clock, spread open by `spread`.
+    fn room(s: ShapeRect, spread: f32) -> IdleLayout {
+        crate::ui::play::state::spread_offsets(crate::ui::geometry::idle_layout_lead(s, true, true, 0.0), s, spread)
     }
 
     #[test]
     fn the_stolen_digit_is_carried_and_then_returned() {
         let s = shape(Style::Notch, 190.0, 34.0);
-        let mid = shot(Style::Notch, s, Beat { spread: 1.0, alpha: 1.0, t: 4.0 }, look());
+        let mid = shot(Style::Notch, s, Beat { spread: 1.0, alpha: 1.0, t: 4.0 });
         assert!(mid.digits.iter().any(|d| d.dx.abs() > 5.0), "a digit has left its place");
-        let end = shot(Style::Notch, s, Beat { spread: 1.0, alpha: 1.0, t: 7.6 }, look());
+        let end = shot(Style::Notch, s, Beat { spread: 1.0, alpha: 1.0, t: 7.6 });
         assert!(end.digits.iter().all(|d| d.dx.abs() < 1.0), "every digit is home before the end");
     }
 
@@ -292,7 +300,7 @@ mod tests {
         (0..=(secs * 100.0) as usize)
             .map(|i| {
                 let t = (i as f32 / 100.0).min(secs);
-                (t, shot(style, s, Beat { spread: 1.0, alpha, t }, look()))
+                (t, shot(style, s, Beat { spread: 1.0, alpha, t }))
             })
             .collect()
     }
@@ -311,7 +319,7 @@ mod tests {
     #[test]
     fn the_digit_wiggles_is_bitten_carried_dropped_and_regrown() {
         let s = shape(Style::Notch, 190.0, 34.0);
-        let at = |t: f32| shot(Style::Notch, s, Beat { spread: 1.0, alpha: 1.0, t }, look());
+        let at = |t: f32| shot(Style::Notch, s, Beat { spread: 1.0, alpha: 1.0, t });
         assert!(at(0.9).digits[4].rot_deg.abs() > 0.5 || at(0.95).digits[4].rot_deg.abs() > 0.5, "it wiggles");
         assert!(at(2.5).digits[4].rot_deg.abs() > 1.0, "a tap knocks it");
         // Bitten: gone from its place, in the beak instead.
@@ -343,7 +351,7 @@ mod tests {
                 let head = |m: Option<MascotShot>| m.map_or((0.0, 0.0, 0.0), |m| (m.dx, m.dy, m.rot_deg));
                 // At the clock it is well to the right of its slot.
                 let s = shape(style, w, h);
-                let there = shot(style, s, Beat { spread: 1.0, alpha: 1.0, t: 3.0 }, look()).head().unwrap();
+                let there = shot(style, s, Beat { spread: 1.0, alpha: 1.0, t: 3.0 }).head().unwrap();
                 assert!(there.dx > 0.5 * w, "{style:?} {w}x{h}: only {}", there.dx);
                 for pair in frames.windows(2) {
                     let ((t0, a), (t1, b)) = (&pair[0], &pair[1]);
@@ -359,29 +367,29 @@ mod tests {
     #[test]
     fn the_crest_shoots_up_on_the_regrow_then_droops_and_settles() {
         let s = shape(Style::Pill, 190.0, 34.0);
-        let crest = |t: f32| shot(Style::Pill, s, Beat { spread: 1.0, alpha: 1.0, t }, look()).head().unwrap().crest;
+        let crest = |t: f32| shot(Style::Pill, s, Beat { spread: 1.0, alpha: 1.0, t }).head().unwrap().crest;
         assert!(crest(5.2).scale > 1.6, "startled");
         assert!(crest(6.7).scale < 0.8, "drooping");
         let end = crest(7.79);
         assert!((end.scale - 1.0).abs() < 0.01 && (end.rot_deg - 10.0).abs() < 0.2, "the idle crest: {end:?}");
-        assert_eq!(shot(Style::Pill, s, Beat { spread: 1.0, alpha: 1.0, t: 5.2 }, look()).head().unwrap().expr, Expr::Alert);
+        assert_eq!(shot(Style::Pill, s, Beat { spread: 1.0, alpha: 1.0, t: 5.2 }).head().unwrap().expr, Expr::Alert);
     }
 
     #[test]
     fn a_wind_down_eases_everything_home() {
         let s = shape(Style::Notch, 190.0, 34.0);
-        let full = shot(Style::Notch, s, Beat { spread: 1.0, alpha: 1.0, t: 4.0 }, look());
-        let half = shot(Style::Notch, s, Beat { spread: 1.0, alpha: 0.5, t: 4.0 }, look());
+        let full = shot(Style::Notch, s, Beat { spread: 1.0, alpha: 1.0, t: 4.0 });
+        let half = shot(Style::Notch, s, Beat { spread: 1.0, alpha: 0.5, t: 4.0 });
         let (f, h) = (full.head().unwrap(), half.head().unwrap());
         assert!((h.rot_deg - f.rot_deg * 0.5).abs() < 1e-3);
         assert!((h.dx - f.dx * 0.5).abs() < 1e-3 && (h.sx - (1.0 + (f.sx - 1.0) * 0.5)).abs() < 1e-3);
-        let gone = shot(Style::Notch, s, Beat { spread: 0.0, alpha: 0.0, t: 4.0 }, look());
+        let gone = shot(Style::Notch, s, Beat { spread: 0.0, alpha: 0.0, t: 4.0 });
         assert_eq!(gone, crate::ui::play::stories::Shot::rest(Style::Notch, s));
     }
 
     /// The beak of the head `m` draws, from the slot of `s` at `spread`.
     fn drawn_beak(s: ShapeRect, spread: f32, m: &MascotShot) -> (f32, f32) {
-        let (rest, k) = head_pivot(s, spread).unwrap();
+        let (rest, k) = head_pivot(room(s, spread)).unwrap();
         beak_at(m, rest, k)
     }
 
@@ -396,7 +404,7 @@ mod tests {
             for a in [0.25, 0.5, 0.75, 1.0] {
                 for t in [4.0, 5.3] {
                     let case = format!("{style:?} alpha={a} t={t}");
-                    let shot = shot(style, s, Beat { spread: 1.0, alpha: a, t }, look());
+                    let shot = shot(style, s, Beat { spread: 1.0, alpha: a, t });
                     let m = shot.head().unwrap();
                     let beak = drawn_beak(s, 1.0, &m);
                     let digits: Vec<_> = shot.parts.iter().filter_map(|p| match p.draw {
@@ -424,9 +432,9 @@ mod tests {
     #[test]
     fn the_whistle_follows_the_drawn_head() {
         let s = shape(Style::Pill, 190.0, 34.0);
-        let (rest, _) = head_pivot(s, 1.0).unwrap();
+        let (rest, _) = head_pivot(room(s, 1.0)).unwrap();
         for a in [0.5, 1.0] {
-            let shot = shot(Style::Pill, s, Beat { spread: 1.0, alpha: a, t: 6.55 }, look());
+            let shot = shot(Style::Pill, s, Beat { spread: 1.0, alpha: a, t: 6.55 });
             let m = shot.head().unwrap();
             let at = shot.parts.iter().find_map(|p| match p.draw {
                 Draw::Whistle { at } if p.layer == Layer::Front => Some(at),
@@ -444,7 +452,7 @@ mod tests {
         for style in [Style::Notch, Style::Pill] {
             let s = shape(style, 190.0, 34.0);
             for i in 0..=160 {
-                let shot = shot(style, s, Beat { spread: 1.0, alpha: 1.0, t: i as f32 * 0.05 }, look());
+                let shot = shot(style, s, Beat { spread: 1.0, alpha: 1.0, t: i as f32 * 0.05 });
                 assert!(shot.head().is_none_or(|m| !m.bare_octopus), "{style:?} t={}", i as f32 * 0.05);
                 for part in &shot.parts {
                     if let Draw::Head { shot, .. } = &part.draw {

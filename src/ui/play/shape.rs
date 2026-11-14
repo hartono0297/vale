@@ -19,8 +19,8 @@ pub struct Dent {
     pub width: f32,
 }
 
-/// `tilt_deg` and the shift's `y` only act on the Pill; the Notch stays
-/// welded to the screen edge, so it only shifts along it.
+/// `shift` and `tilt_deg` only act on the Pill; the Notch stays welded to the
+/// screen edge.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Deform {
     pub dents: Vec<Dent>,
@@ -33,26 +33,30 @@ pub struct Deform {
     /// at mid-height and fading toward the island's left quarter: the
     /// mockup's `bulgeL`.
     pub bulge_left: f32,
+    /// The island alone moves sideways this many dip, in both styles (the
+    /// Notch along the screen edge); unlike `shift`, what sits on it (the
+    /// clock) stays put: the mockup's `dx` (a sneeze's jolt).
+    pub jolt: f32,
 }
 
 /// True when `d` leaves the island's geometry untouched; a dent with no depth
 /// or no width counts as none.
 ///
-/// Tilt and a vertical shift do nothing on the Notch, as in `outline`.
+/// Shift and tilt do nothing on the Notch, as in `outline`.
 pub fn is_rest(style: Style, d: &Deform) -> bool {
     let pill = style == Style::Pill;
     d.squeeze == 0.0
         && d.swing_deg == 0.0
         && d.bulge_left == 0.0
-        && d.shift.0 == 0.0
-        && (!pill || (d.shift.1 == 0.0 && d.tilt_deg == 0.0))
+        && d.jolt == 0.0
+        && (!pill || (d.shift == (0.0, 0.0) && d.tilt_deg == 0.0))
         && d.dents.iter().all(|k| k.depth == 0.0 || k.width <= 0.0)
 }
 
 /// What turns and moves the island as a whole: where it turns, by how much,
 /// and how far it shifts. The Notch stays welded to the screen edge, so it only
-/// swings, about the edge's middle, and shifts along the edge; the Pill also
-/// tilts and shifts any way, about its centre.
+/// swings, about the edge's middle; the Pill also tilts and shifts, about its
+/// centre.
 struct Motion {
     pivot: (f32, f32),
     deg: f32,
@@ -65,7 +69,7 @@ fn motion(style: Style, s: ShapeRect, d: &Deform) -> Motion {
         Motion {
             pivot: (cx, s.y),
             deg: d.swing_deg,
-            shift: (d.shift.0, 0.0),
+            shift: (0.0, 0.0),
         }
     } else {
         Motion {
@@ -90,8 +94,8 @@ fn matrix(m: &Motion) -> Matrix3x2 {
 }
 
 /// The island's rigid motion as one matrix: the swing (plus the Pill's tilt)
-/// about the style's pivot, and the Pill's shift. Not the squeeze and not the
-/// dents. `outline` places every point with it, and whatever sits on the
+/// about the style's pivot, and the Pill's shift. Not the squeeze, the dents,
+/// the bulge or the jolt. `outline` places every point with it, and whatever sits on the
 /// island (the clock) draws under it, so the two cannot drift apart.
 pub fn rigid(style: Style, s: ShapeRect, d: &Deform) -> Matrix3x2 {
     matrix(&motion(style, s, d))
@@ -149,6 +153,7 @@ pub fn outline(style: Style, s: ShapeRect, d: &Deform) -> Vec<(f32, f32)> {
     }
     for pt in out.iter_mut() {
         *pt = place(pt.0, pt.1);
+        pt.0 += d.jolt;
     }
     if notch && swing != 0.0 {
         // Rotated by `a`, the side lines cross the screen edge `w/2 * tan a`
@@ -156,8 +161,12 @@ pub fn outline(style: Style, s: ShapeRect, d: &Deform) -> Vec<(f32, f32)> {
         // crossing. Assumes `squeeze >= 0`: a bulge (`keep > 1`) swinging at
         // once would need more.
         let lift = s.w / 2.0 * swing.to_radians().abs().tan() + 1.0;
-        out.insert(0, place(s.x, s.y - lift));
-        out.push(place(s.x + s.w, s.y - lift));
+        let ext = |x: f32| {
+            let (x, y) = place(x, s.y - lift);
+            (x + d.jolt, y)
+        };
+        out.insert(0, ext(s.x));
+        out.push(ext(s.x + s.w));
     }
     out
 }
@@ -174,17 +183,16 @@ fn left_pull(s: ShapeRect, bulge: f32, x: f32, y: f32) -> f32 {
 
 /// The body's left and right side at the foot of the Notch's shoulders
 /// (`shoulder_depth` below the screen edge), where each shoulder meets it:
-/// moved by the squeeze, the left bulge and the shift along the edge, not by
-/// the swing (the shoulders tuck into a swinging body instead). A dent is
-/// not followed; none reaches that high.
-pub fn top_corners(style: Style, s: ShapeRect, d: &Deform) -> (f32, f32) {
+/// moved by the squeeze, the left bulge and the jolt, not by the swing (the
+/// shoulders tuck into a swinging body instead). A dent is not followed;
+/// none reaches that high. The Pill has no shoulders.
+pub fn top_corners(s: ShapeRect, d: &Deform) -> (f32, f32) {
     let cx = s.x + s.w / 2.0;
     let foot = s.y + shoulder_depth(s);
     let keep = 1.0 - d.squeeze;
-    let shift = motion(style, s, d).shift.0;
     let left = s.x + left_pull(s, d.bulge_left, s.x, foot);
     let right = s.x + s.w;
-    (cx + (left - cx) * keep + shift, cx + (right - cx) * keep + shift)
+    (cx + (left - cx) * keep + d.jolt, cx + (right - cx) * keep + d.jolt)
 }
 
 /// The mockup's dent `{x, w, d}` (a bell on the lower outline at `x`, `w`
@@ -193,11 +201,20 @@ pub fn top_corners(style: Style, s: ShapeRect, d: &Deform) -> (f32, f32) {
 /// the mockup's weight (`bw`, 1 on the lip, 0 at mid-height) leaves it.
 pub fn lip_dent(style: Style, s: ShapeRect, x: f32, w: f32, d: f32) -> Dent {
     let mid = s.y + s.h / 2.0;
-    // The lower half's ends, where its x starts and stops rising.
-    let n = 256;
-    let low: Vec<f32> = (0..=n).map(|i| i as f32 / n as f32).filter(|&u| rim(style, s, u).y >= mid).collect();
-    let (mut lo, mut hi) = (low[0], low[low.len() - 1]);
-    for _ in 0..32 {
+    // The lower half: the outline falls to the lip over the first half of
+    // `u` and is symmetric, so its ends are where it crosses mid-height.
+    let (mut a, mut b) = (0.0_f32, 0.5_f32);
+    for _ in 0..24 {
+        let m = (a + b) / 2.0;
+        if rim(style, s, m).y < mid {
+            a = m;
+        } else {
+            b = m;
+        }
+    }
+    // Along it x only rises.
+    let (mut lo, mut hi) = (b, 1.0 - b);
+    for _ in 0..24 {
         let m = (lo + hi) / 2.0;
         if rim(style, s, m).x < x {
             lo = m;
@@ -366,10 +383,9 @@ mod tests {
         for (w, h) in [(160.0, 28.0), (300.0, 44.0)] {
             let d = Deform { swing_deg: 7.0, shift: (3.0, 5.0), tilt_deg: 4.0, squeeze: 0.1, ..Default::default() };
             let (n, p) = (shape(Style::Notch, w, h), shape(Style::Pill, w, h));
-            // The Notch turns about the middle of the screen edge and only
-            // shifts along it.
+            // The Notch turns about the middle of the screen edge and never shifts.
             let top = (n.x + n.w / 2.0, n.y);
-            assert!(near(apply(&rigid(Style::Notch, n, &d), top), (top.0 + 3.0, top.1)), "{w}x{h} Notch");
+            assert!(near(apply(&rigid(Style::Notch, n, &d), top), top), "{w}x{h} Notch");
             // The Pill turns about its centre, which only the shift moves.
             let mid = (p.x + p.w / 2.0, p.y + p.h / 2.0);
             let moved = apply(&rigid(Style::Pill, p, &d), mid);
@@ -377,7 +393,7 @@ mod tests {
             // And it does turn: the Notch's corner leaves its place by the swing.
             let corner = (n.x, n.y + n.h);
             let swung = apply(&rigid(Style::Notch, n, &d), corner);
-            let want = ((corner.0 - top.0) * 7.0_f32.to_radians().cos() - (corner.1 - top.1) * 7.0_f32.to_radians().sin() + top.0 + 3.0,
+            let want = ((corner.0 - top.0) * 7.0_f32.to_radians().cos() - (corner.1 - top.1) * 7.0_f32.to_radians().sin() + top.0,
                 (corner.0 - top.0) * 7.0_f32.to_radians().sin() + (corner.1 - top.1) * 7.0_f32.to_radians().cos() + top.1);
             assert!(near(swung, want), "{w}x{h}: {swung:?} is not {want:?}");
         }
@@ -450,15 +466,28 @@ mod tests {
     }
 
     #[test]
-    fn a_notch_shifts_sideways_along_the_screen_edge_but_never_down() {
-        let s = shape(Style::Notch, 190.0, 34.0);
-        let rest = outline(Style::Notch, s, &Deform::default());
-        let moved = outline(Style::Notch, s, &Deform { shift: (1.6, 5.0), ..Default::default() });
-        for (m, r) in moved.iter().zip(&rest) {
-            assert!(near(*m, (r.0 + 1.6, r.1)), "{r:?} went to {m:?}");
+    fn a_jolt_moves_the_island_alone_and_never_what_rides_it() {
+        // The sneeze's jolt (the mockup's `dx`): the outline moves sideways in
+        // both styles, the Notch along the screen edge; the clock draws under
+        // `rigid`, which the jolt leaves alone, so the clock stays put.
+        for style in [Style::Notch, Style::Pill] {
+            let s = shape(style, 190.0, 34.0);
+            let rest = outline(style, s, &Deform::default());
+            let d = Deform { jolt: -1.6, ..Default::default() };
+            for (m, r) in outline(style, s, &d).iter().zip(&rest) {
+                assert!(near(*m, (r.0 - 1.6, r.1)), "{style:?}: {r:?} went to {m:?}");
+            }
+            assert_eq!(rigid(style, s, &d), windows_numerics::Matrix3x2::identity(), "{style:?}");
+            assert!(!is_rest(style, &d), "{style:?}");
+            // With a swing the outline still rides `rigid`, moved by the jolt.
+            let swung = Deform { swing_deg: 3.0, jolt: 1.0, ..Default::default() };
+            let plain = outline(style, s, &Deform { swing_deg: 3.0, ..Default::default() });
+            for (m, r) in outline(style, s, &swung).iter().zip(&plain) {
+                assert!(near(*m, (r.0 + 1.0, r.1)), "{style:?} swung: {r:?} went to {m:?}");
+            }
         }
-        assert!(!is_rest(Style::Notch, &Deform { shift: (1.6, 0.0), ..Default::default() }));
-        assert!(is_rest(Style::Notch, &Deform { shift: (0.0, 5.0), ..Default::default() }));
+        // The Notch never takes the ordinary shift.
+        assert!(is_rest(Style::Notch, &Deform { shift: (1.6, 5.0), ..Default::default() }));
     }
 
     /// The outline's left side at height `y`, between its two samples.
@@ -472,14 +501,14 @@ mod tests {
         for (w, h) in SIZES {
             let s = shape(Style::Notch, w, h);
             let foot = s.y + crate::ui::geometry::shoulder_depth(s);
-            assert_eq!(top_corners(Style::Notch, s, &Deform::default()), (s.x, s.x + s.w), "{w}x{h}");
-            let squeezed = top_corners(Style::Notch, s, &Deform { squeeze: 0.1, ..Default::default() });
+            assert_eq!(top_corners(s, &Deform::default()), (s.x, s.x + s.w), "{w}x{h}");
+            let squeezed = top_corners(s, &Deform { squeeze: 0.1, ..Default::default() });
             let cx = s.x + s.w / 2.0;
             assert!(near(squeezed, (cx - s.w * 0.45, cx + s.w * 0.45)), "{w}x{h}: {squeezed:?}");
-            // A pulled-in left end and a sideways shift: the shoulder's foot
-            // is where the body's side is at its height, so no ledge.
-            let d = Deform { bulge_left: -2.2, shift: (1.6, 0.0), squeeze: 0.018, ..Default::default() };
-            let (l, r) = top_corners(Style::Notch, s, &d);
+            // A pulled-in left end and a jolt: the shoulder's foot is where
+            // the body's side is at its height, so no ledge.
+            let d = Deform { bulge_left: -2.2, jolt: 1.6, squeeze: 0.018, ..Default::default() };
+            let (l, r) = top_corners(s, &d);
             let side = left_side_at(&outline(Style::Notch, s, &d), foot);
             assert!((l - side).abs() < 0.05, "{w}x{h}: shoulder at {l}, side at {side}");
             assert!((r - (cx + s.w / 2.0 * 0.982 + 1.6)).abs() < 1e-3, "{w}x{h}: {r}");

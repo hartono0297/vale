@@ -7,14 +7,12 @@
 
 use std::f32::consts::{PI, TAU};
 
-use super::{Draw, Ease, HEAD_PIVOT, Layer, MascotShot, Part, Shot, Slot, blinks, bump, kf, lerp, ring};
+use super::{Draw, Ease, HEAD_PIVOT, Layer, MascotShot, Part, Shot, Slot, Stage, blinks, bump, kf, lerp, ring};
 use crate::config::Style;
-use crate::ui::cat_style::CatLook;
-use crate::ui::geometry::{ROBOT_COMPACT, ShapeRect, corner_radius, idle_layout_lead};
+use crate::ui::geometry::{ROBOT_COMPACT, ShapeRect, corner_radius};
 use crate::ui::play::art::cat::{CAT_SC, CatPose, Paw, SEAT, cat_at, tail};
 use crate::ui::play::art::tube::{LimbStyle, Stripes, along, catmull_rom, curl, plen};
 use crate::ui::play::shape::{Deform, lip_dent};
-use crate::ui::play::state::{Beat, spread_offsets};
 use crate::ui::play::trigger::Story;
 use crate::ui::robot::{Expr, GRID};
 
@@ -112,25 +110,44 @@ fn scarf_controls(style: Style, s: ShapeRect, gap: f32) -> Vec<(f32, f32)> {
     p
 }
 
+/// How far the tail's curl and width have grown: they grow over the first
+/// fifth of the tail leaving the cat and shrink over the last fifth of its
+/// way back (the mockup draws them whole at once), so the tail never pops.
+fn grow(ext: f32) -> f32 {
+    (ext / 0.2).clamp(0.0, 1.0)
+}
+
+/// The scarf's drawn centre line at `t`: the path `ext` of the way along
+/// (`gap` closing with the `hug`), then its curling tip, which the tickle and
+/// the sneeze curl further.
+fn scarf_line(style: Style, s: ShapeRect, t: f32, ext: f32, hug: f32, tickle: f32, hatchi: f32) -> Vec<(f32, f32)> {
+    let path = catmull_rom(&scarf_controls(style, s, lerp(3.4, 2.3, hug)), 6);
+    let wave = 0.5 * (TAU * 0.9 * t).sin();
+    let tip = lerp(1.6, 3.2, hug) + 1.4 * tickle + 0.4 * (TAU * 1.3 * t).sin() + 2.0 * hatchi;
+    let sway = (10.0 * wave + 20.0 * tickle).to_radians();
+    curl(&along(&path, plen(&path) * ext, 34), tip, (15.0 + 4.0 * tickle) * grow(ext), 14, sway)
+}
+
 /// The scarf's width along it: slimming, a puff near the tip, closed at it.
 fn scarf_width(s: f32) -> f32 {
     3.4 - 1.0 * s + 1.2 * ((s - 0.78) / 0.22).clamp(0.0, 1.0).powf(1.5) * (1.0 - ((s - 0.97) / 0.03).clamp(0.0, 1.0))
 }
 
-/// One moment of the story on `s`, the cat in the coat of `look`.
+/// One moment of the story on `stage`, the cat in the coat of its look.
 /// `beat.alpha` eases it home: from 1 to 0.75 the cat crouches back and the
 /// island settles, to 0.5 the cat fades over the slot head where they hand
 /// over, to 0 the slot head rises home. Exactly at rest at 0 s, at the end
 /// and with `alpha` 0.
-pub fn shot(style: Style, s: ShapeRect, beat: Beat, look: CatLook) -> Shot {
+pub fn shot(stage: &Stage) -> Shot {
+    let Stage { style, shape: s, beat, look, .. } = *stage;
     let (t, a) = (beat.t, beat.alpha.clamp(0.0, 1.0));
     let mut out = Shot::rest(style, s);
     let secs = Story::SyalEkor.secs();
     if t <= 0.0 || t >= secs || a == 0.0 {
         return out;
     }
-    let room = spread_offsets(idle_layout_lead(s, true, true, 0.0), s, beat.spread);
-    let Some(slot) = room.robot else {
+    // The slot where the renderer puts it (the clock on or off moves it).
+    let Some(slot) = stage.room().robot else {
         return out;
     };
     // The slot head's grid and the seated cat's, dip per unit.
@@ -143,8 +160,15 @@ pub fn shot(style: Style, s: ShapeRect, beat: Beat, look: CatLook) -> Shot {
     let crouch_y = bottom - (SEAT.1 - HEAD_PIVOT.1 - CROUCH_DROP) * CROUCH * unit;
     let crouch_k = CROUCH * unit / k;
     let duck = kf(t, &[(0.0, 0.0, Lin), (DUCKED, 1.0, Sio), (LEFT, 1.0, Lin), (secs, 0.0, Sio)]) * (2.0 * a).min(1.0);
-    let show = kf(t, &[(DUCKED, 0.0, Lin), (SHOWN, 1.0, Lin), (LEAVING, 1.0, Lin), (LEFT, 0.0, Lin)])
-        * ((a - 0.5) * 4.0).clamp(0.0, 1.0);
+    // Never brought out inside a wind-down: cut before the hand-over, the
+    // slot head goes home alone.
+    let show = if a < 1.0 && t < SHOWN {
+        0.0
+    } else {
+        kf(t, &[(DUCKED, 0.0, Lin), (SHOWN, 1.0, Lin), (LEAVING, 1.0, Lin), (LEFT, 0.0, Lin)])
+            * ((a - 0.5) * 4.0).clamp(0.0, 1.0)
+    };
+    out.halo = 1.0 - show;
     out.slot = if show < 1.0 {
         Slot::Story(MascotShot {
             dy: (crouch_y - (slot.y + HEAD_PIVOT.1 * k)) * duck,
@@ -184,23 +208,16 @@ pub fn shot(style: Style, s: ShapeRect, beat: Beat, look: CatLook) -> Shot {
         ],
         squeeze: 0.018 * hug,
         bulge_left: -2.2 * hug,
-        shift: (1.6 * hatchi * (TAU * 9.0 * t).sin(), 0.0),
+        jolt: 1.6 * hatchi * (TAU * 9.0 * t).sin(),
         ..Deform::default()
     };
 
     // The scarf, under the cat, inside (under the clock).
     if ext > 0.01 {
-        let path = catmull_rom(&scarf_controls(style, s, lerp(3.4, 2.3, hug)), 6);
-        let wave = 0.5 * (TAU * 0.9 * t).sin();
-        let tip = lerp(1.6, 3.2, hug) + 1.4 * tickle + 0.4 * (TAU * 1.3 * t).sin() + 2.0 * hatchi;
-        // The curl and the width grow as the tail leaves the cat and shrink
-        // as it goes back (the mockup draws them whole at once), so it never
-        // pops.
-        let grow = (ext / 0.2).clamp(0.0, 1.0);
-        let line = curl(&along(&path, plen(&path) * ext, 34), tip, (15.0 + 4.0 * tickle) * grow, 14, (10.0 * wave + 20.0 * tickle).to_radians());
+        let line = scarf_line(style, s, t, ext, hug, tickle, hatchi);
         let style = LimbStyle {
             wf: Some(scarf_width),
-            wm: grow,
+            wm: grow(ext),
             fluff: 0.07,
             side_shade: Some((-1, 0.3)),
             stripes: Some(Stripes { start: 5.5, every: 4.4, w: 1.8, skip_base: 3.0, rgb: 0 }),
@@ -264,6 +281,8 @@ pub fn shot(style: Style, s: ShapeRect, beat: Beat, look: CatLook) -> Shot {
 mod tests {
     use super::*;
     use crate::theme::{CatColor, Mascot};
+    use crate::ui::cat_style::CatLook;
+    use crate::ui::play::state::Beat;
     use crate::ui::play::rim::rim;
     use crate::ui::play::stories::{Draw, Layer, MascotShot, Slot, group_matrix};
     use crate::ui::play::testing::shape;
@@ -274,23 +293,21 @@ mod tests {
 
     const SIZES: [(f32, f32); 3] = crate::ui::play::stories::CONTRACT_SIZES;
 
-    fn look() -> CatLook {
-        CatLook { mascot: Mascot::Cat, ..CatLook::default() }
+    /// The idle island `w` x `h` with the cat, the clock on or off.
+    fn stage(style: Style, w: f32, h: f32, beat: Beat, clock: bool) -> Stage {
+        let look = CatLook { mascot: Mascot::Cat, ..CatLook::default() };
+        Stage::idle(style, shape(style, w, h), beat, look, clock)
     }
 
+    /// At `t`, wound down to `alpha` (the island spread open), with the clock.
     fn at(style: Style, w: f32, h: f32, t: f32, alpha: f32) -> Shot {
-        shot(style, shape(style, w, h), Beat { spread: 1.0, alpha, t }, look())
+        shot(&stage(style, w, h, Beat { spread: 1.0, alpha, t }, true))
     }
 
-    /// The slot's rect with the island spread open.
-    fn slot_rect(s: ShapeRect) -> crate::ui::geometry::Rect {
-        use crate::ui::geometry::idle_layout_lead;
-        crate::ui::play::state::spread_offsets(idle_layout_lead(s, true, true, 0.0), s, 1.0).robot.unwrap()
-    }
-
-    /// The slot head's pivot (window dip) and its dip per grid unit.
-    fn slot_head(s: ShapeRect, m: &MascotShot) -> ((f32, f32), f32) {
-        let r = slot_rect(s);
+    /// The slot head `m` as the renderer places it on `st`: its pivot (window
+    /// dip) and its dip per grid unit.
+    fn slot_head(st: &Stage, m: &MascotShot) -> ((f32, f32), f32) {
+        let r = st.room().robot.unwrap();
         let k = r.w / GRID;
         ((r.x + 32.0 * k + m.dx, r.y + 40.0 * k + m.dy), k * m.sx)
     }
@@ -316,14 +333,14 @@ mod tests {
     fn the_slot_head_hands_over_to_the_crouched_cat_without_a_jump() {
         for style in [Style::Notch, Style::Pill] {
             for (w, h) in SIZES {
-                let s = shape(style, w, h);
                 for t in [0.36, 0.4, 0.44, 8.01, 8.05, 8.09] {
                     let case = format!("{style:?} {w}x{h} t={t}");
-                    let shot = at(style, w, h, t, 1.0);
+                    let st = stage(style, w, h, Beat { spread: 1.0, alpha: 1.0, t }, true);
+                    let shot = shot(&st);
                     // Both drawn at once, the figure fading over the slot head,
                     // in the same place at the same size: the head never moves.
                     let Slot::Story(m) = shot.slot else { panic!("{case}: {:?}", shot.slot) };
-                    let ((sx, sy), sk) = slot_head(s, &m);
+                    let ((sx, sy), sk) = slot_head(&st, &m);
                     let ((fx, fy), fk, alpha) = figure_head(&shot).expect("the figure");
                     assert!(alpha > 0.0 && alpha < 1.0, "{case}: alpha {alpha}");
                     assert!((sx - fx).abs() < 0.02 && (sy - fy).abs() < 0.02, "{case}: slot {sx},{sy} figure {fx},{fy}");
@@ -343,14 +360,14 @@ mod tests {
     fn the_slot_head_ducks_and_rises_without_a_jump() {
         for style in [Style::Notch, Style::Pill] {
             for (w, h) in SIZES {
-                let s = shape(style, w, h);
                 let mut last: Option<((f32, f32), f32)> = None;
                 let mut t = 0.0;
                 while t <= Story::SyalEkor.secs() {
-                    let shot = at(style, w, h, t, 1.0);
+                    let st = stage(style, w, h, Beat { spread: 1.0, alpha: 1.0, t }, true);
+                    let shot = shot(&st);
                     let now = match (shot.slot, figure_head(&shot)) {
-                        (Slot::Story(m), _) => Some(slot_head(s, &m)),
-                        (Slot::App, _) => Some(slot_head(s, &MascotShot::REST)),
+                        (Slot::Story(m), _) => Some(slot_head(&st, &m)),
+                        (Slot::App, _) => Some(slot_head(&st, &MascotShot::REST)),
                         (Slot::Empty, _) => None,
                     };
                     if let (Some((p, k)), Some((q, j))) = (now, last) {
@@ -438,12 +455,21 @@ mod tests {
 
     #[test]
     fn the_sneeze_shifts_the_island_and_returns() {
+        // The mockup's `dx`: the island alone jolts, the clock stays (a jolt,
+        // never the shift the clock rides).
         for style in [Style::Notch, Style::Pill] {
             for (w, h) in SIZES {
-                let shift = |t: f32| at(style, w, h, t, 1.0).deform.shift;
-                assert!(shift(5.64).0.abs() > 1.2, "{style:?} {w}x{h}: {:?}", shift(5.64));
+                let jolt = |t: f32| at(style, w, h, t, 1.0).deform.jolt;
+                assert!(jolt(5.64).abs() > 1.2, "{style:?} {w}x{h}: {}", jolt(5.64));
                 for t in [5.4, 5.52, 5.76, 6.0] {
-                    assert_eq!(shift(t), (0.0, 0.0), "{style:?} {w}x{h} t={t}");
+                    assert_eq!(jolt(t), 0.0, "{style:?} {w}x{h} t={t}");
+                }
+                let mut t = 0.0;
+                while t < Story::SyalEkor.secs() {
+                    let d = at(style, w, h, t, 1.0).deform;
+                    let s = shape(style, w, h);
+                    assert_eq!(crate::ui::play::shape::rigid(style, s, &d), windows_numerics::Matrix3x2::identity(), "{style:?} t={t}");
+                    t += 0.02;
                 }
                 // The sneeze's own dent pushes the lip down under the cat.
                 let d = at(style, w, h, 5.64, 1.0).deform;
@@ -454,33 +480,107 @@ mod tests {
 
     #[test]
     fn a_wind_down_eases_the_cat_home_through_its_slot() {
-        // Cut short mid-hug: the cat crouches back, fades over the slot head
-        // where it hands over, and the slot head rises home.
+        // Cut short mid-hug, the spread falling with alpha as the app's beat
+        // has it, the clock on or off (the slot sits elsewhere without it):
+        // the cat crouches back, fades over the slot head exactly where they
+        // hand over, and the slot head rises home.
+        for style in [Style::Notch, Style::Pill] {
+            for (w, h) in SIZES {
+                for clock in [true, false] {
+                    let case = format!("{style:?} {w}x{h} clock={clock}");
+                    let mut last: Option<(((f32, f32), f32), f32)> = None;
+                    let mut crossed = false;
+                    for i in (0..=100).rev() {
+                        let a = i as f32 / 100.0;
+                        let st = stage(style, w, h, Beat { spread: a, alpha: a, t: 4.3 }, clock);
+                        let shot = shot(&st);
+                        if a <= 0.75 {
+                            assert!(crate::ui::play::shape::is_rest(style, &shot.deform), "{case} alpha={a}");
+                        }
+                        // Both drawn: the two heads are one.
+                        if let (Some((p, k, alpha)), Slot::Story(m)) = (figure_head(&shot), shot.slot) {
+                            let (q, j) = slot_head(&st, &m);
+                            assert!((p.0 - q.0).abs() < 0.02 && (p.1 - q.1).abs() < 0.02 && (k - j).abs() < 1e-3,
+                                "{case} alpha={a} (figure at {alpha}): figure {p:?} slot {q:?}");
+                            crossed = true;
+                        }
+                        let now = match (figure_head(&shot), shot.slot) {
+                            (Some((p, k, alpha)), _) if alpha >= 1.0 => Some((p, k)),
+                            (_, Slot::Story(m)) => Some(slot_head(&st, &m)),
+                            (_, Slot::App) => Some(slot_head(&st, &MascotShot::REST)),
+                            (None, Slot::Empty) => panic!("{case} alpha={a}: nothing shows the cat"),
+                            (Some((p, k, _)), Slot::Empty) => Some((p, k)),
+                        };
+                        // The slot moves with the falling spread; the head
+                        // moves with it, and on its own never jumps.
+                        let slot_x = st.room().robot.unwrap().x;
+                        if let (Some((p, k)), Some(((q, j), was))) = (now, last) {
+                            let own = (p.0 - q.0) - (slot_x - was);
+                            assert!(own.abs() < 0.6 && (p.1 - q.1).abs() < 0.6 && (k - j).abs() < 0.02,
+                                "{case} alpha={a}: {q:?} to {p:?}, the slot moved {}", slot_x - was);
+                        }
+                        last = now.map(|n| (n, slot_x));
+                    }
+                    assert!(crossed, "{case}: no cross-fade seen");
+                    let s = shape(style, w, h);
+                    assert_eq!(shot(&stage(style, w, h, Beat { spread: 0.0, alpha: 0.0, t: 4.3 }, clock)), Shot::rest(style, s), "{case}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_drawn_tail_follows_the_rim_round_the_left_end() {
+        // The centre line handed to the tube (resampled and curled), wrapped
+        // at the hug: where it goes round the end it keeps the gap.
         for style in [Style::Notch, Style::Pill] {
             for (w, h) in SIZES {
                 let s = shape(style, w, h);
-                let case = format!("{style:?} {w}x{h}");
-                let mut last: Option<((f32, f32), f32)> = None;
-                for i in (0..=100).rev() {
-                    let a = i as f32 / 100.0;
-                    let shot = at(style, w, h, 4.3, a);
-                    if a <= 0.75 {
-                        assert!(crate::ui::play::shape::is_rest(style, &shot.deform), "{case} alpha={a}");
+                let line = scarf_line(style, s, 4.3, 1.0, 1.0, 0.0, 0.0);
+                let edge: Vec<_> = (0..=2000).map(|i| rim(style, s, i as f32 / 4000.0)).collect();
+                let mut round = 0;
+                // The resampled path from where it meets the end (its first
+                // sample on it; before that it runs under the lip from the
+                // cat), to where the curl turns away on purpose.
+                let first = scarf_controls(style, s, 2.3)[2];
+                let from = (0..=34).min_by(|&a, &b| {
+                    let d = |i: usize| (line[i].0 - first.0).hypot(line[i].1 - first.1);
+                    d(a).total_cmp(&d(b))
+                }).unwrap();
+                for p in &line[from..=34] {
+                    let e = edge.iter().min_by(|a, b| (a.x - p.0).hypot(a.y - p.1).total_cmp(&(b.x - p.0).hypot(b.y - p.1))).unwrap();
+                    if e.nx < -0.2 {
+                        let d = (e.x - p.0).hypot(e.y - p.1);
+                        assert!((d - 2.3).abs() < 1.0, "{style:?} {w}x{h}: {p:?} is {d} off the edge");
+                        round += 1;
                     }
-                    let now = match (figure_head(&shot), shot.slot) {
-                        (Some((p, k, alpha)), _) if alpha >= 1.0 => Some((p, k)),
-                        (_, Slot::Story(m)) => Some(slot_head(s, &m)),
-                        (_, Slot::App) => Some(slot_head(s, &MascotShot::REST)),
-                        (None, Slot::Empty) => panic!("{case} alpha={a}: nothing shows the cat"),
-                        (Some((p, k, _)), Slot::Empty) => Some((p, k)),
-                    };
-                    if let (Some((p, k)), Some((q, j))) = (now, last) {
-                        assert!((p.0 - q.0).abs() < 0.6 && (p.1 - q.1).abs() < 0.6 && (k - j).abs() < 0.02,
-                            "{case} alpha={a}: {q:?} to {p:?}");
-                    }
-                    last = now;
                 }
-                assert_eq!(at(style, w, h, 4.3, 0.0), Shot::rest(style, s), "{case}");
+                assert!(round >= 8, "{style:?} {w}x{h}: only {round} points round the end");
+            }
+        }
+    }
+
+    #[test]
+    fn the_slot_heads_halo_fades_as_the_cat_fades_in_and_back() {
+        // The see-through halo is the slot head's alone: it gives way as the
+        // figure (which has none) shows, so it never pops at the hand-over.
+        for t in [0.2, 0.35, 0.4, 0.44, 8.01, 8.05, 8.1, 8.3] {
+            let shot = at(Style::Pill, 190.0, 34.0, t, 1.0);
+            let show = figure_head(&shot).map_or(0.0, |(_, _, a)| a);
+            assert!((shot.halo - (1.0 - show)).abs() < 1e-5, "t={t}: halo {} with the figure at {show}", shot.halo);
+        }
+        assert_eq!(Shot::rest(Style::Pill, shape(Style::Pill, 190.0, 34.0)).halo, 1.0);
+    }
+
+    #[test]
+    fn a_cut_before_the_hand_over_never_brings_the_cat_out() {
+        // Wound down before the figure has taken over, the slot head goes
+        // home alone: no ghost of the crouched body.
+        for t in [0.2, 0.3, 0.36, 0.4, 0.44] {
+            for a in [0.99, 0.8, 0.6] {
+                let shot = at(Style::Notch, 190.0, 34.0, t, a);
+                assert!(shot.parts.is_empty(), "t={t} alpha={a}: {:?}", shot.parts.len());
+                assert!(matches!(shot.slot, Slot::Story(_)), "t={t} alpha={a}");
             }
         }
     }
@@ -489,8 +589,8 @@ mod tests {
     fn the_cat_and_its_tail_wear_the_coat() {
         for color in [CatColor::Terracotta, CatColor::Calico, CatColor::White, CatColor::Black] {
             let look = CatLook { mascot: Mascot::Cat, color, ..CatLook::default() };
-            let s = shape(Style::Notch, 190.0, 34.0);
-            let shot = shot(Style::Notch, s, Beat { spread: 1.0, alpha: 1.0, t: 4.3 }, look);
+            let st = Stage { look, ..stage(Style::Notch, 190.0, 34.0, Beat { spread: 1.0, alpha: 1.0, t: 4.3 }, true) };
+            let shot = shot(&st);
             let tail = tail_part(&shot).expect("the tail");
             let Draw::Group { items, .. } = &tail.draw else { unreachable!() };
             assert!(items.iter().any(|d| matches!(d, Draw::Fill { rgb, .. } if *rgb == look.head_rgb())), "{color:?}");

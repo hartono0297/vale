@@ -343,6 +343,8 @@ pub struct PlayFrame {
     /// What the mascot's slot shows: the app's head as ever, the story's
     /// head in its place, or nothing.
     pub slot: Slot,
+    /// How much of its see-through halo a story head in the slot keeps.
+    pub halo: f32,
     /// What the story draws behind, on and in front of the island, each part
     /// in its layer (`PAINT_ORDER`).
     pub parts: Vec<Part>,
@@ -356,6 +358,7 @@ impl PlayFrame {
             beat,
             digits: shot.digits,
             slot: shot.slot,
+            halo: shot.halo,
             parts: shot.parts,
         }
     }
@@ -2594,7 +2597,7 @@ impl Renderer {
                 if let (Some(area), Some(r)) = (l.robot, robot) {
                     match play.map_or(Slot::App, |p| p.slot) {
                         Slot::App => self.paint_robot(area, r),
-                        Slot::Story(m) => self.paint_story_mascot(area, r, &m),
+                        Slot::Story(m) => self.paint_story_mascot(area, r, &m, play.map_or(1.0, |p| p.halo)),
                         Slot::Empty => {}
                     }
                 }
@@ -2719,7 +2722,12 @@ impl Renderer {
     /// about it, with the story's face. The painter draws it as ever, so the
     /// coat and the accessory come along. Inside the island's clip, like the
     /// resting mascot.
-    fn paint_story_mascot(&self, area: Rect, robot: RobotFrame, m: &MascotShot) {
+    ///
+    /// Its see-through halo at `halo` of its strength. It leaves the
+    /// strength lowered: nothing after the slot head in the view reads it,
+    /// and a head held back for a fade is painted with it.
+    fn paint_story_mascot(&self, area: Rect, robot: RobotFrame, m: &MascotShot, halo: f32) {
+        self.legible.set(self.legible.get() * halo.clamp(0.0, 1.0));
         let k = area.w / GRID;
         let pivot = (area.x + HEAD_PIVOT.0 * k, area.y + HEAD_PIVOT.1 * k);
         let own = Matrix3x2::scale_around(m.sx, m.sy, Vector2::new(pivot.0, pivot.1))
@@ -4120,7 +4128,7 @@ impl Renderer {
         if style != Style::Notch || shoulder <= 0.0 {
             return Ok(body);
         }
-        let (left, right) = top_corners(style, s, d);
+        let (left, right) = top_corners(s, d);
         let left = self.shoulder_path(s.y, left, -1.0, shoulder)?;
         let right = self.shoulder_path(s.y, right, 1.0, shoulder)?;
         self.union(&self.union(&body, &left)?, &right)
@@ -5174,8 +5182,8 @@ mod tests {
             let foot = s.y + crate::ui::geometry::shoulder_depth(s);
             for d in [
                 Deform { bulge_left: -2.2, squeeze: 0.018, ..Deform::default() },
-                Deform { shift: (1.6, 0.0), ..Deform::default() },
-                Deform { shift: (-1.6, 0.0), ..Deform::default() },
+                Deform { jolt: 1.6, ..Deform::default() },
+                Deform { jolt: -1.6, ..Deform::default() },
             ] {
                 let island = r.island_geometry(Style::Notch, s, Some(&d)).unwrap();
                 let edge = |y: f32| (0..800).map(|i| s.x - 6.0 + i as f32 * 0.025).find(|&x| contains(&island, x, y)).unwrap_or(f32::NAN);
@@ -5191,6 +5199,7 @@ mod tests {
             beat: Beat { spread, alpha: 1.0, t: 0.0 },
             digits: [DigitFx::IDENTITY; 5],
             slot: Slot::App,
+            halo: 1.0,
             parts: Vec::new(),
         }
     }
@@ -6169,6 +6178,34 @@ mod tests {
                 assert_eq!(fur(&mut r, Slot::Empty), 0, "{case}: an empty slot");
             }
         }
+    }
+
+    #[test]
+    fn a_story_slot_head_wears_the_halo_the_shot_gives_it() {
+        // On a see-through island the slot head has a dark halo; a story
+        // fades it (`PlayFrame::halo`) where its own figure, which has none,
+        // takes over.
+        let mut r = renderer();
+        let s = shape(Style::Pill, 190.0, 34.0);
+        let area = Rect { x: s.x + 20.0, y: s.y + 4.0, w: 26.0, h: 26.0 };
+        let robot = RobotFrame { expr: Expr::Idle, pose: Pose::default() };
+        let ink = |r: &mut Renderer, legible: f32, halo: f32| {
+            let px = painted(r, (s.x + 80.0, s.y + 40.0), |r| {
+                r.legible.set(legible);
+                r.paint_story_mascot(area, robot, &MascotShot::REST, halo);
+            });
+            let mut sum = 0u64;
+            for y in 0..px.h {
+                for x in 0..px.w {
+                    sum += pixel(&px, (x, y))[3] as u64;
+                }
+            }
+            sum
+        };
+        let (none, half, full) = (ink(&mut r, 1.0, 0.0), ink(&mut r, 1.0, 0.5), ink(&mut r, 1.0, 1.0));
+        assert!(full > half && half > none, "{none} {half} {full}");
+        // With nothing to make legible there is no halo to fade.
+        assert_eq!(ink(&mut r, 0.0, 1.0), none);
     }
 
     #[test]

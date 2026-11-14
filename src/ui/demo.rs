@@ -237,7 +237,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use super::cat_style::CatLook;
 use super::dock::{self, DockFrame};
 use super::geometry::{
-    ANIM_MS, NOTCH_OPACITY_DEFAULT, NotchSize, ShapeKind, ShapeRect, TOAST_SLOT_EXTRA, Under,
+    ANIM_MS, IdleLayout, NOTCH_OPACITY_DEFAULT, NotchSize, ShapeKind, ShapeRect, TOAST_SLOT_EXTRA, Under,
     ease_out_back, idle_layout_lead, idle_shape_typing, lerp_shape, lyric_box_w, lyric_max_w, lyric_scroll_offset,
     lyric_shape_sized, lyric_slot_width, lyric_width_min, shape_with_robot_sized, typing_lead,
     with_rec_caption, with_toast_slot,
@@ -260,7 +260,7 @@ use super::play::art::falk::{BirdPose, WingPose, bird, bird_at, bird_parts};
 use super::play::art::octopus;
 use super::play::art::tube::{along, catmull_rom, curl, plen};
 use super::play::rim::rim;
-use super::play::stories::{self, Layer, MascotShot, Part, Slot};
+use super::play::stories::{self, Layer, MascotShot, Part, Slot, Stage};
 use super::play::trigger::Story;
 use super::robot::{Expr, EyesPose, Motion, PAW_LIFT, Pose};
 use super::shelf_motion::{SHELF_ENTER_MS, SHELF_MOVE_MS, SHELF_STAGGER_MS, ShelfMotion};
@@ -1138,7 +1138,9 @@ fn falk_scene(hang: bool, style: Style, shape: ShapeRect, coat: FalkColor) -> st
 /// the mascot and the clock spread to the island's ends, and the island
 /// deformed as `which` says, or a story's own moment. The cat's body takes
 /// its coat from `cat`.
-fn demo_play(which: DemoPlay, style: Style, shape: ShapeRect, cat: CatLook) -> PlayFrame {
+///
+/// `layout` is the idle layout the frame lays the slot and the clock by.
+fn demo_play(which: DemoPlay, style: Style, shape: ShapeRect, cat: CatLook, layout: IdleLayout) -> PlayFrame {
     let beat = Beat {
         spread: 1.0,
         alpha: 1.0,
@@ -1148,12 +1150,14 @@ fn demo_play(which: DemoPlay, style: Style, shape: ShapeRect, cat: CatLook) -> P
         DemoPlay::MalingAngka(t) => {
             let beat = Beat { t, ..beat };
             let look = CatLook { mascot: Mascot::Falk, ..cat };
-            return PlayFrame::of(stories::shot(Story::MalingAngka, style, shape, beat, look), beat);
+            let stage = Stage { style, shape, beat, look, layout };
+            return PlayFrame::of(stories::shot(Story::MalingAngka, &stage), beat);
         }
         DemoPlay::SyalEkor(t) => {
             let beat = Beat { t, ..beat };
             let look = CatLook { mascot: Mascot::Cat, ..cat };
-            return PlayFrame::of(stories::shot(Story::SyalEkor, style, shape, beat, look), beat);
+            let stage = Stage { style, shape, beat, look, layout };
+            return PlayFrame::of(stories::shot(Story::SyalEkor, &stage), beat);
         }
         DemoPlay::CatBody => {
             let beat = Beat { spread: 0.0, ..beat };
@@ -1246,6 +1250,7 @@ fn demo_play(which: DemoPlay, style: Style, shape: ShapeRect, cat: CatLook) -> P
         beat,
         digits,
         slot: Slot::App,
+        halo: 1.0,
         parts: Vec::new(),
     }
 }
@@ -3400,7 +3405,17 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                     || slide != 0.0
                     || scene.reveal.is_some()
                     || scene.fade_from.is_some(),
-                play: (scene.play != DemoPlay::No).then(|| demo_play(scene.play, style, shape, cat)),
+                play: (scene.play != DemoPlay::No).then(|| {
+                    // As the renderer lays the idle slot and clock out.
+                    let lead = if scene.view == View0::Idle && scene.robot.is_some() {
+                        typing_lead(shape, shape_with_robot_sized(style, notch, ShapeKind::Idle, true))
+                    } else {
+                        0.0
+                    };
+                    let clock = scene.clock.is_some() || clock_on;
+                    let layout = idle_layout_lead(shape, scene.robot.is_some(), clock, lead);
+                    demo_play(scene.play, style, shape, cat, layout)
+                }),
             };
             if let Err(error) = renderer.draw(&win, style, shape, &frame, opacity) {
                 eprintln!("demo: draw failed: {error}");
@@ -5628,7 +5643,7 @@ mod tests {
                 let s = shape(style, w, h);
                 for coat in OctopusColor::ALL {
                     let cat = CatLook { octopus: *coat, ..CatLook::default() };
-                    let frame = demo_play(DemoPlay::OctopusArms, style, s, cat);
+                    let frame = demo_play(DemoPlay::OctopusArms, style, s, cat, idle_layout_lead(s, true, true, 0.0));
                     let case = format!("{style:?} {w}x{h} {coat:?}");
                     // The slot head is the mantle alone: the arms are the story's.
                     assert!(matches!(frame.slot, Slot::Story(m) if m.bare_octopus), "{case}");
@@ -5671,7 +5686,7 @@ mod tests {
                 for coat in FalkColor::ALL {
                     let cat = CatLook { falk: *coat, ..CatLook::default() };
                     for (which, layers) in [(DemoPlay::FalkOpen, vec![Layer::Back]), (DemoPlay::FalkHang, vec![Layer::Back, Layer::Front])] {
-                        let frame = demo_play(which, style, s, cat);
+                        let frame = demo_play(which, style, s, cat, idle_layout_lead(s, true, true, 0.0));
                         let case = format!("{style:?} {w}x{h} {coat:?} {layers:?}");
                         // The slot is empty: the head is the bird's.
                         assert_eq!(frame.slot, Slot::Empty, "{case}");

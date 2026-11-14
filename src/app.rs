@@ -109,7 +109,8 @@ use crate::ui::editor::{self, EditorKind, EditorResult, WM_APP_EDITOR_RESULT};
 use crate::ui::frame_clock::{FrameClock, WM_APP_FRAME};
 use crate::ui::geometry::{
     AA_MARGIN, ANIM_MS, LYRIC_HOLD_MS, LYRIC_MAX_W, LYRIC_MIN_W, NOTCH_H_DEFAULT, NOTCH_W_DEFAULT,
-    NotchSize, ShapeKind, ShapeRect, TOAST_SLOT_EXTRA, Under, WINDOW_W, idle_shape_typing,
+    IdleLayout, NotchSize, ShapeKind, ShapeRect, TOAST_SLOT_EXTRA, Under, WINDOW_W, idle_layout_lead,
+    idle_shape_typing,
     island_contains, lerp_shape, lyric_box_w, lyric_cap, lyric_max_w, lyric_scroll_end_ms,
     lyric_scroll_offset, lyric_shape_sized, lyric_slot_width, lyric_target_w, lyric_width_min,
     panel_kind, shape_for, shape_sized, shape_with_robot_sized, toast_peek_reaches, typing_lead,
@@ -133,7 +134,7 @@ use crate::ui::render::{
 use crate::ui::play::{click_through, swallows};
 use crate::ui::play::gate::{Env, instant_stop, may_start, must_stop};
 use crate::ui::play::state::Play;
-use crate::ui::play::stories;
+use crate::ui::play::stories::{self, Stage};
 use crate::ui::play::trigger::{Moment, PRESENCE_MIN, Story, cooldown, has_ready, pick, wait_for};
 use crate::ui::settings_layout::{CardId, MonitorRow};
 use crate::ui::robot::{
@@ -2612,13 +2613,20 @@ impl App {
     }
 
     /// What the renderer gets for the running story on the island `shape`:
-    /// the story's shot at this beat (at rest for a story with no timeline).
-    fn play_frame(&self, now: Instant, shape: ShapeRect) -> Option<PlayFrame> {
+    /// the story's shot at this beat (at rest for a story with no timeline),
+    /// placed by the frame's idle `layout` as the renderer places the slot and
+    /// the clock.
+    fn play_frame(&self, now: Instant, shape: ShapeRect, layout: IdleLayout) -> Option<PlayFrame> {
         self.play.as_ref().map(|active| {
             let beat = active.play.beat(now);
-            let look = CatLook::of(&self.config);
-            let shot = stories::shot(active.play.story(), self.config.style, shape, beat, look);
-            PlayFrame::of(shot, beat)
+            let stage = Stage {
+                style: self.config.style,
+                shape,
+                beat,
+                look: CatLook::of(&self.config),
+                layout,
+            };
+            PlayFrame::of(stories::shot(active.play.story(), &stage), beat)
         })
     }
 
@@ -7594,6 +7602,20 @@ impl App {
             || self.strip_motion.is_some()
             || self.eyes_morph;
         let rec_levels = self.rec_levels();
+        let clock = (self.config.idle_clock && self.drawn == View::Idle)
+            .then(|| Local::now().format("%H:%M").to_string());
+        // The idle island's growth on the left (the typing cat's laptop), so
+        // the robot and the clock stay still as it morphs. Measured against
+        // the plain idle shape, so a symmetric morph back to idle (media, a
+        // notice or the panel ending) keeps the group centred.
+        let idle_lead = if self.drawn == View::Idle && self.config.robot {
+            let plain = shape_with_robot_sized(self.config.style, self.notch_size(), ShapeKind::Idle, true);
+            typing_lead(shape, plain)
+        } else {
+            0.0
+        };
+        // Where the renderer puts the slot and the clock: a story lines up with it.
+        let idle_layout = idle_layout_lead(shape, robot.is_some(), clock.is_some(), idle_lead);
         let frame = Frame {
             view: &self.drawn,
             media: state.media(),
@@ -7680,24 +7702,8 @@ impl App {
             cat: CatLook::of(&self.config),
             fill_alpha,
             legibility: notch_fill::legibility(fill_alpha),
-            clock: (self.config.idle_clock && self.drawn == View::Idle)
-                .then(|| Local::now().format("%H:%M").to_string()),
-            // The idle island's growth on the left (the typing cat's
-            // laptop), so the robot and the clock stay still as it morphs.
-            // Measured against the plain idle shape, so a symmetric morph
-            // back to idle (media, a notice or the panel ending) keeps the
-            // group centred.
-            idle_lead: if self.drawn == View::Idle && self.config.robot {
-                let plain = shape_with_robot_sized(
-                    self.config.style,
-                    self.notch_size(),
-                    ShapeKind::Idle,
-                    true,
-                );
-                typing_lead(shape, plain)
-            } else {
-                0.0
-            },
+            clock,
+            idle_lead,
             lyric: self.lyrics.shown(now),
             lyric_scroll: if self.drawn == View::MediaLyric {
                 self.lyric_fit.scroll(now)
@@ -7765,7 +7771,7 @@ impl App {
             notice_close: self.notice_close_view(now),
             transit,
             full_redraw,
-            play: self.play_frame(now, shape),
+            play: self.play_frame(now, shape, idle_layout),
         };
         let key = eq_key(self.draw_gen, &frame, shape, opacity);
         if eq_tick && !dirty::eq_draw_needed(self.eq_key.as_ref(), &key) {
