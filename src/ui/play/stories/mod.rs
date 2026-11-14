@@ -134,11 +134,15 @@ pub struct Part {
 #[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Debug, PartialEq)]
 pub enum Draw {
-    /// The filled figures of `path` (each `Move` starts one).
+    /// The filled figures of `path` (each `Move` starts one), nonzero as the
+    /// mockup's SVG fills: figures drawn the same way round fill where they
+    /// overlap.
     Fill { path: Vec<Seg>, rgb: u32 },
-    /// `path`'s lines, `width` wide with round caps.
+    /// `path`'s lines, `width` wide with round caps. A ring is a stroke of
+    /// `circle_segs`.
     Stroke { path: Vec<Seg>, rgb: u32, width: f32 },
-    /// A filled ellipse about `c` with radii `r`.
+    /// A filled ellipse about `c` with radii `r`, its axes on the grid's; a
+    /// turned ellipse goes inside a turned `Group`.
     Ellipse { c: (f32, f32), r: (f32, f32), rgb: u32 },
     /// The mascot's head anywhere, by the same painter as the slot head, so
     /// its coat and accessory come along. Drawn at the slot head's size
@@ -155,7 +159,9 @@ pub enum Draw {
     Whistle { at: (f32, f32) },
     /// `items` on a grid of their own: its point `pivot` placed at `at`, the
     /// grid scaled by `scale` (in its own axes) and turned by `rot_deg`
-    /// (clockwise) about it. A whole figure moves in one transform.
+    /// (clockwise) about it. A whole figure moves in one transform. Its items
+    /// have no alpha of their own: the part's fades the figure as one, and a
+    /// piece that fades alone is a `Part` of its own.
     Group {
         at: (f32, f32),
         rot_deg: f32,
@@ -233,6 +239,23 @@ impl Draw {
             }
         }
     }
+}
+
+/// A closed circle about `c` of radius `r` as four cubics, one per quarter
+/// (the mockup's rings, `popRing`, are strokes of it).
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn circle_segs(c: (f32, f32), r: f32) -> Vec<Seg> {
+    // The control arm that keeps a quarter's cubic on its circle.
+    let k = 0.552_284_8 * r;
+    let (x, y) = c;
+    vec![
+        Seg::Move(x + r, y),
+        Seg::Cubic(x + r, y + k, x + k, y + r, x, y + r),
+        Seg::Cubic(x - k, y + r, x - r, y + k, x - r, y),
+        Seg::Cubic(x - r, y - k, x - k, y - r, x, y - r),
+        Seg::Cubic(x + k, y - r, x + r, y - k, x + r, y),
+        Seg::Close,
+    ]
 }
 
 /// A `Draw::Head`'s turn and scale about its pivot at `at`.
@@ -569,6 +592,42 @@ mod tests {
         let b = shot.bounds();
         assert!((b.x - (far.0 - 2.0)).abs() < 1e-3 && (b.y + b.h - (far.1 + 3.0)).abs() < 1e-3, "{b:?}");
         assert!((b.x + b.w - (shot.island.x + shot.island.w)).abs() < 1e-3 && (b.y - shot.island.y).abs() < 1e-3, "{b:?}");
+    }
+
+    #[test]
+    fn a_circle_path_lies_on_its_circle() {
+        let (c, r) = ((40.0, -7.0), 6.5);
+        let segs = circle_segs(c, r);
+        let Seg::Move(mut x, mut y) = segs[0] else {
+            panic!("starts with a move: {segs:?}");
+        };
+        let on = |(px, py): (f32, f32)| ((px - c.0).hypot(py - c.1) - r).abs() <= 0.01 * r;
+        assert!(on((x, y)));
+        let mut curves = 0;
+        for seg in &segs[1..] {
+            match *seg {
+                Seg::Cubic(ax, ay, bx, by, ex, ey) => {
+                    for i in 0..=20 {
+                        let t = i as f32 / 20.0;
+                        let u = 1.0 - t;
+                        let p = (
+                            u * u * u * x + 3.0 * u * u * t * ax + 3.0 * u * t * t * bx + t * t * t * ex,
+                            u * u * u * y + 3.0 * u * u * t * ay + 3.0 * u * t * t * by + t * t * t * ey,
+                        );
+                        assert!(on(p), "{p:?} is off the circle");
+                    }
+                    (x, y) = (ex, ey);
+                    curves += 1;
+                }
+                Seg::Close => {}
+                ref other => panic!("not a cubic: {other:?}"),
+            }
+        }
+        assert_eq!(curves, 4);
+        assert!(matches!(segs.last(), Some(Seg::Close)));
+        // Its box is the circle's.
+        let b = Draw::Stroke { path: segs, rgb: 0, width: 0.0 }.bounds();
+        assert!(near(b, Rect { x: c.0 - r, y: c.1 - r, w: 2.0 * r, h: 2.0 * r }), "{b:?}");
     }
 
     #[test]

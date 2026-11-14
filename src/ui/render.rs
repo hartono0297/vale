@@ -2,6 +2,7 @@ use windows::Win32::Foundation::{COLORREF, D2DERR_RECREATE_TARGET, POINT, RECT, 
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D_RECT_F, D2D_SIZE_F, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_FIGURE_BEGIN_FILLED,
     D2D1_FIGURE_BEGIN_HOLLOW, D2D1_FIGURE_END_CLOSED, D2D1_FIGURE_END_OPEN, D2D1_FILL_MODE_ALTERNATE,
+    D2D1_FILL_MODE_WINDING,
     D2D1_GRADIENT_STOP, D2D1_PIXEL_FORMAT,
 };
 use windows::Win32::Graphics::Direct2D::{
@@ -1134,6 +1135,9 @@ struct Target {
     /// An opacity layer inside the first (a page fading in, compact content
     /// fading with its morph). A layer cannot be pushed twice at once.
     layer2: ID2D1Layer,
+    /// A story's fading figure, inside either of the others (`push_fade`).
+    /// Figures never nest, so one is enough.
+    fade: ID2D1Layer,
 }
 
 /// 32-bpp top-down DIB selected into a memory DC; the layered window is
@@ -2151,6 +2155,7 @@ impl Renderer {
             let brush = rt.CreateSolidColorBrush(&color(self.palette.text, 1.0), None)?;
             let layer = rt.CreateLayer(None)?;
             let layer2 = rt.CreateLayer(None)?;
+            let fade = rt.CreateLayer(None)?;
             self.target = Some(Target {
                 rt,
                 bitmap,
@@ -2158,6 +2163,7 @@ impl Renderer {
                 brush,
                 layer,
                 layer2,
+                fade,
             });
         }
         Ok(())
@@ -2746,6 +2752,9 @@ impl Renderer {
         if parts.peek().is_none() {
             return;
         }
+        // No see-through shadow on a story's own art (a head in the back
+        // layer), whatever the last view left.
+        self.legible.set(0.0);
         let l = idle_layout_lead(
             shape,
             frame.robot.is_some(),
@@ -2806,24 +2815,20 @@ impl Renderer {
         }
         let figure = matches!(part.draw, Draw::Group { .. } | Draw::Head { .. });
         if figure && alpha < 1.0 {
-            if let Some(layer) = self.push_fade(alpha) {
-                self.paint_draw(&part.draw, 1.0, unit, at);
-                let target = self.target.as_ref().expect("target ensured by paint");
-                unsafe { target.rt.PopLayer() };
-                drop(layer);
-                return;
-            }
+            self.push_fade(alpha);
+            self.paint_draw(&part.draw, 1.0, unit, at);
+            let target = self.target.as_ref().expect("target ensured by paint");
+            unsafe { target.rt.PopLayer() };
+            return;
         }
         self.paint_draw(&part.draw, alpha, unit, at);
     }
 
-    /// Pushes an opacity layer of its own, made for this push: it nests in
-    /// whatever is already pushed (a mask, the view's fade), and it exists
-    /// only while a figure fades. Kept by the caller until it pops it;
-    /// `None` when Direct2D cannot make one.
-    fn push_fade(&self, opacity: f32) -> Option<ID2D1Layer> {
+    /// Everything drawn until `PopLayer` at `opacity`, on the target's own
+    /// fade layer: it nests in whatever is already pushed (a mask, the
+    /// view's fade).
+    fn push_fade(&self, opacity: f32) {
         let target = self.target.as_ref().expect("target ensured by paint");
-        let layer = unsafe { target.rt.CreateLayer(None) }.ok()?;
         let params = D2D1_LAYER_PARAMETERS {
             contentBounds: D2D_RECT_F {
                 left: -f32::MAX,
@@ -2838,8 +2843,7 @@ impl Renderer {
             opacityBrush: ManuallyDrop::new(None),
             layerOptions: D2D1_LAYER_OPTIONS_NONE,
         };
-        unsafe { target.rt.PushLayer(&params, &layer) };
-        Some(layer)
+        unsafe { target.rt.PushLayer(&params, &target.fade) };
     }
 
     /// A play's clock, over its inside parts (`PAINT_ORDER`): in the played
@@ -2891,7 +2895,9 @@ impl Renderer {
         let path = |segs: &[super::robot::Seg]| super::robot::path(&self.d2d, segs).ok();
         match draw {
             Draw::Fill { path: segs, rgb } => {
-                if let Some(p) = path(segs) {
+                // Nonzero, as the mockup's SVG fills.
+                let filled = super::robot::path_filled(&self.d2d, segs, D2D1_FILL_MODE_WINDING);
+                if let Ok(p) = filled {
                     self.set_color(*rgb, alpha);
                     unsafe { target.rt.FillGeometry(&p, &target.brush, None) };
                 }
@@ -5940,6 +5946,35 @@ mod tests {
     }
 
     #[test]
+    fn an_inside_part_shows_inside_and_outside_the_island() {
+        // Unclipped: a limb that hangs out of the island's dark reads below it.
+        layer_case(vec![flood(Layer::Inside)], |case, with, _, px, at, _| {
+            assert!(green(pixel(with, px)), "{case} {at:?}: {:?}", pixel(with, px));
+        });
+    }
+
+    #[test]
+    fn a_fill_fills_where_its_figures_overlap() {
+        // The mockup's SVG fills are nonzero: two overlapping figures of one
+        // path, drawn the same way round, leave no hole where they cross.
+        use crate::ui::robot::Seg::{Close, Line, Move};
+        let rect = |x: f32, y: f32| [Move(x, y), Line(x + 20.0, y), Line(x + 20.0, y + 10.0), Line(x, y + 10.0), Close];
+        let mut r = renderer();
+        let s = shape(Style::Pill, 190.0, 34.0);
+        let below = s.y + s.h + 20.0;
+        let path: Vec<_> = rect(100.0, below).into_iter().chain(rect(110.0, below)).collect();
+        let part = Part { layer: Layer::Front, draw: Draw::Fill { path, rgb: GREEN }, alpha: 1.0 };
+        let play = PlayFrame { parts: vec![part], ..play_frame(1.0) };
+        let px = with_frame_all(Some(play), None, None, 1.0, |frame| {
+            painted(&mut r, (crate::ui::geometry::WINDOW_W, below + 20.0), |r| r.paint_island(Style::Pill, s, frame).unwrap())
+        });
+        let k = r.scale;
+        let at = |x: f32| ((x * k) as usize, ((below + 5.0) * k) as usize);
+        assert!(green(pixel(&px, at(105.0))), "{:?}", pixel(&px, at(105.0)));
+        assert!(green(pixel(&px, at(115.0))), "a hole where they overlap: {:?}", pixel(&px, at(115.0)));
+    }
+
+    #[test]
     fn an_inside_part_paints_under_the_clock() {
         // The mockup paints its inside layer before the clock: where an
         // inside part and a digit overlap, the digit's ink wins.
@@ -5973,6 +6008,9 @@ mod tests {
                 let k = r.scale;
                 let left = (((s.x + 12.0) * k) as usize, ((s.y + s.h / 2.0) * k) as usize);
                 assert!(green(pixel(&with, left)), "{case}: {:?}", pixel(&with, left));
+                // Unclipped: it shows below the island too.
+                let below = (((s.x + s.w / 2.0) * k) as usize, ((s.y + s.h + 5.0) * k) as usize);
+                assert!(green(pixel(&with, below)), "{case}: clipped below the island: {:?}", pixel(&with, below));
             }
         }
     }

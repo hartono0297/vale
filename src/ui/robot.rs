@@ -26,7 +26,7 @@ use chrono::NaiveDateTime;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D_RECT_F, D2D1_BEZIER_SEGMENT, D2D1_COLOR_F, D2D1_FIGURE_BEGIN_FILLED,
-    D2D1_FIGURE_END_CLOSED, D2D1_FIGURE_END_OPEN,
+    D2D1_FIGURE_END_CLOSED, D2D1_FIGURE_END_OPEN, D2D1_FILL_MODE, D2D1_FILL_MODE_ALTERNATE,
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1_CAP_STYLE_ROUND, D2D1_DASH_STYLE_SOLID, D2D1_ELLIPSE, D2D1_LINE_JOIN_ROUND,
@@ -1356,9 +1356,19 @@ impl RobotPainter {
 /// Figures from `segs`: each `Move` starts one, `Close` closes it; figures
 /// left open are drawn as lines and never filled.
 pub(super) fn path(factory: &ID2D1Factory, segs: &[Seg]) -> WinResult<ID2D1PathGeometry> {
+    path_filled(factory, segs, D2D1_FILL_MODE_ALTERNATE)
+}
+
+/// `path` filled by the rule `mode` (the sink's own default is alternate).
+pub(super) fn path_filled(
+    factory: &ID2D1Factory,
+    segs: &[Seg],
+    mode: D2D1_FILL_MODE,
+) -> WinResult<ID2D1PathGeometry> {
     unsafe {
         let path = factory.CreatePathGeometry()?;
         let sink = path.Open()?;
+        sink.SetFillMode(mode);
         let mut open = false;
         for seg in segs {
             match *seg {
