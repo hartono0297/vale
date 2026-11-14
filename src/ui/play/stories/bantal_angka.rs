@@ -535,36 +535,4 @@ mod tests {
         assert_eq!((slot(0.85).alpha, slot(5.0).alpha, slot(8.0).alpha), (0.0, 0.0, 0.0));
         assert_eq!(slot(8.5), MascotShot::REST);
     }
-
-    #[test]
-    fn the_slot_head_and_the_cat_show_one_cat_at_a_time() {
-        // The slot head is in the dark while the cat sits by the clock, and comes
-        // back out only as the cat fades: played, and through real wind-downs
-        // cut on the dive, the hop out, the nap, the swap and the hop back.
-        use crate::ui::play::stories::{one_mascot_at_a_time, wind_down_frames};
-        for style in [Style::Notch, Style::Pill] {
-            for (w, h) in SIZES {
-                for clock in [true] {
-                    let case = format!("{style:?} {w}x{h} clock={clock}");
-                    let mut t = 0.0;
-                    while t <= Story::BantalAngka.secs() {
-                        let st = stage(style, w, h, Beat { spread: 1.0, alpha: 1.0, t, cut_at: None });
-                        if let Err(why) = one_mascot_at_a_time(&st, &shot(&st)) {
-                            panic!("{case} t={t}: {why}");
-                        }
-                        t += 0.005;
-                    }
-                    for cut in [0.6, 1.2, 4.0, 6.4, 7.9, 8.1, 8.3] {
-                        for phase in [0.0, 8.0] {
-                            for (ms, beat, shot) in wind_down_frames(Story::BantalAngka, cut, phase, |beat| shot(&stage(style, w, h, beat))) {
-                                if let Err(why) = one_mascot_at_a_time(&stage(style, w, h, beat), &shot) {
-                                    panic!("{case} cut {cut} +{ms:.1} ms (alpha {}): {why}", beat.alpha);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
 }

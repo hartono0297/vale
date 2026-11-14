@@ -633,36 +633,4 @@ mod tests {
             }
         }
     }
-
-    #[test]
-    fn the_slot_head_and_the_peeking_cat_show_one_cat_at_a_time() {
-        // The slot head is in the dark while the cat peeks round the ends, and
-        // comes back out only as the peeks fade: played, and through real
-        // wind-downs cut on the dive, each peek, the pounce and the rise.
-        use crate::ui::play::stories::{one_mascot_at_a_time, wind_down_frames};
-        for style in [Style::Notch, Style::Pill] {
-            for (w, h) in SIZES {
-                for clock in [true, false] {
-                    let case = format!("{style:?} {w}x{h} clock={clock}");
-                    let mut t = 0.0;
-                    while t <= Story::PetakUmpet.secs() {
-                        let st = stage(style, w, h, Beat { spread: 1.0, alpha: 1.0, t, cut_at: None }, clock);
-                        if let Err(why) = one_mascot_at_a_time(&st, &shot(&st)) {
-                            panic!("{case} t={t}: {why}");
-                        }
-                        t += 0.005;
-                    }
-                    for cut in [0.7, 2.0, 3.4, 4.5, 5.2, 6.0, 7.1, 7.3] {
-                        for phase in [0.0, 8.0] {
-                            for (ms, beat, shot) in wind_down_frames(Story::PetakUmpet, cut, phase, |beat| shot(&stage(style, w, h, beat, clock))) {
-                                if let Err(why) = one_mascot_at_a_time(&stage(style, w, h, beat, clock), &shot) {
-                                    panic!("{case} cut {cut} +{ms:.1} ms (alpha {}): {why}", beat.alpha);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
 }

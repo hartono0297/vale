@@ -582,36 +582,4 @@ mod tests {
             assert!(items.iter().any(|d| matches!(d, Draw::Fill { rgb, .. } if *rgb == look.head_rgb())), "{color:?}");
         }
     }
-
-    #[test]
-    fn the_slot_head_and_the_cat_show_one_cat_at_a_time() {
-        // The slot head waits crouched where the cat's head is while the cat
-        // takes over and hands back, and only then: played, and through real
-        // wind-downs cut at the hand-overs, the hops and mid story.
-        use crate::ui::play::stories::{one_mascot_at_a_time, wind_down_frames};
-        for style in [Style::Notch, Style::Pill] {
-            for (w, h) in SIZES {
-                for clock in [true, false] {
-                    let case = format!("{style:?} {w}x{h} clock={clock}");
-                    let mut t = 0.0;
-                    while t <= Story::SyalEkor.secs() {
-                        let st = stage(style, w, h, Beat { spread: 1.0, alpha: 1.0, t, cut_at: None }, clock);
-                        if let Err(why) = one_mascot_at_a_time(&st, &shot(&st)) {
-                            panic!("{case} t={t}: {why}");
-                        }
-                        t += 0.005;
-                    }
-                    for cut in [0.4, 0.6, 2.0, 4.8, 5.6, 7.8, 8.05] {
-                        for phase in [0.0, 8.0] {
-                            for (ms, beat, shot) in wind_down_frames(Story::SyalEkor, cut, phase, |beat| shot(&stage(style, w, h, beat, clock))) {
-                                if let Err(why) = one_mascot_at_a_time(&stage(style, w, h, beat, clock), &shot) {
-                                    panic!("{case} cut {cut} +{ms:.1} ms (alpha {}): {why}", beat.alpha);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
 }

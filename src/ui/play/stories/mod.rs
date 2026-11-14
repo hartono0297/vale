@@ -858,11 +858,17 @@ pub(crate) fn near_rest(shot: &Shot, tol: f32) -> Result<(), String> {
 #[cfg(test)]
 macro_rules! story_contract_tests {
     ($story:expr, $shot:expr) => {
-        /// The story played by its own mascot, the clock on or off.
-        fn contract_shot(style: $crate::config::Style, w: f32, h: f32, beat: $crate::ui::play::state::Beat, clock: bool) -> $crate::ui::play::stories::Shot {
+        /// The idle stage the story plays on, by its own mascot, the clock on
+        /// or off.
+        fn contract_stage(style: $crate::config::Style, w: f32, h: f32, beat: $crate::ui::play::state::Beat, clock: bool) -> $crate::ui::play::stories::Stage {
             let look = $crate::ui::cat_style::CatLook { mascot: $story.mascot(), ..Default::default() };
             let s = $crate::ui::play::testing::shape(style, w, h);
-            $shot(&$crate::ui::play::stories::Stage::idle(style, s, beat, look, clock))
+            $crate::ui::play::stories::Stage::idle(style, s, beat, look, clock)
+        }
+
+        /// The story played by its own mascot, the clock on or off.
+        fn contract_shot(style: $crate::config::Style, w: f32, h: f32, beat: $crate::ui::play::state::Beat, clock: bool) -> $crate::ui::play::stories::Shot {
+            $shot(&contract_stage(style, w, h, beat, clock))
         }
 
         /// The clock states the story plays with.
@@ -966,6 +972,43 @@ macro_rules! story_contract_tests {
                             if let Err(why) = $crate::ui::play::stories::fades_by_frames(&shots) {
                                 panic!("{style:?} clock={clock} cut at {cut}: {why}");
                             }
+                        }
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn the_slot_head_and_a_figures_head_never_add_up_past_one_mascot() {
+            use $crate::config::Style;
+            use $crate::ui::play::state::Beat;
+            use $crate::ui::play::stories::{CONTRACT_SIZES, one_mascot_at_a_time, wind_down_frames};
+            for style in [Style::Notch, Style::Pill] {
+                for (w, h) in CONTRACT_SIZES {
+                    for clock in contract_clocks() {
+                        let case = format!("{style:?} {w}x{h} clock={clock}");
+                        // Playing.
+                        let mut i = 0;
+                        while i as f32 * 0.01 <= $story.secs() {
+                            let t = i as f32 * 0.01;
+                            let st = contract_stage(style, w, h, Beat { spread: 1.0, alpha: 1.0, t, cut_at: None }, clock);
+                            if let Err(why) = one_mascot_at_a_time(&st, &$shot(&st)) {
+                                panic!("{case} t={t}: {why}");
+                            }
+                            i += 1;
+                        }
+                        // Wound down from a cut every 0.05 s.
+                        let mut i = 1;
+                        while (i as f32) * 0.05 < $story.secs() {
+                            let cut = i as f32 * 0.05;
+                            for phase in [0.0, 8.0] {
+                                for (ms, beat, shot) in wind_down_frames($story, cut, phase, |beat| contract_shot(style, w, h, beat, clock)) {
+                                    if let Err(why) = one_mascot_at_a_time(&contract_stage(style, w, h, beat, clock), &shot) {
+                                        panic!("{case} cut {cut} +{ms:.1} ms (alpha {}): {why}", beat.alpha);
+                                    }
+                                }
+                            }
+                            i += 1;
                         }
                     }
                 }
