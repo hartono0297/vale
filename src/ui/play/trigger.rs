@@ -213,13 +213,17 @@ mod tests {
                 assert_eq!(pool(m, clock_on), want, "{m:?} clock_on={clock_on}");
             }
         }
-        // Part 1 ships the falk's Maling angka; part 2 adds the cat's Syal
-        // ekor, Petak umpet and Bantal angka first.
-        assert_eq!(pool(Mascot::Falk, true), vec![Story::MalingAngka]);
-        assert!(pool(Mascot::Falk, false).is_empty(), "Maling angka needs the clock");
-        assert_eq!(pool(Mascot::Cat, true), vec![Story::PetakUmpet, Story::BantalAngka, Story::SyalEkor]);
-        assert_eq!(pool(Mascot::Cat, false), vec![Story::PetakUmpet, Story::SyalEkor], "Bantal angka needs the clock");
-        assert!(pool(Mascot::Octopus, true).is_empty(), "no octopus story yet");
+        // Derived, no per-mascot lists (P27): every story is ready but the
+        // ones still to land, and the pool is the rest of what the mascot
+        // owns, never a clock story with the clock off.
+        let later = [Story::PenasaranJam, Story::PelukPulau, Story::Bungee, Story::Kelelawar, Story::TerbangKeliling];
+        for m in [Mascot::Cat, Mascot::Falk, Mascot::Octopus] {
+            for clock_on in [true, false] {
+                let want: Vec<Story> = owned(m, clock_on).into_iter().filter(|s| !later.contains(s)).collect();
+                assert_eq!(pool(m, clock_on), want, "{m:?} clock_on={clock_on}");
+            }
+            assert!(pool(m, false).iter().all(|s| !s.needs_clock()), "{m:?}");
+        }
     }
 
     #[test]

@@ -5,6 +5,7 @@
 pub mod bantal_angka;
 pub mod maling_angka;
 pub mod petak_umpet;
+pub mod piano_ekor;
 pub mod syal_ekor;
 
 use std::f32::consts::{PI, TAU};
@@ -25,7 +26,10 @@ use crate::ui::robot::{Expr, GRID, Pose, Seg};
 /// The story has a timeline to play. Only ready stories enter the pool
 /// (`trigger::pool`), so a mascot with none never plays.
 pub fn ready(story: Story) -> bool {
-    matches!(story, Story::MalingAngka | Story::SyalEkor | Story::PetakUmpet | Story::BantalAngka)
+    matches!(
+        story,
+        Story::MalingAngka | Story::SyalEkor | Story::PetakUmpet | Story::BantalAngka | Story::PianoEkor
+    )
 }
 
 /// What a story plays on: the island, where the play stands, the mascot's
@@ -543,6 +547,7 @@ pub fn shot(story: Story, stage: &Stage) -> Shot {
         Story::SyalEkor => syal_ekor::shot(stage),
         Story::PetakUmpet => petak_umpet::shot(stage),
         Story::BantalAngka => bantal_angka::shot(stage),
+        Story::PianoEkor => piano_ekor::shot(stage),
         _ => Shot::rest(stage.style, stage.shape),
     };
     debug_assert!(bare_heads_fit(story, &shot), "{story:?} draws a bare head");

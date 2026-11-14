@@ -93,6 +93,12 @@
 //!   two z's rising) and `bata-play-bantal-swap` (6.45 s, the minute turned
 //!   over to the next one, popped up and ringing, the cat startled, its tail
 //!   puffed).
+//! - The cat's Piano ekor story, frozen at two moments, always with the cat
+//!   (its coat from `DI_CAT_COLOR`, `DI_CAT_ACCESSORY` as above):
+//!   `bata-play-piano-tap` (3.0 s, the tail's tip on the minute's last
+//!   digit, which dips with the lip lit under it, notes floating off) and
+//!   `bata-play-piano-sweep` (5.2 s, after the sweep: the lit edge along the
+//!   lip and round the right end's arc, the last digits still lit).
 //! - `bata-play-cat-body`: the seated cat (body, legs, paws, tail) beside
 //!   the island at rest, tail up and one paw lifted, always the cat (its coat
 //!   from `DI_CAT_COLOR`, `DI_CAT_ACCESSORY` as above).
@@ -546,7 +552,8 @@ enum CliDemo {
 
 /// What a play scene freezes (`bata-play-island`, `bata-play-swing`,
 /// `bata-play-digits`, the `bata-maling-angka-*`, `bata-play-syal-*` and
-/// `bata-play-petak-*` and `bata-play-bantal-*` moments, `bata-play-cat-body`,
+/// `bata-play-petak-*`, `bata-play-bantal-*` and `bata-play-piano-*` moments,
+/// `bata-play-cat-body`,
 /// `bata-play-octopus-arms`, `bata-play-falk-open`, `bata-play-falk-hang`).
 #[derive(Clone, Copy, PartialEq)]
 enum DemoPlay {
@@ -567,6 +574,8 @@ enum DemoPlay {
     PetakUmpet(f32),
     /// The cat's Bantal angka at this many seconds, always with the cat.
     BantalAngka(f32),
+    /// The cat's Piano ekor at this many seconds, always with the cat.
+    PianoEkor(f32),
     /// The seated cat beside the island at rest, tail up, one paw lifted,
     /// always the cat.
     CatBody,
@@ -1199,6 +1208,12 @@ fn demo_play(
             let stage = Stage { style, shape, beat, look, layout, minute };
             return PlayFrame::of(stories::shot(Story::BantalAngka, &stage), beat);
         }
+        DemoPlay::PianoEkor(t) => {
+            let beat = Beat { t, ..beat };
+            let look = CatLook { mascot: Mascot::Cat, ..cat };
+            let stage = Stage { style, shape, beat, look, layout, minute };
+            return PlayFrame::of(stories::shot(Story::PianoEkor, &stage), beat);
+        }
         DemoPlay::CatBody => {
             let beat = Beat { spread: 0.0, ..beat };
             let pose = CatPose {
@@ -1489,7 +1504,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 233] = [
+const SCENES: [Scene; 235] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -2170,6 +2185,15 @@ const SCENES: [Scene; 233] = [
     Scene {
         play: DemoPlay::BantalAngka(6.45),
         ..bata("bata-play-bantal-swap", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    // Piano ekor, frozen: a tap on the minute's last digit, the sweep's lit edge.
+    Scene {
+        play: DemoPlay::PianoEkor(3.0),
+        ..bata("bata-play-piano-tap", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    Scene {
+        play: DemoPlay::PianoEkor(5.2),
+        ..bata("bata-play-piano-sweep", ShapeKind::Idle, View0::Idle, Expr::Idle)
     },
     Scene {
         play: DemoPlay::CatBody,
@@ -3312,7 +3336,8 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                     DemoPlay::CatBody
                     | DemoPlay::SyalEkor(_)
                     | DemoPlay::PetakUmpet(_)
-                    | DemoPlay::BantalAngka(_) => CatLook {
+                    | DemoPlay::BantalAngka(_)
+                    | DemoPlay::PianoEkor(_) => CatLook {
                         mascot: Mascot::Cat,
                         ..cat
                     },
