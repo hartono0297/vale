@@ -847,6 +847,8 @@ pub struct ClipLayout {
     pub header: Rect,
     /// "Cari di N item…", right of the title.
     pub search: Rect,
+    /// "Hapus semua", left of the search; `None` when it does not show.
+    pub clear: Option<Rect>,
     /// Where the cards are; the wheel over it scrolls them.
     pub list: Rect,
     /// Rows of cards that fit.
@@ -873,6 +875,8 @@ pub const CLIP_THUMB_W: f32 = 92.0;
 pub const CLIP_BUTTON: f32 = 20.0;
 const CLIP_SEARCH_MAX_W: f32 = 250.0;
 const CLIP_SEARCH_H: f32 = 28.0;
+/// "Hapus semua" to the search field.
+const CLIP_CLEAR_GAP: f32 = 8.0;
 const CLIP_LIST_GAP: f32 = 9.0;
 const CLIP_BUTTON_GAP: f32 = 2.0;
 
@@ -2592,27 +2596,43 @@ pub fn cli_suggestions(l: &CliLayout, n: usize) -> (Rect, Vec<Rect>) {
 }
 
 /// Four equal tiles per row, two rows, centred under the header.
-/// The title row and the card area of the Clipboard page.
-fn clip_frame(s: ShapeRect, strip: bool) -> (Rect, Rect, Rect) {
+/// The title row and the card area of the Clipboard page: the title, the
+/// search field, "Hapus semua" (`clear_w` wide) left of the search when given,
+/// and the cards.
+fn clip_frame(
+    s: ShapeRect,
+    strip: bool,
+    clear_w: Option<f32>,
+) -> (Rect, Rect, Option<Rect>, Rect) {
     let top = content_top(s, strip);
     let (l, r) = (left(s), right(s));
     let hr = header_right(s);
-    let search_w = CLIP_SEARCH_MAX_W.min(hr - l - 120.0);
+    let search_w = CLIP_SEARCH_MAX_W
+        .min(hr - l - 120.0 - clear_w.map_or(0.0, |w| w + CLIP_CLEAR_GAP));
     let search = rect(
         hr - search_w,
         top + (HEADER_H - CLIP_SEARCH_H) / 2.0,
         search_w,
         CLIP_SEARCH_H,
     );
-    let header = rect(l, top, search.x - 12.0 - l, HEADER_H);
+    let clear = clear_w.map(|w| {
+        rect(
+            search.x - CLIP_CLEAR_GAP - w,
+            search.y + (CLIP_SEARCH_H - DEV_HEAD_H) / 2.0,
+            w,
+            DEV_HEAD_H,
+        )
+    });
+    let header_end = clear.map_or(search.x, |c| c.x);
+    let header = rect(l, top, header_end - 12.0 - l, HEADER_H);
     let list_y = search.bottom() + CLIP_LIST_GAP;
     let list = rect(l, list_y, r - l, content_bottom(s) - list_y);
-    (header, search, list)
+    (header, search, clear, list)
 }
 
 /// Rows of Clipboard cards the page shows at once.
 pub fn clip_rows(s: ShapeRect, strip: bool) -> usize {
-    let (_, _, list) = clip_frame(s, strip);
+    let (_, _, _, list) = clip_frame(s, strip, None);
     (((list.h + CLIP_GAP) / (CLIP_CARD_H + CLIP_GAP)).floor() as usize).max(1)
 }
 
@@ -2668,15 +2688,18 @@ pub fn clip_scroll_to(selected: usize, scroll: usize, rows: usize) -> usize {
 /// `ids` (the entries shown, newest first) as cards from row `scroll`, two
 /// per row; the selected one (`selected`, an id) gets its buttons, and
 /// `image(id)` says whether an entry is an image (no plain-text copy).
+/// `clear_w` is the width of "Hapus semua" in the title row, `None` for no
+/// button.
 pub fn clipboard_layout(
     s: ShapeRect,
     strip: bool,
     ids: &[u64],
     selected: Option<u64>,
     scroll: usize,
+    clear_w: Option<f32>,
     image: impl Fn(u64) -> bool,
 ) -> ClipLayout {
-    let (header, search, list) = clip_frame(s, strip);
+    let (header, search, clear, list) = clip_frame(s, strip, clear_w);
     let rows = clip_rows(s, strip);
     let scroll = scroll.min(clip_max_scroll(ids.len(), rows));
     let card_w = (list.w - CLIP_GAP) / 2.0;
@@ -2708,6 +2731,7 @@ pub fn clipboard_layout(
     ClipLayout {
         header,
         search,
+        clear,
         list,
         rows,
         scroll,
@@ -4826,6 +4850,9 @@ pub fn regions(s: ShapeRect, layout: &PageLayout, strip: impl Into<StripKind>) -
         }
         PageLayout::Clipboard(l) => {
             add(l.search, Hit::ClipSearch);
+            if let Some(r) = l.clear {
+                add(r, Hit::ClipClear);
+            }
             // The buttons sit on their card: they come first.
             for &(b, id, r) in &l.buttons {
                 let hit = match b {
@@ -5343,7 +5370,8 @@ mod tests {
         }
         for (n, scroll) in [(0, 0), (5, 0), (48, 0), (48, 30)] {
             let ids: Vec<u64> = (1..=n).collect();
-            let l = clipboard_layout(s, strip, &ids, ids.get(4).copied(), scroll, |id| id == 2);
+            let selected = ids.get(4).copied();
+            let l = clipboard_layout(s, strip, &ids, selected, scroll, None, |id| id == 2);
             out.push((format!("clipboard {n} s{scroll}"), PageLayout::Clipboard(l)));
         }
         for n in [1, 2, 5, 6] {
@@ -8991,7 +9019,7 @@ mod media_tests {
         for style in [Style::Pill, Style::Notch] {
             let s = shape_for(style, ShapeKind::Panel);
             let ids: Vec<u64> = (1..=48).collect();
-            let l = clipboard_layout(s, false, &ids, Some(1), 0, |id| id == 3);
+            let l = clipboard_layout(s, false, &ids, Some(1), 0, None, |id| id == 3);
             assert_eq!(l.rows, 3);
             assert_eq!(l.cards.len(), 6);
             let (_, _, a) = l.cards[0];
@@ -9017,6 +9045,31 @@ mod media_tests {
                 assert!(r.x >= a.x && r.right() <= a.right() && r.y >= a.y);
             }
             assert!(l.empty.is_none());
+        }
+    }
+
+    #[test]
+    fn clipboard_clear_button_sits_left_of_the_search_in_the_title_row() {
+        for style in [Style::Pill, Style::Notch] {
+            let s = shape_for(style, ShapeKind::Panel);
+            let l = clipboard_layout(s, false, &[1, 2], None, 0, Some(100.0), |_| false);
+            let clear = l.clear.expect("a button");
+            assert_eq!(clear.w, 100.0);
+            assert!((clear.right() + CLIP_CLEAR_GAP - l.search.x).abs() < 0.01);
+            let mid = |r: Rect| r.y + r.h / 2.0;
+            assert!((mid(clear) - mid(l.search)).abs() < 0.01);
+            assert!(l.header.right() + 12.0 <= clear.x + 0.01);
+            // Whatever the label's width, the search and the title keep room.
+            for w in [60.0, 120.0, 200.0] {
+                let l = clipboard_layout(s, false, &[1, 2], None, 0, Some(w), |_| false);
+                assert!(l.search.w > 100.0, "w={w}: {:?}", l.search);
+                assert!(l.header.w >= 107.9, "w={w}: {:?}", l.header);
+            }
+            // Without the button the row is as it was.
+            let none = clipboard_layout(s, false, &[1, 2], None, 0, None, |_| false);
+            assert!(none.clear.is_none());
+            assert_eq!(none.search.right(), header_right(s));
+            assert_eq!(none.search.w, CLIP_SEARCH_MAX_W);
         }
     }
 
@@ -9051,13 +9104,13 @@ mod media_tests {
             // Everything fits: no bar.
             let few: Vec<u64> = (1..=2 * rows as u64).collect();
             assert!(
-                clipboard_layout(s, false, &few, None, 0, |_| false)
+                clipboard_layout(s, false, &few, None, 0, None, |_| false)
                     .scrollbar
                     .is_none()
             );
             // 50 cards: a bar in the right margin, inside the list's height.
             let ids: Vec<u64> = (1..=50).collect();
-            let top = clipboard_layout(s, false, &ids, None, 0, |_| false);
+            let top = clipboard_layout(s, false, &ids, None, 0, None, |_| false);
             let bar = top.scrollbar.expect("a scrollbar");
             assert!(
                 bar.x > top.list.right() && bar.right() <= s.x + s.w - 4.0,
@@ -9066,14 +9119,14 @@ mod media_tests {
             assert_eq!(bar.y, top.list.y, "at the top");
             assert!(bar.h >= 24.0 && bar.h < top.list.h);
             let max = clip_max_scroll(50, rows);
-            let end = clipboard_layout(s, false, &ids, None, max, |_| false)
+            let end = clipboard_layout(s, false, &ids, None, max, None, |_| false)
                 .scrollbar
                 .unwrap();
             assert!(
                 (end.bottom() - top.list.bottom()).abs() < 0.01,
                 "at the end"
             );
-            let mid = clipboard_layout(s, false, &ids, None, max / 2, |_| false)
+            let mid = clipboard_layout(s, false, &ids, None, max / 2, None, |_| false)
                 .scrollbar
                 .unwrap();
             assert!(mid.y > bar.y && mid.y < end.y);
@@ -9088,7 +9141,7 @@ mod media_tests {
         let ids: Vec<u64> = (1..=11).collect();
         // 11 cards: 6 rows, 3 shown, at most 3 rows down.
         assert_eq!(clip_max_scroll(11, 3), 3);
-        let l = clipboard_layout(s, false, &ids, Some(3), 9, |_| false);
+        let l = clipboard_layout(s, false, &ids, Some(3), 9, None, |_| false);
         assert_eq!(l.scroll, 3, "clamped");
         let shown: Vec<u64> = l.cards.iter().map(|c| c.0).collect();
         assert_eq!(shown, [7, 8, 9, 10, 11]);
@@ -9099,7 +9152,7 @@ mod media_tests {
         assert_eq!(clip_scroll_to(10, 0, 3), 3);
         assert_eq!(clip_scroll_to(3, 1, 3), 1);
         // An image card has no plain-text button.
-        let l = clipboard_layout(s, false, &ids, Some(2), 0, |id| id == 2);
+        let l = clipboard_layout(s, false, &ids, Some(2), 0, None, |id| id == 2);
         let kinds: Vec<ClipButton> = l.buttons.iter().map(|b| b.0).collect();
         assert_eq!(kinds, [ClipButton::Delete, ClipButton::Pin]);
     }
@@ -9107,7 +9160,7 @@ mod media_tests {
     #[test]
     fn clipboard_regions_and_empty_state() {
         let s = shape_for(Style::Pill, ShapeKind::Panel);
-        let l = clipboard_layout(s, true, &[5, 6], Some(5), 0, |_| false);
+        let l = clipboard_layout(s, true, &[5, 6], Some(5), 0, None, |_| false);
         let r = regions(s, &PageLayout::Clipboard(l.clone()), true);
         let first = |hit: Hit| r.iter().position(|x| x.hit == hit);
         for hit in [
@@ -9123,7 +9176,12 @@ mod media_tests {
         }
         // Buttons win over their card.
         assert!(first(Hit::ClipPin(5)) < first(Hit::ClipCard(5)));
-        let empty = clipboard_layout(s, false, &[], None, 0, |_| false);
+        // "Hapus semua" is a region only when the layout has the button.
+        assert!(first(Hit::ClipClear).is_none());
+        let with = clipboard_layout(s, true, &[5, 6], Some(5), 0, Some(100.0), |_| false);
+        let r = regions(s, &PageLayout::Clipboard(with), true);
+        assert!(r.iter().any(|x| x.hit == Hit::ClipClear));
+        let empty = clipboard_layout(s, false, &[], None, 0, None, |_| false);
         assert!(empty.empty.is_some() && empty.cards.is_empty());
     }
 

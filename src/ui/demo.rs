@@ -534,6 +534,8 @@ enum ClipDemo {
     Off,
     /// A long history scrolled down a row: the scrollbar's thumb shows.
     Long,
+    /// The design's cards with "Hapus semua" pressed once: it reads "Yakin?".
+    Armed,
 }
 
 /// The Notifikasi page's states. Fixed fake toasts and a fixed "now": never
@@ -1577,7 +1579,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 244] = [
+const SCENES: [Scene; 245] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -2043,6 +2045,7 @@ const SCENES: [Scene; 244] = [
     clipboard("clipboard-empty", ClipDemo::Empty),
     clipboard("clipboard-off", ClipDemo::Off),
     clipboard("clipboard-long", ClipDemo::Long),
+    clipboard("clipboard-armed", ClipDemo::Armed),
     // The Notifikasi page: fixed fake toasts, one with a drawn logo.
     notifications("notifications", NotifDemo::Design),
     notifications("notifications-selected", NotifDemo::Selected),
@@ -3989,6 +3992,15 @@ fn clip_view(clips: &[Clip], which: ClipDemo) -> ClipView<'_> {
             items: clips.iter().collect(),
             total: DEMO_CLIP_TOTAL,
             selected: clips.first().map(|c| c.id),
+            clearable: true,
+            ..ClipView::empty(now)
+        },
+        ClipDemo::Armed => ClipView {
+            items: clips.iter().collect(),
+            total: DEMO_CLIP_TOTAL,
+            selected: clips.first().map(|c| c.id),
+            clearable: true,
+            armed: true,
             ..ClipView::empty(now)
         },
         ClipDemo::Search => {
@@ -4018,6 +4030,7 @@ fn clip_view(clips: &[Clip], which: ClipDemo) -> ClipView<'_> {
             total: DEMO_CLIP_TOTAL,
             selected: clips.get(1).map(|c| c.id),
             scroll: 1,
+            clearable: true,
             ..ClipView::empty(now)
         },
         ClipDemo::Empty => ClipView::empty(now),

@@ -838,6 +838,7 @@ impl Renderer {
                     &ids,
                     clip.selected,
                     clip.scroll,
+                    clip.clearable.then(|| self.clip_clear_w()),
                     image,
                 ))
             }
@@ -1755,6 +1756,17 @@ impl Renderer {
             clear_w,
             time_w: self.notif_time_w(lang, view.now.year() - 1),
         }
+    }
+
+    /// The Clipboard title row's "Hapus semua" width, measured like the
+    /// Notifikasi one: wide enough for "Yakin?" too, so arming moves nothing.
+    fn clip_clear_w(&self) -> f32 {
+        let lang = i18n::lang();
+        let label = |key: Key| self.text_width(text(lang, key), &self.fonts.button).ceil();
+        label(Key::NotifClearAll).max(label(Key::NotifSure))
+            + 2.0 * DEV_BTN_PAD_X
+            + DEV_BTN_ICON
+            + DEV_BTN_ICON_GAP
     }
 
     /// The rows' time column: `NOTIF_TIME_W`, or the longest line
@@ -3230,6 +3242,17 @@ impl Renderer {
         let p = self.palette;
         self.heading(text(lang, Key::ClipboardTitle), l.header);
         self.paint_clip_search(l.search, clip);
+        if let Some(r) = l.clear {
+            if clip.armed {
+                self.set_color(theme::SOFT_RED, 0.22);
+                self.fill_round(r, r.h / 2.0);
+                let label = text(lang, Key::NotifSure);
+                self.text_colored(label, &self.fonts.button_center, r, theme::SOFT_RED, 1.0);
+            } else {
+                let label = text(lang, Key::NotifClearAll);
+                self.paint_labelled_button(r, Some(Icon::Trash), label, (p.raised, p.text), 1.0);
+            }
+        }
 
         if let Some(area) = l.empty.or((!clip.enabled).then_some(l.list)) {
             let (title, hint) = if !clip.enabled {

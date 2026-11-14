@@ -946,6 +946,8 @@ pub enum Hit {
     ClipPin(u64),
     ClipPlain(u64),
     ClipDelete(u64),
+    /// "Hapus semua" on the Clipboard page.
+    ClipClear,
     /// The screenshot preview's buttons and its thumbnail (screenshot id):
     /// "Salin lagi", "Simpan", "Hapus", and opening the file.
     ShotCopy(u64),
@@ -1219,6 +1221,8 @@ pub enum ClipAction {
     /// Pin or unpin.
     TogglePin(u64),
     Delete(u64),
+    /// Every entry not pinned.
+    ClearUnpinned,
 }
 
 /// A Pomodoro setting the settings window's steppers can change.

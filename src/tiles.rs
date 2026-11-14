@@ -253,7 +253,37 @@ fn is_custom_name(name: &str) -> bool {
     name.trim().eq_ignore_ascii_case(CUSTOM)
 }
 
+/// The tiles a first run shows, in order: `MAX_SHOWN` of them.
+const FRESH_SHOWN: [Shortcut; MAX_SHOWN] = [
+    Shortcut::Go(Page::Calendar),
+    Shortcut::Go(Page::Reminders),
+    Shortcut::Go(Page::Notes),
+    Shortcut::Go(Page::Pomodoro),
+    Shortcut::Go(Page::Media),
+    Shortcut::Clipboard,
+    Shortcut::Go(Page::Shelf),
+    Shortcut::Go(Page::Notifications),
+    Shortcut::Screenshot,
+    Shortcut::Search,
+    Shortcut::Go(Page::Record),
+    Shortcut::Go(Page::Mixer),
+];
+
 impl ShortcutTiles {
+    /// The first-run layout: the twelve main tiles shown, every other
+    /// built-in listed after them in `Shortcut::ALL` order and off.
+    /// `default()` is unchanged on purpose.
+    pub fn fresh() -> Self {
+        let on = FRESH_SHOWN.iter().map(|s| (Tile::Builtin(*s), true));
+        let off = Shortcut::ALL
+            .iter()
+            .filter(|s| !FRESH_SHOWN.contains(s))
+            .map(|s| (Tile::Builtin(*s), false));
+        ShortcutTiles {
+            entries: on.chain(off).collect(),
+        }
+    }
+
     /// The saved list made whole: unknown names, repeated built-ins and
     /// custom entries that fail `CustomTile::new` are dropped (so are custom
     /// entries past `MAX_CUSTOM`), a built-in the file does not name (an
@@ -1386,5 +1416,66 @@ mod tests {
         // Written back in the canonical spelling.
         assert_eq!(t.to_saved()[0].tile, "Lock");
         assert_eq!(t.to_saved().last().unwrap().tile, "Custom");
+    }
+
+    const WANT_SHOWN: [Shortcut; 12] = [
+        Shortcut::Go(Page::Calendar),
+        Shortcut::Go(Page::Reminders),
+        Shortcut::Go(Page::Notes),
+        Shortcut::Go(Page::Pomodoro),
+        Shortcut::Go(Page::Media),
+        Shortcut::Clipboard,
+        Shortcut::Go(Page::Shelf),
+        Shortcut::Go(Page::Notifications),
+        Shortcut::Screenshot,
+        Shortcut::Search,
+        Shortcut::Go(Page::Record),
+        Shortcut::Go(Page::Mixer),
+    ];
+
+    #[test]
+    fn fresh_shows_the_twelve_main_tiles_in_order() {
+        let t = ShortcutTiles::fresh();
+        let shown: Vec<Tile> = t
+            .entries()
+            .iter()
+            .filter(|(_, on)| *on)
+            .map(|(x, _)| x.clone())
+            .collect();
+        let want: Vec<Tile> = WANT_SHOWN.iter().map(|s| Tile::Builtin(*s)).collect();
+        assert_eq!(shown, want);
+        assert_eq!(t.shown(), MAX_SHOWN);
+        assert_eq!(t.visible(), want);
+    }
+
+    #[test]
+    fn fresh_lists_every_built_in_once() {
+        let t = ShortcutTiles::fresh();
+        let entries = t.entries();
+        assert_eq!(entries.len(), Shortcut::ALL.len());
+        for s in Shortcut::ALL {
+            let tile = Tile::Builtin(s);
+            assert_eq!(entries.iter().filter(|(x, _)| *x == tile).count(), 1, "{s:?}");
+        }
+        let off: Vec<Tile> = entries
+            .iter()
+            .filter(|(_, on)| !*on)
+            .map(|(x, _)| x.clone())
+            .collect();
+        let want: Vec<Tile> = Shortcut::ALL
+            .iter()
+            .filter(|s| !WANT_SHOWN.contains(s))
+            .map(|s| Tile::Builtin(*s))
+            .collect();
+        assert_eq!(off, want);
+        assert!(entries[MAX_SHOWN..].iter().all(|(_, on)| !*on));
+    }
+
+    #[test]
+    fn fresh_survives_a_save() {
+        assert_eq!(
+            ShortcutTiles::from_saved(&ShortcutTiles::fresh().to_saved()),
+            ShortcutTiles::fresh()
+        );
     }
 }

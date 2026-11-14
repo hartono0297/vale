@@ -8,12 +8,12 @@ use crate::cli::Shell;
 use crate::cli_folders::CliStart;
 use crate::greeting::GreetMark;
 use crate::i18n::Lang;
-use crate::pages::PageEntry;
+use crate::pages::{PageEntry, PanelPages};
 use crate::pomodoro::PomoSettings;
 use crate::theme::{
     Accent, CatAccessory, CatColor, FalkColor, Mascot, MascotPlay, OctopusColor, Surface, WindowTheme,
 };
-use crate::tiles::TileEntry;
+use crate::tiles::{ShortcutTiles, TileEntry};
 use crate::ui::geometry::{
     NOTCH_H_DEFAULT, NOTCH_H_MAX, NOTCH_H_MIN, NOTCH_OPACITY_DEFAULT, NOTCH_W_DEFAULT, NOTCH_W_MAX,
     NOTCH_W_MIN,
@@ -1108,10 +1108,31 @@ pub fn path() -> PathBuf {
 }
 
 pub fn load() -> Config {
-    parse(&std::fs::read_to_string(path()).unwrap_or_default())
+    load_at(&path())
+}
+
+/// No file (or a blank one) is a first run and gets `Config::fresh()`; a file
+/// that is corrupt or cannot be read gets the plain defaults, as before.
+fn load_at(path: &Path) -> Config {
+    match read_at(path) {
+        OnDisk::Missing => Config::fresh(),
+        OnDisk::Valid(config) => config,
+        OnDisk::Invalid => Config::default(),
+    }
 }
 
 impl Config {
+    /// The first run's layout: a Notch with the new page and tile lists;
+    /// everything else is `Config::default()`.
+    pub fn fresh() -> Config {
+        Config {
+            style: Style::Notch,
+            panel_pages: PanelPages::fresh().to_saved(),
+            shortcut_tiles: ShortcutTiles::fresh().to_saved(),
+            ..Config::default()
+        }
+    }
+
     /// Pretty JSON to a sibling `.tmp` file, then renamed over `path`, so a
     /// crash mid-write never leaves a truncated config.
     pub fn save_to(&self, path: &Path) -> io::Result<()> {
@@ -2718,6 +2739,79 @@ mod tests {
                 style: Style::Notch,
                 ..Config::default()
             })
+        );
+    }
+
+    #[test]
+    fn fresh_is_a_notch_with_the_new_layout() {
+        let c = Config::fresh();
+        assert_eq!(c.style, Style::Notch);
+        assert_eq!(
+            PanelPages::from_saved(&c.panel_pages).visible(),
+            PanelPages::fresh().visible()
+        );
+        assert_eq!(
+            ShortcutTiles::from_saved(&c.shortcut_tiles).visible(),
+            ShortcutTiles::fresh().visible()
+        );
+        let rest = Config {
+            style: Style::Pill,
+            panel_pages: vec![],
+            shortcut_tiles: vec![],
+            ..Config::fresh()
+        };
+        assert_eq!(rest, Config::default(), "nothing else differs");
+    }
+
+    #[test]
+    fn no_file_or_a_blank_one_loads_the_fresh_layout() {
+        let tmp = TempDir::new("fresh-load");
+        let path = tmp.file("config.json");
+        assert_eq!(load_at(&path), Config::fresh(), "no file");
+        std::fs::write(&path, "  \n").unwrap();
+        assert_eq!(load_at(&path), Config::fresh(), "whitespace only");
+        std::fs::write(&path, "\u{feff}").unwrap();
+        assert_eq!(load_at(&path), Config::fresh(), "a BOM only");
+    }
+
+    #[test]
+    fn a_corrupt_file_or_a_read_error_loads_the_plain_defaults() {
+        let tmp = TempDir::new("plain-load");
+        let path = tmp.file("config.json");
+        std::fs::write(&path, "{\"style\": ").unwrap();
+        assert_eq!(load_at(&path), Config::default(), "corrupt");
+        let dir = tmp.file("a-folder");
+        std::fs::create_dir(&dir).unwrap();
+        assert_eq!(load_at(&dir), Config::default(), "read error");
+    }
+
+    #[test]
+    fn a_partial_file_keeps_its_style_and_every_page() {
+        let tmp = TempDir::new("partial-load");
+        let path = tmp.file("config.json");
+        std::fs::write(&path, r#"{"style":"Pill"}"#).unwrap();
+        let c = load_at(&path);
+        assert_eq!(
+            c,
+            Config {
+                style: Style::Pill,
+                ..Config::default()
+            }
+        );
+        assert_eq!(PanelPages::from_saved(&c.panel_pages).visible().len(), 15);
+    }
+
+    #[test]
+    fn fresh_survives_a_save() {
+        let tmp = TempDir::new("fresh-save");
+        let path = tmp.file("config.json");
+        Config::fresh().save_to(&path).unwrap();
+        let back = load_at(&path);
+        assert_eq!(back, Config::fresh());
+        assert_eq!(PanelPages::from_saved(&back.panel_pages).visible().len(), 9);
+        assert_eq!(
+            ShortcutTiles::from_saved(&back.shortcut_tiles).visible().len(),
+            crate::tiles::MAX_SHOWN
         );
     }
 

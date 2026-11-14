@@ -27,7 +27,40 @@ impl Default for PanelPages {
     }
 }
 
+/// The pages a first run shows, Pintasan first.
+const FRESH_SHOWN: [Page; 9] = [
+    Page::Shortcuts,
+    Page::Calendar,
+    Page::Reminders,
+    Page::Notes,
+    Page::Pomodoro,
+    Page::Media,
+    Page::Clipboard,
+    Page::Notifications,
+    Page::Shelf,
+];
+
+/// The pages a first run lists but leaves off, after the shown ones.
+const FRESH_HIDDEN: [Page; 6] = [
+    Page::Record,
+    Page::Mixer,
+    Page::System,
+    Page::Devices,
+    Page::Cli,
+    Page::Arrange,
+];
+
 impl PanelPages {
+    /// The first-run layout: nine pages shown with Pintasan first, the other
+    /// six listed after them and off. `default()` is unchanged on purpose.
+    pub fn fresh() -> Self {
+        let on = FRESH_SHOWN.iter().map(|p| (*p, true));
+        let off = FRESH_HIDDEN.iter().map(|p| (*p, false));
+        PanelPages {
+            entries: on.chain(off).collect(),
+        }
+    }
+
     /// The saved list made whole: unknown and repeated names are dropped, a
     /// page the file does not name (an older config) joins right after the
     /// page before it in `Page::ALL`, and a list with nothing on shows all.
@@ -552,5 +585,57 @@ mod tests {
         assert_eq!(p.entries()[0].0, Page::Shortcuts);
         assert_eq!(p.step(Page::Shortcuts, 1), Page::Calendar);
         assert_eq!(p.step(Page::Calendar, -1), Page::Shortcuts);
+    }
+
+    const WANT_SHOWN: [Page; 9] = [
+        Page::Shortcuts,
+        Page::Calendar,
+        Page::Reminders,
+        Page::Notes,
+        Page::Pomodoro,
+        Page::Media,
+        Page::Clipboard,
+        Page::Notifications,
+        Page::Shelf,
+    ];
+
+    const WANT_HIDDEN: [Page; 6] = [
+        Page::Record,
+        Page::Mixer,
+        Page::System,
+        Page::Devices,
+        Page::Cli,
+        Page::Arrange,
+    ];
+
+    #[test]
+    fn fresh_shows_nine_pages_pintasan_first() {
+        assert_eq!(PanelPages::fresh().visible(), WANT_SHOWN.to_vec());
+    }
+
+    #[test]
+    fn fresh_lists_every_page_once_with_the_hidden_ones_last() {
+        let p = PanelPages::fresh();
+        let entries = p.entries();
+        assert_eq!(entries.len(), Page::ALL.len());
+        for page in Page::ALL {
+            assert_eq!(entries.iter().filter(|(x, _)| *x == page).count(), 1, "{page:?}");
+        }
+        let tail: Vec<(Page, bool)> = entries[9..].to_vec();
+        let hidden: Vec<(Page, bool)> = WANT_HIDDEN.iter().map(|x| (*x, false)).collect();
+        assert_eq!(tail, hidden);
+    }
+
+    #[test]
+    fn fresh_survives_a_save() {
+        assert_eq!(
+            PanelPages::from_saved(&PanelPages::fresh().to_saved()),
+            PanelPages::fresh()
+        );
+    }
+
+    #[test]
+    fn default_is_unchanged() {
+        assert_eq!(PanelPages::default().visible(), Page::ALL.to_vec());
     }
 }
