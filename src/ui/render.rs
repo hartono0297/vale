@@ -1,7 +1,8 @@
 use windows::Win32::Foundation::{COLORREF, D2DERR_RECREATE_TARGET, POINT, RECT, SIZE};
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D_RECT_F, D2D_SIZE_F, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_FIGURE_BEGIN_FILLED,
-    D2D1_FIGURE_END_CLOSED, D2D1_FILL_MODE_ALTERNATE, D2D1_GRADIENT_STOP, D2D1_PIXEL_FORMAT,
+    D2D1_FIGURE_BEGIN_HOLLOW, D2D1_FIGURE_END_CLOSED, D2D1_FIGURE_END_OPEN, D2D1_FILL_MODE_ALTERNATE,
+    D2D1_GRADIENT_STOP, D2D1_PIXEL_FORMAT,
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1_ANTIALIAS_MODE_ALIASED, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_ARC_SEGMENT, D2D1_ARC_SIZE_SMALL, D2D1_CAP_STYLE_ROUND,
@@ -68,7 +69,10 @@ use super::motion::{StripFrame, Transit};
 use super::panel_layout::Region;
 use super::play::shape::{Deform, outline, rigid, turn_about};
 use super::play::state::{Beat, spread_offsets};
-use super::robot::{Expr, EyesPose, Pose, RobotPainter, eyes_area, eyes_centre, eyes_offset_in};
+use super::play::stories::{MascotShot, Prop, Shot, whistle_arcs};
+use super::robot::{
+    Expr, EyesPose, GRID, Pose, RobotPainter, eyes_area, eyes_centre, eyes_offset_in,
+};
 use super::shelf_motion::ShelfMotion;
 use super::window::IslandWindow;
 use crate::audio::MixerRow;
@@ -315,6 +319,24 @@ pub struct PlayFrame {
     /// One per character of the clock (`%H:%M`). All `IDENTITY` draws the
     /// clock as the one run it is at rest.
     pub digits: [DigitFx; 5],
+    /// The story's mascot in place of the one resting in its slot; `None`
+    /// draws the mascot as ever.
+    pub mascot: Option<MascotShot>,
+    /// Painted last, over the island and its edge.
+    pub props: Vec<Prop>,
+}
+
+impl PlayFrame {
+    /// The story's `shot` at `beat`.
+    pub fn of(shot: Shot, beat: Beat) -> Self {
+        Self {
+            deform: shot.deform,
+            beat,
+            digits: shot.digits,
+            mascot: shot.mascot,
+            props: shot.props,
+        }
+    }
 }
 
 /// What a play does to one character of the clock: shifted by `dx`, `dy`
@@ -348,6 +370,21 @@ pub fn per_character_wanted(fx: &[DigitFx]) -> bool {
 
 /// How far a played Notch's shoulder runs into the body (dip).
 const SHOULDER_TUCK: f32 = 3.0;
+
+/// A digit prop's outline: its glyph in the island's colour this far off in
+/// eight directions (dip), under the glyph itself.
+const PROP_OUTLINE: [(f32, f32); 8] = [
+    (-0.7, 0.0),
+    (0.7, 0.0),
+    (0.0, -0.7),
+    (0.0, 0.7),
+    (-0.5, -0.5),
+    (0.5, -0.5),
+    (-0.5, 0.5),
+    (0.5, 0.5),
+];
+/// The whistle arcs' stroke (dip).
+const WHISTLE_W: f32 = 0.85;
 
 /// The play this frame draws. Only the idle island plays, and never the one
 /// shrunk to the eyes; any other frame keeps the island's own shape.
@@ -2488,7 +2525,10 @@ impl Renderer {
                 );
                 let l = play_layout(l, shape, play);
                 if let (Some(area), Some(r)) = (l.robot, robot) {
-                    self.paint_robot(area, r);
+                    match play.and_then(|p| p.mascot.as_ref()) {
+                        Some(m) => self.paint_story_mascot(area, r, m),
+                        None => self.paint_robot(area, r),
+                    }
                 }
                 if let (Some(area), Some(time)) = (l.clock, &frame.clock) {
                     // A sleeping Bata dims the clock beside it, as in the design.
@@ -2590,7 +2630,139 @@ impl Renderer {
         } else {
             unsafe { target.rt.PopAxisAlignedClip() };
         }
+        if let Some(p) = play {
+            self.paint_props(shape, frame, p);
+        }
         leaving.and(content)
+    }
+
+    /// The mascot as a story moves it: the head's pivot (its grid's
+    /// (32, 40)) moved from its place in `area`, the head turned and scaled
+    /// about it, with the story's face. The painter draws it as ever, so the
+    /// coat and the accessory come along. Inside the island's clip, like the
+    /// resting mascot.
+    fn paint_story_mascot(&self, area: Rect, robot: RobotFrame, m: &MascotShot) {
+        let k = area.w / GRID;
+        let pivot = (area.x + 32.0 * k, area.y + 40.0 * k);
+        let own = Matrix3x2::scale_around(m.sx, m.sy, Vector2::new(pivot.0, pivot.1))
+            * turn_about(m.rot_deg, pivot, (m.dx, m.dy));
+        let rt = &self.target.as_ref().expect("target ensured by paint").rt;
+        let mut before = Matrix3x2::identity();
+        unsafe {
+            rt.GetTransform(&mut before);
+            rt.SetTransform(&(own * before));
+        }
+        self.paint_robot(
+            area,
+            RobotFrame {
+                expr: m.expr,
+                pose: m.pose(robot.pose),
+            },
+        );
+        unsafe { rt.SetTransform(&before) };
+    }
+
+    /// A story's props, over everything, the island's edge included: a clock
+    /// digit away from the clock, and the whistle arcs.
+    fn paint_props(&self, shape: ShapeRect, frame: &Frame, play: &PlayFrame) {
+        if play.props.is_empty() {
+            return;
+        }
+        let alpha = frame.transit.content_alpha.clamp(0.0, 1.0);
+        let l = idle_layout_lead(
+            shape,
+            frame.robot.is_some(),
+            frame.clock.is_some(),
+            frame.idle_lead,
+        );
+        let clock = play_layout(l, shape, Some(play)).clock;
+        for prop in &play.props {
+            match *prop {
+                Prop::Digit {
+                    index,
+                    at,
+                    rot_deg,
+                    alpha: a,
+                } => {
+                    if let (Some(area), Some(time)) = (clock, &frame.clock) {
+                        self.paint_digit_prop(time, area, index, at, rot_deg, a * alpha);
+                    }
+                }
+                Prop::Whistle { at, alpha: a } => self.paint_whistle(at, a * alpha),
+            }
+        }
+    }
+
+    /// Character `index` of the clock `time` (laid out in `area`, as the
+    /// clock is), its cell centred on `at` and turned by `rot_deg`, over an
+    /// outline in the island's colour so it reads on the mascot and off the
+    /// island.
+    fn paint_digit_prop(
+        &self,
+        time: &str,
+        area: Rect,
+        index: usize,
+        at: (f32, f32),
+        rot_deg: f32,
+        alpha: f32,
+    ) {
+        let wide: Vec<u16> = time.encode_utf16().collect();
+        let Ok(line) = self.layout(&wide, &self.fonts.clock, area.w, area.h) else {
+            return;
+        };
+        let Some((one, origin, c)) = self.clock_char(&line, &wide, index, area) else {
+            return;
+        };
+        let target = self.target.as_ref().expect("target ensured by paint");
+        let options = D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT;
+        let mut before = Matrix3x2::identity();
+        unsafe {
+            target.rt.GetTransform(&mut before);
+            let own = turn_about(rot_deg, c, (at.0 - c.0, at.1 - c.1));
+            target.rt.SetTransform(&(own * before));
+            target.brush.SetColor(&color(self.palette.surface, alpha));
+            for (dx, dy) in PROP_OUTLINE {
+                let moved = Vector2::new(origin.X + dx, origin.Y + dy);
+                target.rt.DrawTextLayout(moved, &one, &target.brush, options);
+            }
+            target.brush.SetColor(&color(self.palette.text, alpha));
+            target.rt.DrawTextLayout(origin, &one, &target.brush, options);
+            target.rt.SetTransform(&before);
+        }
+    }
+
+    /// The three whistle arcs at `at` (`stories::whistle_arcs`), in the text
+    /// colour. Built for the frame: they show for about a second.
+    fn paint_whistle(&self, at: (f32, f32), alpha: f32) {
+        let target = self.target.as_ref().expect("target ensured by paint");
+        for (start, chord, radius, share) in whistle_arcs(at) {
+            let arc = || -> Result<ID2D1PathGeometry> {
+                unsafe {
+                    let path = self.d2d.CreatePathGeometry()?;
+                    let sink = path.Open()?;
+                    sink.BeginFigure(Vector2::new(start.0, start.1), D2D1_FIGURE_BEGIN_HOLLOW);
+                    sink.AddArc(&D2D1_ARC_SEGMENT {
+                        point: Vector2::new(start.0, start.1 + chord),
+                        size: D2D_SIZE_F { width: radius, height: radius },
+                        rotationAngle: 0.0,
+                        sweepDirection: D2D1_SWEEP_DIRECTION_CLOCKWISE,
+                        arcSize: D2D1_ARC_SIZE_SMALL,
+                    });
+                    sink.EndFigure(D2D1_FIGURE_END_OPEN);
+                    sink.Close()?;
+                    Ok(path)
+                }
+            };
+            let Ok(path) = arc() else {
+                continue;
+            };
+            self.set_color(self.palette.text, alpha * share);
+            unsafe {
+                target
+                    .rt
+                    .DrawGeometry(&path, &target.brush, WHISTLE_W, &self.round_cap)
+            };
+        }
     }
 
     /// The cat's two open eyes alone, in the brand terracotta, centred on the
@@ -3864,31 +4036,14 @@ impl Renderer {
         let mut before = Matrix3x2::identity();
         unsafe { rt.GetTransform(&mut before) };
         for (i, fx) in digits.iter().enumerate().take(wide.len()) {
-            let (mut x, mut y) = (0.0, 0.0);
-            let mut cell = DWRITE_HIT_TEST_METRICS::default();
-            if unsafe { line.HitTestTextPosition(i as u32, false, &mut x, &mut y, &mut cell) }
-                .is_err()
-            {
-                continue;
-            }
-            // The character in a layout of its own, with the line's tracking,
-            // tabular figures and height, drawn from its left edge at the
-            // cell's x.
-            let Ok(one) = self.layout(&wide[i..=i], &self.fonts.clock, area.w, area.h) else {
+            let Some((one, origin, c)) = self.clock_char(&line, &wide, i, area) else {
                 continue;
             };
-            unsafe {
-                let _ = one.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-            }
-            let c = (
-                area.x + cell.left + cell.width / 2.0,
-                area.y + cell.top + cell.height / 2.0,
-            );
             let own = Matrix3x2::scale_around(fx.scale, fx.scale, Vector2::new(c.0, c.1))
                 * turn_about(fx.rot_deg, c, (fx.dx, fx.dy));
             unsafe { rt.SetTransform(&(own * before)) };
             self.text_legible(
-                Vector2::new(area.x + x, area.y),
+                origin,
                 &one,
                 D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
                 self.palette.text,
@@ -3896,6 +4051,35 @@ impl Renderer {
             );
         }
         unsafe { rt.SetTransform(&before) };
+    }
+
+    /// Character `i` of `wide` where `line` (`wide` laid out in `area`) puts
+    /// it: the character in a layout of its own, with the line's tracking,
+    /// tabular figures and height, the point to draw that from (its left edge
+    /// at the cell's x), and the centre of its cell. `None` when DirectWrite
+    /// cannot place it.
+    fn clock_char(
+        &self,
+        line: &IDWriteTextLayout,
+        wide: &[u16],
+        i: usize,
+        area: Rect,
+    ) -> Option<(IDWriteTextLayout, Vector2, (f32, f32))> {
+        if i >= wide.len() {
+            return None;
+        }
+        let (mut x, mut y) = (0.0, 0.0);
+        let mut cell = DWRITE_HIT_TEST_METRICS::default();
+        unsafe { line.HitTestTextPosition(i as u32, false, &mut x, &mut y, &mut cell) }.ok()?;
+        let one = self.layout(&wide[i..=i], &self.fonts.clock, area.w, area.h).ok()?;
+        unsafe {
+            let _ = one.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        }
+        let c = (
+            area.x + cell.left + cell.width / 2.0,
+            area.y + cell.top + cell.height / 2.0,
+        );
+        Some((one, Vector2::new(area.x + x, area.y), c))
     }
 
     /// Text in the palette's secondary colour (captions, times, labels).
@@ -4658,6 +4842,8 @@ mod tests {
             deform: Deform::default(),
             beat: Beat { spread, alpha: 1.0, t: 0.0 },
             digits: [DigitFx::IDENTITY; 5],
+            mascot: None,
+            props: Vec::new(),
         }
     }
 
@@ -5318,6 +5504,32 @@ mod tests {
 
     fn at_rest() -> PlayFrame {
         play_frame(1.0)
+    }
+
+    #[test]
+    fn a_digit_prop_lands_where_the_clock_would_move_that_digit() {
+        // The stolen digit hangs from the beak by its cell's centre: drawn as
+        // a prop at a point, it covers what the clock's own character moved
+        // to that point covers (its outline spreads evenly round it).
+        let mut r = renderer();
+        let area = clock_area(44.0);
+        let wide: Vec<u16> = "14:32".encode_utf16().collect();
+        let line = r.layout(&wide, &r.fonts.clock, area.w, area.h).unwrap();
+        let (_, _, c) = r.clock_char(&line, &wide, 4, area).unwrap();
+        for (dx, dy) in [(0.0, 0.0), (-20.0, 6.0)] {
+            let moved = only(&mut r, 4, DigitFx { dx, dy, ..DigitFx::IDENTITY });
+            let prop = painted(&mut r, CLOCK_BOX, |r| {
+                r.paint_digit_prop("14:32", area, 4, (c.0 + dx, c.1 + dy), 0.0, 1.0)
+            });
+            let ((mx, my), _) = moved.centre();
+            let ((px, py), ink) = prop.centre();
+            assert!(ink > 100.0, "the prop drew nothing");
+            // The outline shifts the ink's weighted centre a little (0.4 px
+            // measured); a wrong origin would be off by the cell's margins,
+            // several px.
+            let k = r.scale;
+            assert!((mx - px).abs() < 0.6 * k && (my - py).abs() < 0.6 * k, "({dx}, {dy}): {mx},{my} vs {px},{py}");
+        }
     }
 
     fn turned() -> PlayFrame {

@@ -218,6 +218,11 @@ pub struct Pose {
     pub waving: bool,
     /// The octopus's flush, 0 to 1.
     pub flush: f32,
+    /// A story's crest for the falk, in place of the face's own
+    /// (`mascot::crest_pose`).
+    pub crest: Option<crate::ui::mascot::CrestPose>,
+    /// A story opens the falk's beak, whatever the face.
+    pub beak_open: bool,
 }
 
 impl Pose {

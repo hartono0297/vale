@@ -126,13 +126,13 @@ use crate::ui::panel_layout::{CliHead, STRIP_H, cli_layout};
 use crate::ui::panel_tips::{self, TipCtx};
 use crate::ui::tooltip;
 use crate::ui::render::{
-    CleanerView, CliView, DevicesView, DigitFx, FolderMenuView, Frame, MoleView, NoticeCloseView,
+    CleanerView, CliView, DevicesView, FolderMenuView, Frame, MoleView, NoticeCloseView,
     PlayFrame, Progress, RecFrame, RecordView, Renderer, RobotFrame, SearchView, SystemView,
 };
 use crate::ui::play::{click_through, swallows};
 use crate::ui::play::gate::{Env, instant_stop, may_start, must_stop};
-use crate::ui::play::shape::Deform;
 use crate::ui::play::state::Play;
+use crate::ui::play::stories;
 use crate::ui::play::trigger::{Moment, PRESENCE_MIN, Story, cooldown, pick, pool, wait_for};
 use crate::ui::settings_layout::{CardId, MonitorRow};
 use crate::ui::robot::{
@@ -2574,14 +2574,13 @@ impl App {
         swallows(self.config.style, self.idle_shape(now), true, x, y)
     }
 
-    /// What the renderer gets for the running story. Until the stories
-    /// exist, the island at rest with the mascot and the clock pushed to its
-    /// ends by the beat.
-    fn play_frame(&self, now: Instant) -> Option<PlayFrame> {
-        self.play.as_ref().map(|active| PlayFrame {
-            deform: Deform::default(),
-            beat: active.play.beat(now),
-            digits: [DigitFx::IDENTITY; 5],
+    /// What the renderer gets for the running story on the island `shape`:
+    /// the story's shot at this beat (at rest for a story with no timeline).
+    fn play_frame(&self, now: Instant, shape: ShapeRect) -> Option<PlayFrame> {
+        self.play.as_ref().map(|active| {
+            let beat = active.play.beat(now);
+            let shot = stories::shot(active.play.story(), self.config.style, shape, beat);
+            PlayFrame::of(shot, beat)
         })
     }
 
@@ -7708,7 +7707,7 @@ impl App {
             notice_close: self.notice_close_view(now),
             transit,
             full_redraw,
-            play: self.play_frame(now),
+            play: self.play_frame(now, shape),
         };
         let key = eq_key(self.draw_gen, &frame, shape, opacity);
         if eq_tick && !dirty::eq_draw_needed(self.eq_key.as_ref(), &key) {

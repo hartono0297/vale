@@ -73,6 +73,9 @@ pub struct CrestPose {
 }
 
 pub fn crest_pose(expr: Expr, pose: &Pose) -> CrestPose {
+    if let Some(story) = pose.crest {
+        return story;
+    }
     let (rot_deg, scale) = match expr {
         Expr::Idle | Expr::Focus | Expr::Think | Expr::Typing => (10.0, 1.0),
         Expr::Happy => (2.0, 1.08),
@@ -135,11 +138,12 @@ pub fn falk_beak(open: bool) -> Vec<Vec<Seg>> {
 }
 
 pub fn beak_open(expr: Expr, pose: &Pose) -> bool {
-    match expr {
-        Expr::Sing | Expr::Alert => true,
-        Expr::Music => pose.dancing,
-        _ => false,
-    }
+    pose.beak_open
+        || match expr {
+            Expr::Sing | Expr::Alert => true,
+            Expr::Music => pose.dancing,
+            _ => false,
+        }
 }
 
 /// The typing feather tip at (x, y).
