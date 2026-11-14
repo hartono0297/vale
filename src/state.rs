@@ -342,6 +342,10 @@ pub struct IslandState {
     /// "Hapus semua" was clicked once: armed ("Yakin?") until then, a second
     /// click before it clears the history. Anything else disarms it.
     notif_armed: Option<Instant>,
+    /// The Clipboard page's "Hapus semua" was clicked once: armed until then,
+    /// a second click before it clears every entry not pinned. Anything else
+    /// disarms it.
+    clip_armed: Option<Instant>,
     /// A hotkey opened the panel on this page (the Clipboard's or the
     /// Devices'): it stays open (no hover, no keyboard) until the pointer
     /// comes (then hover holds it), the hotkey again, a copy, or
@@ -510,6 +514,7 @@ impl IslandState {
             clip_focused: false,
             notif_focused: false,
             notif_armed: None,
+            clip_armed: None,
             hotkey_held: None,
             shelf_held: false,
             shelf_drop: DropVisit::No,
@@ -1159,6 +1164,9 @@ impl IslandState {
         if self.notif_armed.is_some() && (self.page != Page::Notifications || !self.panel_open()) {
             self.notif_armed = None;
         }
+        if self.clip_armed.is_some() && (self.page != Page::Clipboard || !self.panel_open()) {
+            self.clip_armed = None;
+        }
         if self
             .hotkey_held
             .is_some_and(|page| self.page != page || self.collapsed != Collapse::No)
@@ -1425,6 +1433,7 @@ impl IslandState {
             self.pomodoro.next_deadline(),
             armed,
             self.notif_armed,
+            self.clip_armed,
             self.linger_until,
         ]
         .into_iter()
@@ -1457,12 +1466,15 @@ impl IslandState {
             && !self.fullscreen
     }
 
-    /// The armed cleaner button (and "Hapus semua" of the Notifikasi page)
-    /// turns back once `CLEAN_CONFIRM`
+    /// The armed cleaner button (and "Hapus semua" of the Notifikasi and
+    /// Clipboard pages) turns back once `CLEAN_CONFIRM`
     /// has passed.
     fn expire_confirm(&mut self, now: Instant) {
         if self.notif_armed.is_some_and(|until| until <= now) {
             self.notif_armed = None;
+        }
+        if self.clip_armed.is_some_and(|until| until <= now) {
+            self.clip_armed = None;
         }
         if let Some(c) = &mut self.cleaner
             && c.armed_until.is_some_and(|until| until <= now)
@@ -1963,6 +1975,11 @@ impl IslandState {
         self.notif_armed.is_some()
     }
 
+    /// The Clipboard page's "Hapus semua" waits for its second click.
+    pub fn clip_armed(&self) -> bool {
+        self.clip_armed.is_some()
+    }
+
     /// The quick search is open.
     pub fn search_open(&self) -> bool {
         self.search_open
@@ -2013,6 +2030,9 @@ impl IslandState {
         // Any click but its own disarms "Hapus semua".
         if !matches!(hit, Hit::NotifClear) {
             self.notif_armed = None;
+        }
+        if !matches!(hit, Hit::ClipClear) {
+            self.clip_armed = None;
         }
         // And "Buang" of a screen recording.
         if !matches!(hit, Hit::ScreenDiscard) {
@@ -2664,7 +2684,15 @@ impl IslandState {
             | Hit::ClipPin(_)
             | Hit::ClipPlain(_)
             | Hit::ClipDelete(_)
+            | Hit::ClipClear
                 if self.view() != View::Panel(Page::Clipboard) => {}
+            // The first click arms; a second within `CLEAN_CONFIRM` clears.
+            Hit::ClipClear => match self.clip_armed.take() {
+                Some(until) if now < until => {
+                    effects.push(Effect::Clip(ClipAction::ClearUnpinned));
+                }
+                _ => self.clip_armed = Some(now + CLEAN_CONFIRM),
+            },
             Hit::ClipSearch => effects.push(Effect::FocusClipSearch),
             Hit::ClipCard(id) => effects.push(Effect::Clip(ClipAction::Copy(id))),
             Hit::ClipPin(id) => effects.push(Effect::Clip(ClipAction::TogglePin(id))),
@@ -6342,9 +6370,15 @@ mod tests {
         let t0 = Instant::now();
         let mut s = st();
         open_on(&mut s, Page::Notes, t0);
-        for hit in [Hit::ClipSearch, Hit::ClipCard(1), Hit::ClipDelete(1)] {
+        for hit in [
+            Hit::ClipSearch,
+            Hit::ClipCard(1),
+            Hit::ClipDelete(1),
+            Hit::ClipClear,
+        ] {
             assert_eq!(s.apply(Event::Click(hit), t0), vec![]);
         }
+        assert!(!s.clip_armed());
         open_on(&mut s, Page::Clipboard, t0);
         assert_eq!(
             s.apply(Event::Click(Hit::ClipSearch), t0),
@@ -6359,6 +6393,68 @@ mod tests {
         for (hit, action) in cases {
             assert_eq!(s.apply(Event::Click(hit), t0), vec![Effect::Clip(action)]);
         }
+    }
+
+    #[test]
+    fn clip_hapus_semua_arms_then_clears_on_a_second_click_inside_the_confirm_time() {
+        let t0 = Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        let mut s = st();
+        open_on(&mut s, Page::Clipboard, t0);
+        assert!(!s.clip_armed());
+        // The first click only arms: no effect, a deadline on the one timer.
+        assert_eq!(s.apply(Event::Click(Hit::ClipClear), t0), vec![]);
+        assert!(s.clip_armed());
+        assert_eq!(s.next_deadline(), Some(t0 + CLEAN_CONFIRM));
+        // A second one inside it clears, and disarms.
+        assert_eq!(
+            s.apply(Event::Click(Hit::ClipClear), ms(1000)),
+            vec![Effect::Clip(ClipAction::ClearUnpinned)]
+        );
+        assert!(!s.clip_armed());
+        // Armed and left alone, it turns back when the time is up.
+        s.apply(Event::Click(Hit::ClipClear), ms(2000));
+        assert!(s.clip_armed());
+        s.apply(
+            Event::Tick,
+            ms(2000) + CLEAN_CONFIRM + Duration::from_millis(1),
+        );
+        assert!(!s.clip_armed(), "expired");
+        // A click after it expired arms again instead of clearing.
+        let late = ms(2000) + CLEAN_CONFIRM + Duration::from_millis(5);
+        assert_eq!(s.apply(Event::Click(Hit::ClipClear), late), vec![]);
+        assert!(s.clip_armed());
+    }
+
+    #[test]
+    fn clip_hapus_semua_disarms_on_any_other_click_a_page_change_and_the_panel_closing() {
+        let t0 = Instant::now();
+        let mut s = st();
+        open_on(&mut s, Page::Clipboard, t0);
+        s.apply(Event::Click(Hit::ClipClear), t0);
+        assert!(s.clip_armed());
+        // Another control of the page: it acts and the first click is spent.
+        assert_eq!(
+            s.apply(Event::Click(Hit::ClipSearch), t0),
+            vec![Effect::FocusClipSearch]
+        );
+        assert!(!s.clip_armed());
+        // A page change.
+        s.apply(Event::Click(Hit::ClipClear), t0);
+        assert!(s.clip_armed());
+        s.apply(Event::Wheel(-120), t0);
+        assert_eq!(s.view(), View::Panel(Page::Notifications));
+        assert!(!s.clip_armed());
+        // The panel closing.
+        s.apply(Event::Wheel(120), t0);
+        assert_eq!(s.view(), View::Panel(Page::Clipboard));
+        s.apply(Event::Click(Hit::ClipClear), t0);
+        assert!(s.clip_armed());
+        s.apply(Event::Hover(false), t0);
+        let later = t0 + ACTIVITY_LINGER + Duration::from_millis(1);
+        s.apply(Event::Tick, later);
+        assert_eq!(s.view(), View::Idle);
+        assert!(!s.clip_armed());
     }
 
     #[test]

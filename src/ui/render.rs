@@ -867,6 +867,10 @@ pub struct ClipView<'a> {
     pub scroll: usize,
     /// "Now" for the cards' "2 mnt lalu": the clock, or the demo's fixed time.
     pub now: NaiveDateTime,
+    /// "Hapus semua" shows: history on, no search, an entry not pinned.
+    pub clearable: bool,
+    /// "Hapus semua" was pressed once and now reads "Yakin?".
+    pub armed: bool,
 }
 
 impl ClipView<'_> {
@@ -883,6 +887,8 @@ impl ClipView<'_> {
             selected: None,
             scroll: 0,
             now,
+            clearable: false,
+            armed: false,
         }
     }
 }
