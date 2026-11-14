@@ -71,12 +71,11 @@ pub enum Layer {
     /// Behind the island: clipped to the window without the played island
     /// (even-odd), painted before the island's fill.
     Back,
-    /// In the island's dark: clipped to the island, over the slot mascot and
-    /// under the clock.
+    /// In the island's dark: clipped to the island, over the slot mascot.
     Dark,
-    /// Over the clock, unclipped.
+    /// Unclipped, under the clock: a digit's ink wins where they overlap.
     Inside,
-    /// On the island's face, over the inside: clipped to the island, and to
+    /// On the island's face, over the clock: clipped to the island, and to
     /// the rect (window dip) when one is given.
     Wrap(Option<Rect>),
     /// In front of everything, unclipped.
@@ -96,13 +95,14 @@ pub enum Pass {
     Front,
 }
 
-/// The order the renderer paints a played island in, bottom first.
+/// The order the renderer paints a played island in, bottom first: the
+/// mockup's `compose`.
 pub const PAINT_ORDER: [Pass; 7] = [
     Pass::Back,
     Pass::Fill,
     Pass::Dark,
-    Pass::Clock,
     Pass::Inside,
+    Pass::Clock,
     Pass::Wrap,
     Pass::Front,
 ];
@@ -504,7 +504,8 @@ mod tests {
     #[test]
     fn layers_paint_in_the_mockups_order() {
         use Pass::*;
-        assert_eq!(PAINT_ORDER, [Back, Fill, Dark, Clock, Inside, Wrap, Front]);
+        // The mockup's `compose`: the inside under the clock.
+        assert_eq!(PAINT_ORDER, [Back, Fill, Dark, Inside, Clock, Wrap, Front]);
         // Each layer has its one place in it, whatever its wrap rect.
         let r = Rect { x: 1.0, y: 2.0, w: 3.0, h: 4.0 };
         let cases = [

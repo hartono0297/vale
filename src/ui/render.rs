@@ -413,13 +413,13 @@ fn playing<'a>(play: Option<&'a PlayFrame>, view: &View, eyes: bool) -> Option<&
     play.filter(|_| *view == View::Idle && !eyes)
 }
 
-/// `PAINT_ORDER` cut at the island's own two steps: the story's layers
-/// below its fill, between the fill and the clock (in the island's clip,
-/// over the slot head), and over the clock.
-fn layer_runs() -> [&'static [Pass]; 3] {
+/// `PAINT_ORDER` cut at the island's fill: the steps below it, and the
+/// steps over the island's content (the slot head and the rest of the view),
+/// the played clock among them.
+fn layer_runs() -> (&'static [Pass], &'static [Pass]) {
     let order: &'static [Pass] = &PAINT_ORDER;
-    let mut runs = order.split(|p| matches!(p, Pass::Fill | Pass::Clock));
-    std::array::from_fn(|_| runs.next().unwrap_or(&[]))
+    let fill = order.iter().position(|p| *p == Pass::Fill).unwrap_or(0);
+    (&order[..fill], &order[fill + 1..])
 }
 
 /// What a story's drawables are placed by: the played clock (its box and
@@ -2439,7 +2439,7 @@ impl Renderer {
             }
         }
         // A story's layers below the island's fill (`PAINT_ORDER`).
-        let [behind, dark, over] = layer_runs();
+        let (behind, over) = layer_runs();
         if let (Some(p), Some(island)) = (play, &played) {
             let alpha = frame.transit.content_alpha.clamp(0.0, 1.0);
             for &pass in behind {
@@ -2586,14 +2586,8 @@ impl Renderer {
                         None => self.paint_robot(area, r),
                     }
                 }
-                // Over the slot head and under the clock, in the island's
-                // clip (and its fade) this view is painted in.
-                if let (Some(p), Some(island)) = (play, &played) {
-                    for &pass in dark {
-                        self.paint_parts(pass, island, shape, frame, p, 1.0);
-                    }
-                }
-                if let (Some(area), Some(time)) = (l.clock, &frame.clock) {
+                // A play paints its clock over its inside parts, below.
+                if let (None, Some(area), Some(time)) = (play, l.clock, &frame.clock) {
                     // A sleeping Bata dims the clock beside it, as in the design.
                     let asleep = robot.is_some_and(|r| r.expr == Expr::Sleep);
                     self.paint_clock(
@@ -2693,10 +2687,16 @@ impl Renderer {
         } else {
             unsafe { target.rt.PopAxisAlignedClip() };
         }
-        // A story's layers over the clock, each with its own clip.
+        // A story's layers over the island's content, each with its own
+        // clip, and the played clock in its place among them.
         if let (Some(p), Some(island)) = (play, &played) {
             for &pass in over {
-                self.paint_parts(pass, island, shape, frame, p, content_alpha);
+                match pass {
+                    Pass::Clock => {
+                        self.paint_played_clock(style, shape, frame, p, island, content_alpha)
+                    }
+                    _ => self.paint_parts(pass, island, shape, frame, p, content_alpha),
+                }
             }
         }
         leaving.and(content)
@@ -2730,10 +2730,9 @@ impl Renderer {
 
     /// The parts of `play` in the layer of `pass`, at `alpha`, with that
     /// layer's clip: `Back` to the window without the played `island`,
-    /// `Wrap` to the island (and its rect). `Dark` is painted in the island's
-    /// clip the caller holds; `Inside` and `Front` are unclipped. Built for
-    /// the frame, only while a play runs; a part that fails to build is
-    /// left out.
+    /// `Dark` to the island, `Wrap` to the island (and its rect); `Inside`
+    /// and `Front` are unclipped. Built for the frame, only while a play
+    /// runs; a part that fails to build is left out.
     fn paint_parts(
         &self,
         pass: Pass,
@@ -2758,45 +2757,130 @@ impl Renderer {
             pose: frame.robot.map(|r| r.pose),
         };
         let unit = super::geometry::ROBOT_COMPACT / GRID;
-        let target = self.target.as_ref().expect("target ensured by paint");
-        match pass {
+        let outside;
+        let mask = match pass {
             Pass::Back => {
-                let Ok(outside) = self.outside_island(island) else {
+                let Ok(o) = self.outside_island(island) else {
                     return;
                 };
-                self.push_mask(&outside, 1.0);
-                for part in parts {
-                    self.paint_draw(&part.draw, part.alpha * alpha, unit, &at);
-                }
+                outside = o;
+                Some(&outside)
+            }
+            Pass::Dark | Pass::Wrap => Some(island),
+            _ => None,
+        };
+        if let Some(m) = mask {
+            self.push_mask(m, 1.0);
+        }
+        let target = self.target.as_ref().expect("target ensured by paint");
+        for part in parts {
+            let cut = match part.layer {
+                Layer::Wrap(cut) => cut,
+                _ => None,
+            };
+            if let Some(r) = cut {
+                unsafe {
+                    target.rt.PushAxisAlignedClip(
+                        &d2d_rect(r),
+                        D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                    )
+                };
+            }
+            self.paint_part(part, alpha, unit, &at);
+            if cut.is_some() {
+                unsafe { target.rt.PopAxisAlignedClip() };
+            }
+        }
+        if mask.is_some() {
+            unsafe { target.rt.PopLayer() };
+        }
+    }
+
+    /// `part` at its alpha times `alpha`. A figure (a group, a head) that
+    /// fades goes through one opacity layer, so where its pieces overlap it
+    /// is no darker than elsewhere.
+    fn paint_part(&self, part: &Part, alpha: f32, unit: f32, at: &Placing) {
+        let alpha = part.alpha * alpha;
+        if alpha <= 0.0 {
+            return;
+        }
+        let figure = matches!(part.draw, Draw::Group { .. } | Draw::Head { .. });
+        if figure && alpha < 1.0 {
+            if let Some(layer) = self.push_fade(alpha) {
+                self.paint_draw(&part.draw, 1.0, unit, at);
+                let target = self.target.as_ref().expect("target ensured by paint");
                 unsafe { target.rt.PopLayer() };
+                drop(layer);
+                return;
             }
-            Pass::Wrap => {
-                self.push_mask(island, 1.0);
-                for part in parts {
-                    let cut = match part.layer {
-                        Layer::Wrap(cut) => cut,
-                        _ => None,
-                    };
-                    if let Some(r) = cut {
-                        unsafe {
-                            target.rt.PushAxisAlignedClip(
-                                &d2d_rect(r),
-                                D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
-                            )
-                        };
-                    }
-                    self.paint_draw(&part.draw, part.alpha * alpha, unit, &at);
-                    if cut.is_some() {
-                        unsafe { target.rt.PopAxisAlignedClip() };
-                    }
-                }
-                unsafe { target.rt.PopLayer() };
+        }
+        self.paint_draw(&part.draw, alpha, unit, at);
+    }
+
+    /// Pushes an opacity layer of its own, made for this push: it nests in
+    /// whatever is already pushed (a mask, the view's fade), and it exists
+    /// only while a figure fades. Kept by the caller until it pops it;
+    /// `None` when Direct2D cannot make one.
+    fn push_fade(&self, opacity: f32) -> Option<ID2D1Layer> {
+        let target = self.target.as_ref().expect("target ensured by paint");
+        let layer = unsafe { target.rt.CreateLayer(None) }.ok()?;
+        let params = D2D1_LAYER_PARAMETERS {
+            contentBounds: D2D_RECT_F {
+                left: -f32::MAX,
+                top: -f32::MAX,
+                right: f32::MAX,
+                bottom: f32::MAX,
+            },
+            geometricMask: ManuallyDrop::new(None),
+            maskAntialiasMode: D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+            maskTransform: Matrix3x2::identity(),
+            opacity,
+            opacityBrush: ManuallyDrop::new(None),
+            layerOptions: D2D1_LAYER_OPTIONS_NONE,
+        };
+        unsafe { target.rt.PushLayer(&params, &layer) };
+        Some(layer)
+    }
+
+    /// A play's clock, over its inside parts (`PAINT_ORDER`): in the played
+    /// island's clip, at the view's fade `alpha`, with the see-through
+    /// shadow the clock has at rest.
+    fn paint_played_clock(
+        &self,
+        style: Style,
+        shape: ShapeRect,
+        frame: &Frame,
+        play: &PlayFrame,
+        island: &ID2D1Geometry,
+        alpha: f32,
+    ) {
+        let l = idle_layout_lead(
+            shape,
+            frame.robot.is_some(),
+            frame.clock.is_some(),
+            frame.idle_lead,
+        );
+        let clock = play_layout(l, shape, Some(play)).clock;
+        let (Some(area), Some(time)) = (clock, &frame.clock) else {
+            return;
+        };
+        // A sleeping Bata dims the clock beside it, as at rest.
+        let asleep = frame.robot.is_some_and(|r| r.expr == Expr::Sleep);
+        self.push_mask(island, 1.0);
+        let faded = alpha < 1.0;
+        if faded {
+            self.push_opacity(alpha);
+        }
+        self.legible.set(frame.legibility.clamp(0.0, 1.0));
+        let dim = if asleep { 0.6 } else { 1.0 };
+        self.paint_clock(style, shape, Some(play), time, area, dim);
+        self.legible.set(0.0);
+        let target = self.target.as_ref().expect("target ensured by paint");
+        unsafe {
+            if faded {
+                target.rt.PopLayer();
             }
-            _ => {
-                for part in parts {
-                    self.paint_draw(&part.draw, part.alpha * alpha, unit, &at);
-                }
-            }
+            target.rt.PopLayer();
         }
     }
 
@@ -5853,6 +5937,76 @@ mod tests {
         layer_case(vec![flood(Layer::Front)], |case, with, _, px, at, _| {
             assert!(green(pixel(with, px)), "{case} {at:?}: {:?}", pixel(with, px));
         });
+    }
+
+    #[test]
+    fn an_inside_part_paints_under_the_clock() {
+        // The mockup paints its inside layer before the clock: where an
+        // inside part and a digit overlap, the digit's ink wins.
+        let mut r = renderer();
+        for style in [Style::Notch, Style::Pill] {
+            for fill in [1.0, 0.42] {
+                let s = shape(style, 190.0, 34.0);
+                let dip = (crate::ui::geometry::WINDOW_W, s.y + s.h + 10.0);
+                let draw = |r: &mut Renderer, clock: bool, parts: Vec<Part>| {
+                    let clock = clock.then(|| "14:32".to_owned());
+                    let play = PlayFrame { parts, ..play_frame(1.0) };
+                    with_frame_all(Some(play), clock, None, fill, |frame| {
+                        painted(r, dip, |r| r.paint_island(style, s, frame).unwrap())
+                    })
+                };
+                let none = draw(&mut r, false, Vec::new());
+                let clock = draw(&mut r, true, Vec::new());
+                let with = draw(&mut r, true, vec![flood(Layer::Inside)]);
+                let case = format!("{style:?} fill {fill}");
+                let diff = |i: usize| (0..4).map(|c| clock.bgra[i * 4 + c].abs_diff(none.bgra[i * 4 + c])).max().unwrap();
+                let n = clock.w * clock.h;
+                let most = (0..n).map(diff).max().unwrap();
+                // The digits' fully inked pixels: the same whatever is under them.
+                let core: Vec<usize> = (0..n).filter(|&i| diff(i) + 3 >= most).collect();
+                assert!(most > 100 && core.len() >= 10, "{case}: the clock drew too little ({most}, {})", core.len());
+                for i in core {
+                    let at = (i % clock.w, i / clock.w);
+                    assert!(same(pixel(&with, at), pixel(&clock, at)), "{case} {at:?}: {:?} over the digit's {:?}", pixel(&with, at), pixel(&clock, at));
+                }
+                // And the part is drawn, where no digit is: the island's left end.
+                let k = r.scale;
+                let left = (((s.x + 12.0) * k) as usize, ((s.y + s.h / 2.0) * k) as usize);
+                assert!(green(pixel(&with, left)), "{case}: {:?}", pixel(&with, left));
+            }
+        }
+    }
+
+    #[test]
+    fn a_fading_group_does_not_darken_where_its_pieces_overlap() {
+        // Two overlapping opaque fills in one group at half alpha: one
+        // opacity for the whole figure, so the overlap is as faint as the rest.
+        use crate::ui::robot::Seg::{Close, Line, Move};
+        let rect = |x: f32| Draw::Fill {
+            path: vec![Move(x, 0.0), Line(x + 20.0, 0.0), Line(x + 20.0, 10.0), Line(x, 10.0), Close],
+            rgb: GREEN,
+        };
+        let mut r = renderer();
+        for style in [Style::Notch, Style::Pill] {
+            let s = shape(style, 190.0, 34.0);
+            let below = s.y + s.h + 20.0;
+            let group = Draw::Group {
+                at: (100.0, below),
+                rot_deg: 0.0,
+                scale: (1.0, 1.0),
+                pivot: (0.0, 0.0),
+                items: vec![rect(0.0), rect(10.0)],
+            };
+            let play = PlayFrame { parts: vec![Part { layer: Layer::Front, draw: group, alpha: 0.5 }], ..play_frame(1.0) };
+            let px = with_frame_all(Some(play), None, None, 1.0, |frame| {
+                painted(&mut r, (crate::ui::geometry::WINDOW_W, below + 20.0), |r| r.paint_island(style, s, frame).unwrap())
+            });
+            let k = r.scale;
+            let at = |x: f32| (((100.0 + x) * k) as usize, ((below + 5.0) * k) as usize);
+            let (one, both) = (pixel(&px, at(5.0)), pixel(&px, at(15.0)));
+            assert!((120..=135).contains(&one[3]), "{style:?}: not half: {one:?}");
+            assert!(same(one, both), "{style:?}: the overlap {both:?} is darker than {one:?}");
+        }
     }
 
     #[test]
