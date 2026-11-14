@@ -1126,6 +1126,50 @@ pub(crate) fn fades_by_frames(shots: &[(f32, Beat, Shot)]) -> Result<(), String>
     Ok(())
 }
 
+/// Every head the figures of `shot` draw: its pivot in window dip (through
+/// the groups it is in) and its part's alpha.
+#[cfg(test)]
+fn figure_heads(shot: &Shot) -> Vec<((f32, f32), f32)> {
+    fn walk(d: &Draw, m: Matrix3x2, alpha: f32, out: &mut Vec<((f32, f32), f32)>) {
+        match d {
+            Draw::Head { at, .. } => out.push(((at.0 * m.M11 + at.1 * m.M21 + m.M31, at.0 * m.M12 + at.1 * m.M22 + m.M32), alpha)),
+            Draw::Group { at, rot_deg, scale, pivot, items } => {
+                let inner = group_matrix(*at, *rot_deg, *scale, *pivot) * m;
+                items.iter().for_each(|i| walk(i, inner, alpha, out));
+            }
+            Draw::Clipped { items, .. } => items.iter().for_each(|i| walk(i, m, alpha, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for p in &shot.parts {
+        walk(&p.draw, Matrix3x2::identity(), p.alpha, &mut out);
+    }
+    out
+}
+
+/// One mascot at a time (P26): a slot head that shows and a figure's head
+/// that shows somewhere else never add up past one head, so a wind-down
+/// crossfades the two as one. Two heads in the same place (within 0.5 dip)
+/// are a hand-over, where one covers the other.
+#[cfg(test)]
+pub(crate) fn one_mascot_at_a_time(st: &Stage, shot: &Shot) -> Result<(), String> {
+    let r = st.room().robot.ok_or("no slot")?;
+    let k = r.w / GRID;
+    let (slot, alpha) = match shot.slot {
+        Slot::App => ((r.x + HEAD_PIVOT.0 * k, r.y + HEAD_PIVOT.1 * k), 1.0),
+        Slot::Story(m) => ((r.x + HEAD_PIVOT.0 * k + m.dx, r.y + HEAD_PIVOT.1 * k + m.dy), m.alpha),
+        Slot::Empty => return Ok(()),
+    };
+    for (at, shown) in figure_heads(shot) {
+        let apart = (at.0 - slot.0).hypot(at.1 - slot.1) > 0.5;
+        if apart && alpha > 0.0 && shown > 0.0 && alpha + shown > 1.0 + 1e-4 {
+            return Err(format!("the slot head ({alpha}) at {slot:?} and a figure's ({shown}) at {at:?}"));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1160,6 +1204,35 @@ mod tests {
             let mid = shot(story, &Stage::idle(Style::Notch, s, beat, look, true));
             assert!(at_rest(Style::Notch, &mid).is_err(), "{story:?} plays nothing halfway");
         }
+    }
+
+    #[test]
+    fn two_heads_in_two_places_never_add_up_past_one() {
+        let s = crate::ui::play::testing::shape(Style::Notch, 190.0, 34.0);
+        let look = CatLook { mascot: Mascot::Cat, ..Default::default() };
+        let st = Stage::idle(Style::Notch, s, Beat { spread: 0.0, alpha: 1.0, t: 1.0, cut_at: None }, look, true);
+        let r = st.room().robot.unwrap();
+        let k = r.w / GRID;
+        let pivot = (r.x + HEAD_PIVOT.0 * k, r.y + HEAD_PIVOT.1 * k);
+        // A figure carrying a head at `at` (inside a moved group), at `alpha`,
+        // beside a slot head at `slot`.
+        let with = |slot: f32, at: (f32, f32), alpha: f32| {
+            let head = Draw::Head { at: (at.0 - 10.0, at.1 + 5.0), shot: MascotShot::REST };
+            let draw = Draw::Group { at: (10.0, -5.0), rot_deg: 0.0, scale: (1.0, 1.0), pivot: (0.0, 0.0), items: vec![head] };
+            let mut shot = Shot { slot: Slot::Story(MascotShot { alpha: slot, ..MascotShot::REST }), ..Shot::rest(Style::Notch, s) };
+            shot.parts.push(Part { layer: Layer::Inside, draw, alpha });
+            shot
+        };
+        let away = (pivot.0 + 40.0, pivot.1 + 10.0);
+        assert!(one_mascot_at_a_time(&st, &with(1.0, away, 0.5)).is_err());
+        assert!(one_mascot_at_a_time(&st, &with(0.5, away, 0.5)).is_ok());
+        assert!(one_mascot_at_a_time(&st, &with(0.0, away, 1.0)).is_ok());
+        // In the slot head's own place it is a hand-over: one covers the other.
+        assert!(one_mascot_at_a_time(&st, &with(1.0, pivot, 0.7)).is_ok());
+        // The app's head counts as whole; an empty slot has none.
+        let app = Shot { slot: Slot::App, ..with(1.0, away, 0.3) };
+        assert!(one_mascot_at_a_time(&st, &app).is_err());
+        assert!(one_mascot_at_a_time(&st, &Shot { slot: Slot::Empty, ..app }).is_ok());
     }
 
     #[test]
