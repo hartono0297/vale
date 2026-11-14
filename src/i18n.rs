@@ -913,6 +913,16 @@ keys! {
     MotionSaver => "Hemat", "Saver";
     MotionOff => "Mati", "Off";
     RobotSleep => "Tidur setelah", "Sleep after";
+    // Settings -> Maskot -> Otomatis: how often the mascot plays on its own.
+    GroupMascotPlay => "Otomatis", "Automatic";
+    MascotPlayLabel => "Animasi maskot otomatis", "Automatic mascot animation";
+    MascotPlayDesc => "Maskot bermain saat kamu di PC tapi tidak mengetik. Klik kanan island untuk memainkannya kapan saja",
+        "The mascot plays when you are at the PC but not typing. Right-click the island to play one any time";
+    PlayOften => "Sering", "Often";
+    PlaySometimes => "Sesekali", "Sometimes";
+    PlayRarely => "Jarang", "Rarely";
+    PlayGreeting => "Hanya sapaan", "Greeting only";
+    PlayOff => "Mati", "Off";
     RobotSleepDesc => "Tanpa input mouse atau keyboard di PC", "No mouse or keyboard input on the PC";
     MorningGreetingDesc => "Ringkasan acara dan pengingat hari ini",
         "Today's events and reminders";

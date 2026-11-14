@@ -7069,6 +7069,20 @@ impl App {
                 self.save_config();
                 self.refresh(now);
             }
+            SettingsAction::MascotPlay(play) => {
+                self.config.mascot_play = play;
+                self.save_config();
+                // The armed wait was rolled for the old frequency: drop it so
+                // the next sync rolls a fresh one. A deferred play owns the
+                // timer while `pending` is set, so leave it then.
+                if self.pending.is_none() && self.mascot_timer {
+                    unsafe {
+                        let _ = KillTimer(Some(self.hwnd), TIMER_MASCOT_PLAY);
+                    }
+                    self.mascot_timer = false;
+                }
+                self.refresh(now);
+            }
             SettingsAction::RobotSleep(minutes) => {
                 self.config.robot_sleep_minutes = robot::clamp_sleep(minutes);
                 self.save_config();
