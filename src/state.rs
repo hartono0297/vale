@@ -894,6 +894,11 @@ impl IslandState {
                     }
                 }
             }
+            Event::PanelShut => {
+                if self.panel_open() {
+                    self.collapse();
+                }
+            }
             Event::EditorOpen(on) => self.editor_open = on,
             // Only a panel that shows may be held: a dropdown never opens one.
             Event::MenuOpen(on) => self.menu_open = on && self.panel_open(),
@@ -3751,6 +3756,24 @@ mod tests {
         assert_eq!(s.view(), View::Panel(Page::Media));
         leave(&mut s, t0);
         assert_eq!(s.view(), View::MediaCompact);
+    }
+
+    #[test]
+    fn panel_shut_closes_a_panel_the_pointer_is_still_on_and_does_nothing_otherwise() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::PanelShut, t0);
+        assert_eq!(s.view(), View::Idle);
+        s.apply(Event::Hover(true), t0);
+        assert!(matches!(s.view(), View::Panel(_)));
+        // Dismiss would not do it: the pointer is on the island, nothing is latched.
+        s.apply(Event::Dismiss, t0);
+        assert!(matches!(s.view(), View::Panel(_)));
+        s.apply(Event::PanelShut, t0);
+        assert_eq!(s.view(), View::Idle);
+        // It stays shut for this visit.
+        s.apply(Event::Tick, t0 + Duration::from_secs(5));
+        assert_eq!(s.view(), View::Idle);
     }
 
     #[test]

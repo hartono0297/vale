@@ -2,6 +2,7 @@
 
 use std::path::Path;
 use std::sync::OnceLock;
+use std::time::Duration;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, HWND, LPARAM, POINT, WPARAM};
@@ -26,6 +27,9 @@ use windows::core::{Error, HSTRING, PCSTR, Result, w};
 
 use crate::config::{Config, NotchMonitor, Style};
 use crate::i18n::{Key, monitor_entry, text, update_menu_install};
+use crate::theme::MascotPlay;
+use crate::ui::play::gate::{Env, may_start};
+use crate::ui::play::trigger::Moment;
 use crate::notch_monitor::{Display, choice_for, display_name, same_path, saved_missing};
 use crate::ui::app_icon;
 use crate::ui::tray_dot;
@@ -59,6 +63,10 @@ static MIC_MUTED: AtomicBool = AtomicBool::new(false);
 /// Live captions are on: the menu entry then turns them off.
 static CAPTIONS: AtomicBool = AtomicBool::new(false);
 
+/// The "Mainkan maskot" entry shows in the next menu. Set by `App` just before
+/// the menu opens (`play_item_shown`), so it costs nothing while idle.
+static PLAY_ITEM: AtomicBool = AtomicBool::new(false);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuCmd {
     Settings,
@@ -77,6 +85,8 @@ pub enum MenuCmd {
     /// "Nyalakan caption" / "Matikan caption": live captions, like their
     /// hotkey.
     Captions,
+    /// "Mainkan maskot": one mascot play now, only while one could start.
+    PlayMascot,
     StylePill,
     StyleNotch,
     /// "Jalan saat Windows mulai": a check item that flips `start_with_windows`.
@@ -89,7 +99,7 @@ pub enum MenuCmd {
     Exit,
 }
 
-const COMMANDS: [MenuCmd; 14] = [
+const COMMANDS: [MenuCmd; 15] = [
     MenuCmd::Settings,
     MenuCmd::Search,
     MenuCmd::StickyNote,
@@ -98,6 +108,7 @@ const COMMANDS: [MenuCmd; 14] = [
     MenuCmd::RecordMute,
     MenuCmd::RecordScreen,
     MenuCmd::Captions,
+    MenuCmd::PlayMascot,
     MenuCmd::StylePill,
     MenuCmd::StyleNotch,
     MenuCmd::Autostart,
@@ -125,7 +136,7 @@ pub enum MenuChoice {
     Monitor(NotchMonitor),
 }
 
-/// The Monitor submenu's ids start here, clear of `MenuCmd::id` (1..=14):
+/// The Monitor submenu's ids start here, clear of `MenuCmd::id` (1..=15):
 /// 100 is "Monitor utama", 101 + i the display at place i of the list the menu
 /// was built from.
 const MONITOR_ID_PRIMARY: usize = 100;
@@ -225,7 +236,38 @@ fn menu_items(cfg: &Config, update: Option<&str>, displays: &[Display]) -> Vec<M
         MIC_MUTED.load(Ordering::Relaxed),
         SCREEN_RECORDING.load(Ordering::Relaxed),
         CAPTIONS.load(Ordering::Relaxed),
+        PLAY_ITEM.load(Ordering::Relaxed),
     )
+}
+
+/// Whether the menu offers "Mainkan maskot": a `Manual` play could start if
+/// the panel were closed. The panel does not count: choosing the item closes
+/// it first, and with the default open mode hovering the island opens it
+/// before the right-click lands. The transient gates are skipped by `Manual`
+/// itself. The caller also hides it while a play runs.
+pub fn play_item_shown(env: &Env) -> bool {
+    let closed = Env {
+        panel_open: false,
+        ..*env
+    };
+    may_start(
+        &closed,
+        Moment::Manual,
+        MascotPlay::default(),
+        Duration::ZERO,
+        Duration::ZERO,
+    )
+}
+
+/// `play_item_shown`, and no play running: `try_play` ignores a start while
+/// one runs, and an entry that does nothing is worse than none.
+pub fn play_item_visible(env: &Env, playing: bool) -> bool {
+    !playing && play_item_shown(env)
+}
+
+/// Sets whether the next menu shows "Mainkan maskot".
+pub fn set_play_item(on: bool) {
+    PLAY_ITEM.store(on, Ordering::Relaxed);
 }
 
 /// `menu_items` with the number of sticky notes on the desktop (the new-note
@@ -233,7 +275,8 @@ fn menu_items(cfg: &Config, update: Option<&str>, displays: &[Display]) -> Vec<M
 /// runs (the record entry then stops it), whether the running recording's mic
 /// is muted, and whether a screen recording runs (the screen entry then stops
 /// it), and whether live captions run (their entry then turns them off). A
-/// mic entry sits between the two while either kind records.
+/// mic entry sits between the two while either kind records. `play`: the
+/// mascot entry follows the captions one.
 fn menu_items_with(
     cfg: &Config,
     update: Option<&str>,
@@ -243,6 +286,7 @@ fn menu_items_with(
     mic_muted: bool,
     screen: bool,
     captions: bool,
+    play: bool,
 ) -> Vec<MenuItem> {
     let sticky = if crate::widgets::sticky::can_add(stickies) {
         MenuItem::Entry {
@@ -298,6 +342,11 @@ fn menu_items_with(
             if captions { Key::TrayCapOff } else { Key::TrayCapOn },
             false,
         ),
+    ]);
+    if play {
+        items.push(entry(MenuCmd::PlayMascot, Key::MenuPlayMascot, false));
+    }
+    items.extend([
         MenuItem::Separator,
         entry(
             MenuCmd::StylePill,
@@ -831,12 +880,12 @@ mod tests {
     #[test]
     fn the_new_note_entry_is_greyed_with_the_reason_at_the_cap() {
         let cfg = Config::default();
-        let few = menu_items_with(&cfg, None, &[], 19, false, false, false, false);
+        let few = menu_items_with(&cfg, None, &[], 19, false, false, false, false, false);
         assert!(matches!(
             &few[2],
             MenuItem::Entry { cmd: MenuCmd::StickyNote, label, .. } if label == "Catatan tempel baru"
         ));
-        let full = menu_items_with(&cfg, None, &[], 20, false, false, false, false);
+        let full = menu_items_with(&cfg, None, &[], 20, false, false, false, false, false);
         assert!(matches!(
             &full[2],
             MenuItem::Disabled { cmd: MenuCmd::StickyNote, label }
@@ -847,7 +896,7 @@ mod tests {
             ..Config::default()
         };
         assert_eq!(
-            labels(&menu_items_with(&en, None, &[], 20, false, false, false, false))[2],
+            labels(&menu_items_with(&en, None, &[], 20, false, false, false, false, false))[2],
             "New sticky note (at most 20)"
         );
     }
@@ -864,7 +913,7 @@ mod tests {
             };
             // Enabled with few notes, with none and at the cap.
             for n in [0, 5, 19, 20] {
-                let items = menu_items_with(&cfg, None, &[], n, false, false, false, false);
+                let items = menu_items_with(&cfg, None, &[], n, false, false, false, false, false);
                 assert!(
                     matches!(&items[3], MenuItem::Entry { cmd: MenuCmd::StickyList, label, checked: false } if label == want),
                     "{lang:?} with {n}: {:?}",
@@ -884,7 +933,7 @@ mod tests {
         ] {
             let cfg = Config { language: lang, ..Config::default() };
             for (recording, want) in [(false, start), (true, stop)] {
-                let items = menu_items_with(&cfg, None, &[], 0, recording, false, false, false);
+                let items = menu_items_with(&cfg, None, &[], 0, recording, false, false, false, false);
                 assert!(
                     matches!(&items[4], MenuItem::Entry { cmd: MenuCmd::Record, label, checked: false } if label == want),
                     "{lang:?} {recording}: {:?}",
@@ -893,7 +942,7 @@ mod tests {
             }
         }
         let cfg = Config::default();
-        let idle = menu_items_with(&cfg, None, &[], 0, false, false, false, false);
+        let idle = menu_items_with(&cfg, None, &[], 0, false, false, false, false, false);
         assert!(!commands(&idle).contains(&MenuCmd::RecordMute), "no mic entry at idle");
         // The ids stay unique and clear of the Monitor submenu's.
         let mut ids: Vec<usize> = COMMANDS.iter().map(|c| c.id()).collect();
@@ -913,7 +962,7 @@ mod tests {
         ] {
             let cfg = Config { language: lang, ..Config::default() };
             for (muted, want) in [(false, mute), (true, unmute)] {
-                let items = menu_items_with(&cfg, None, &[], 0, true, muted, false, false);
+                let items = menu_items_with(&cfg, None, &[], 0, true, muted, false, false, false);
                 assert!(
                     matches!(&items[4], MenuItem::Entry { cmd: MenuCmd::Record, .. }),
                     "{:?}",
@@ -963,13 +1012,13 @@ mod tests {
         ] {
             let cfg = Config { language: lang, ..Config::default() };
             // Idle: right after the audio entry, no mic entry.
-            let idle = menu_items_with(&cfg, None, &[], 0, false, false, false, false);
+            let idle = menu_items_with(&cfg, None, &[], 0, false, false, false, false, false);
             assert_eq!(labels(&idle)[4..6], [audio, start], "{lang:?}");
             assert_eq!(labels(&idle)[7], "-", "{lang:?}");
             assert_eq!(commands(&idle)[4..6], [MenuCmd::Record, MenuCmd::RecordScreen]);
             // A screen recording: its entry stops it, the mic entry shows and
             // the audio entry still offers to start.
-            let on = menu_items_with(&cfg, None, &[], 0, false, false, true, false);
+            let on = menu_items_with(&cfg, None, &[], 0, false, false, true, false, false);
             assert_eq!(labels(&on)[4..7], [audio, mute, stop], "{lang:?}");
             assert_eq!(labels(&on)[8], "-", "{lang:?}");
             assert_eq!(
@@ -978,12 +1027,12 @@ mod tests {
             );
             // An audio recording: the screen entry still offers to start,
             // after the mic entry.
-            let audio_on = menu_items_with(&cfg, None, &[], 0, true, false, false, false);
+            let audio_on = menu_items_with(&cfg, None, &[], 0, true, false, false, false, false);
             assert_eq!(labels(&audio_on)[4..7], [audio_stop, mute, start], "{lang:?}");
             assert_eq!(labels(&audio_on)[8], "-", "{lang:?}");
         }
         // The mic entry says "unmute" for a muted screen recording too.
-        let muted = menu_items_with(&Config::default(), None, &[], 0, false, true, true, false);
+        let muted = menu_items_with(&Config::default(), None, &[], 0, false, true, true, false, false);
         assert_eq!(labels(&muted)[5], "Nyalakan mic");
     }
 
@@ -997,7 +1046,7 @@ mod tests {
         ] {
             let cfg = Config { language: lang, ..Config::default() };
             for (captions, want) in [(false, on_label), (true, off_label)] {
-                let items = menu_items_with(&cfg, None, &[], 0, false, false, false, captions);
+                let items = menu_items_with(&cfg, None, &[], 0, false, false, false, captions, false);
                 assert!(
                     matches!(&items[6], MenuItem::Entry { cmd: MenuCmd::Captions, label, checked: false } if label == want),
                     "{lang:?} captions={captions}: {:?}",
@@ -1145,7 +1194,9 @@ mod tests {
         // The install item only shows once an update is known.
         let mut reachable = commands(&menu_items(&Config::default(), None, &[]));
         // The mic entry shows only while a recording runs.
-        reachable.extend(commands(&menu_items_with(&Config::default(), None, &[], 0, true, false, false, false)));
+        reachable.extend(commands(&menu_items_with(&Config::default(), None, &[], 0, true, false, false, false, false)));
+        // The mascot entry shows only while a play could start.
+        reachable.extend(commands(&menu_items_with(&Config::default(), None, &[], 0, false, false, false, false, true)));
         reachable.extend(commands(&menu_items(&Config::default(), Some("3.11.0"), &[])));
         for cmd in COMMANDS {
             assert!(reachable.contains(&cmd), "{cmd:?}");
@@ -1354,5 +1405,74 @@ mod tests {
         assert!(!is_old_island(r#""C:\Apps\DynamicIsland\island.exe""#));
         assert!(!is_old_island(r"C:\x\my-dynamic-island.exe"));
         assert!(!is_old_island(""));
+    }
+
+    #[test]
+    fn the_play_item_survives_an_open_panel_but_not_a_busy_notch() {
+        use crate::ui::play::testing::ok_env;
+        let mut env = ok_env();
+        env.panel_open = true;
+        assert!(play_item_shown(&env), "open_mode Hover opens the panel before the right-click lands");
+        // Plain `may_start(Manual)` would hide it: the permanent gate holds the panel.
+        assert!(!may_start(&env, Moment::Manual, MascotPlay::default(), Duration::ZERO, Duration::ZERO));
+        env.panel_open = false;
+        env.motion_full = false;
+        assert!(!play_item_shown(&env));
+        let mut env = ok_env();
+        env.idle_view = false; // media or a notice
+        assert!(!play_item_shown(&env));
+        // The panel open must not rescue a blocked play.
+        env.panel_open = true;
+        assert!(!play_item_shown(&env));
+    }
+
+    #[test]
+    fn the_play_item_is_hidden_while_a_play_runs() {
+        use crate::ui::play::testing::ok_env;
+        assert!(play_item_visible(&ok_env(), false));
+        assert!(!play_item_visible(&ok_env(), true));
+    }
+
+    #[test]
+    fn the_play_item_ignores_the_gates_the_right_click_switches_on() {
+        use crate::ui::play::testing::ok_env;
+        let mut env = ok_env();
+        env.pointer_near = true;
+        env.menu_open = true;
+        env.shrunk = true;
+        assert!(play_item_shown(&env));
+    }
+
+    #[test]
+    fn the_play_item_is_hidden_by_every_permanent_gate() {
+        use crate::ui::play::testing::ok_env;
+        for flip in [
+            |e: &mut Env| e.mascot_on = false,
+            |e: &mut Env| e.motion_full = false,
+            |e: &mut Env| e.energy_saver = true,
+            |e: &mut Env| e.win_anim = false,
+            |e: &mut Env| e.idle_view = false,
+            |e: &mut Env| e.fullscreen = true,
+            |e: &mut Env| e.screen_away = true,
+            |e: &mut Env| e.asleep = true,
+            |e: &mut Env| e.recording = true,
+        ] {
+            let mut env = ok_env();
+            flip(&mut env);
+            assert!(!play_item_shown(&env));
+        }
+    }
+
+    #[test]
+    fn the_play_entry_is_in_the_menu_only_when_asked_for_and_in_both_languages() {
+        let with = |cfg: &Config, play| {
+            menu_items_with(cfg, None, &[], 0, false, false, false, false, play)
+        };
+        let id = Config::default();
+        assert!(!commands(&with(&id, false)).contains(&MenuCmd::PlayMascot));
+        assert!(commands(&with(&id, true)).contains(&MenuCmd::PlayMascot));
+        assert!(labels(&with(&id, true)).contains(&"Mainkan maskot"));
+        let en = Config { language: Lang::En, ..Config::default() };
+        assert!(labels(&with(&en, true)).contains(&"Play the mascot"));
     }
 }

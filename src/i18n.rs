@@ -450,6 +450,7 @@ keys! {
     MenuSettings => "Pengaturan…", "Settings…";
     MenuSearch => "Cari…", "Search…";
     MenuCheckUpdate => "Cek pembaruan…", "Check for updates…";
+    MenuPlayMascot => "Mainkan maskot", "Play the mascot";
 
     // Self-update (Settings → Tentang, notices, `update.rs`).
     UpdateAuto => "Cek pembaruan otomatis", "Check for updates automatically";

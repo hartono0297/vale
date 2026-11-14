@@ -615,7 +615,7 @@ pub fn run(media_log_flag: bool, start: Start) {
             last_play_at: None,
             mascot_timer: false,
             greeting_up: false,
-            greeting_pending: false,
+            pending: None,
             clock_hour: Local::now().hour(),
             play_clock_jumped: false,
             eq_capture: None,
@@ -1123,9 +1123,9 @@ struct App {
     mascot_timer: bool,
     /// A greeting notice was on screen at the last refresh.
     greeting_up: bool,
-    /// The next fire of `TIMER_MASCOT_PLAY` is the greeting's, set for when the
-    /// island's morph ends.
-    greeting_pending: bool,
+    /// The next fire of `TIMER_MASCOT_PLAY` is this moment's (the greeting's,
+    /// or a play picked in the menu), set for when the island's morph ends.
+    pending: Option<Moment>,
     /// The hour the idle clock last showed (`TIMER_CLOCK`), to see it roll.
     clock_hour: u32,
     /// The wall clock jumped under a running story (`on_clock_jump`).
@@ -2402,8 +2402,8 @@ impl App {
     /// here (`pointer_near` may be stale with the pointer poll off) and, like
     /// the presence rule and the cooldown, is judged when it fires.
     fn sync_mascot_timer(&mut self, now: Instant) {
-        // The timer is the greeting's for now; its fire checks every gate.
-        if self.greeting_pending {
+        // The timer is a pending moment's for now; its fire checks every gate.
+        if self.pending.is_some() {
             return;
         }
         let env = self.play_env(now, false);
@@ -2437,24 +2437,21 @@ impl App {
         }
         self.mascot_timer = false;
         let now = Instant::now();
-        if std::mem::take(&mut self.greeting_pending) {
-            self.greet_play(now);
+        if let Some(moment) = std::mem::take(&mut self.pending) {
+            self.play_when_settled(moment, now);
         } else {
             self.try_play(Moment::Idle, now);
         }
         self.sync_mascot_timer(now);
     }
 
-    /// The greeting notice ended: its story starts once the island has
-    /// reached its idle shape. While the morph runs, `TIMER_MASCOT_PLAY` is
-    /// set for its remaining time and marked as the greeting's (no new timer).
-    /// Every gate is checked when it starts.
-    fn greet_play(&mut self, now: Instant) {
+    /// `moment`'s story starts once the island has reached its idle shape (the
+    /// greeting notice ended, or the panel was shut for a menu pick). While
+    /// the morph runs, `TIMER_MASCOT_PLAY` is set for its remaining time and
+    /// marked as `moment`'s (no new timer). Every gate is checked when it
+    /// starts.
+    fn play_when_settled(&mut self, moment: Moment, now: Instant) {
         let left = morph_left(self.anim.running, self.anim.start, self.anim.ms, now);
-        let Some(left) = left else {
-            self.try_play(Moment::Greeting, now);
-            return;
-        };
         let env = Env {
             pointer_near: false,
             ..self.play_env(now, false)
@@ -2462,20 +2459,32 @@ impl App {
         let could = self.play.is_none()
             && may_start(
                 &env,
-                Moment::Greeting,
+                moment,
                 self.config.mascot_play,
                 Duration::ZERO,
                 since_last_play(self.last_play_at, now),
             );
-        if !could {
-            return;
+        match settle_plan(left, could) {
+            Settle::Now => self.try_play(moment, now),
+            Settle::Never => {}
+            Settle::Wait(wait) => {
+                self.pending = Some(moment);
+                self.mascot_timer = true;
+                let ms = wait.as_millis() as u32;
+                unsafe {
+                    SetTimer(Some(self.hwnd), TIMER_MASCOT_PLAY, ms, None);
+                }
+            }
         }
-        self.greeting_pending = true;
-        self.mascot_timer = true;
-        let ms = (left + Duration::from_millis(1)).as_millis() as u32;
-        unsafe {
-            SetTimer(Some(self.hwnd), TIMER_MASCOT_PLAY, ms, None);
+    }
+
+    /// "Mainkan maskot": shuts an open panel, then plays around the settled
+    /// island.
+    fn on_play_mascot_menu(&mut self) {
+        if matches!(self.state.view(), View::Panel(_)) {
+            self.apply_now(Event::PanelShut);
         }
+        self.play_when_settled(Moment::Manual, Instant::now());
     }
 
     /// Starts a story for `moment` if every gate allows it right now.
@@ -4394,7 +4403,7 @@ impl App {
         self.sync_timers(now);
         // The greeting notice just ended: the greeting moment.
         if greeting_ended(&mut self.greeting_up, &self.state.view()) {
-            self.greet_play(now);
+            self.play_when_settled(Moment::Greeting, now);
         }
         self.sync_lyrics_card(now);
         // The caption card's colours, font and language; nothing while
@@ -8834,8 +8843,27 @@ fn advance_slot(
     }
 }
 
+/// What `play_when_settled` does: start now (no morph; `try_play` still checks
+/// the gates), wait out the morph's remaining time, or nothing.
+#[derive(Debug, PartialEq)]
+enum Settle {
+    Now,
+    Wait(Duration),
+    Never,
+}
+
+/// `left`: the morph's remaining time, if one runs. `could`: the play may
+/// start at all. The wait is one millisecond past the morph's end.
+fn settle_plan(left: Option<Duration>, could: bool) -> Settle {
+    match left {
+        None => Settle::Now,
+        Some(left) if could => Settle::Wait(left + Duration::from_millis(1)),
+        Some(_) => Settle::Never,
+    }
+}
+
 /// How long the island's morph still has to run at `now`; `None` once it has
-/// reached its shape. A greeting play waits for that.
+/// reached its shape. A deferred play (greeting, menu pick) waits for that.
 fn morph_left(running: bool, start: Instant, ms: u64, now: Instant) -> Option<Duration> {
     let end = start + Duration::from_millis(ms);
     (running && now < end).then(|| end - now)
@@ -9354,6 +9382,12 @@ fn open_menu(hwnd: HWND) {
     let Some((config, update)) = with_app(|app| {
         // A hotkey another app held may be free by now.
         app.retry_hotkeys();
+        // Whether "Mainkan maskot" shows: not while a play runs.
+        let play_item = tray::play_item_visible(
+            &app.play_env(Instant::now(), false),
+            app.play.is_some(),
+        );
+        tray::set_play_item(play_item);
         (app.config.clone(), app.update.known_version())
     }) else {
         return;
@@ -9382,6 +9416,9 @@ fn open_menu(hwnd: HWND) {
         None => None,
     };
     match cmd {
+        Some(MenuCmd::PlayMascot) => {
+            with_app(|app| app.on_play_mascot_menu());
+        }
         Some(MenuCmd::CheckUpdate) => {
             with_app(|app| app.update_manual_check());
         }
@@ -11940,6 +11977,36 @@ mod tests {
         assert_eq!(morph_left(true, t0, 400, t0 + ms(400)), None);
         assert_eq!(morph_left(false, t0, 400, t0), None);
         assert_eq!(morph_left(false, t0, 400, t0 + ms(100)), None);
+    }
+
+    #[test]
+    fn a_deferred_play_of_either_moment_waits_out_the_morph_and_never_starts_inside_it() {
+        let ms = Duration::from_millis;
+        // The panel just shut: its morph has 250 ms left.
+        assert_eq!(settle_plan(Some(ms(250)), true), Settle::Wait(ms(251)));
+        assert_ne!(settle_plan(Some(ms(250)), true), Settle::Now);
+        assert_eq!(settle_plan(Some(ms(1)), true), Settle::Wait(ms(2)));
+        // Settled: it starts at once (`try_play` still checks every gate).
+        assert_eq!(settle_plan(None, true), Settle::Now);
+        // Nothing may start, so nothing waits for a fire.
+        assert_eq!(settle_plan(Some(ms(250)), false), Settle::Never);
+    }
+
+    #[test]
+    fn a_menu_play_could_start_only_once_the_panel_is_shut() {
+        use crate::ui::play::testing::ok_env;
+        let manual = |env: &Env| {
+            may_start(env, Moment::Manual, MascotPlay::Mati, Duration::ZERO, Duration::ZERO)
+        };
+        let mut env = ok_env();
+        env.panel_open = true;
+        assert!(!manual(&env), "a play is never drawn over an open panel");
+        env.panel_open = false;
+        assert!(manual(&env));
+        // The pointer on the island and the open menu do not hold it back.
+        env.pointer_near = true;
+        env.menu_open = true;
+        assert!(manual(&env));
     }
 
     #[test]
