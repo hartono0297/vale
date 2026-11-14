@@ -2828,6 +2828,14 @@ impl IslandState {
         }
     }
 
+    /// Startup only: the panel opens on the first shown page, and the search
+    /// goes back to it.
+    pub fn show_first_page(&mut self) {
+        let first = self.pages.visible()[0];
+        self.page = first;
+        self.search_prev = first;
+    }
+
     /// A page that is off hands over to the next page on (or the one before
     /// it at the end of the order).
     fn leave_hidden_page(&mut self) {
@@ -6310,6 +6318,48 @@ mod tests {
         s.apply(Event::Hover(false), later);
         s.apply(Event::Hover(true), later);
         assert_eq!(s.view(), View::Panel(Page::Media));
+    }
+
+    #[test]
+    fn start_page_is_the_first_shown_page() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::PanelPages(PanelPages::fresh()), t0);
+        s.show_first_page();
+        s.apply(Event::Hover(true), t0);
+        assert_eq!(s.view(), View::Panel(Page::Shortcuts));
+    }
+
+    #[test]
+    fn start_page_with_the_default_list_is_calendar() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::PanelPages(PanelPages::default()), t0);
+        s.show_first_page();
+        s.apply(Event::Hover(true), t0);
+        assert_eq!(s.view(), View::Panel(Page::Calendar));
+    }
+
+    #[test]
+    fn search_returns_to_the_first_page() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::PanelPages(PanelPages::fresh()), t0);
+        s.show_first_page();
+        assert_eq!(s.search_prev, Page::Shortcuts);
+    }
+
+    #[test]
+    fn a_tile_for_a_hidden_page_still_opens_it() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::PanelPages(PanelPages::fresh()), t0);
+        s.show_first_page();
+        s.apply(Event::Hover(true), t0);
+        assert_eq!(s.view(), View::Panel(Page::Shortcuts));
+        let effects = s.apply(Event::Click(Hit::Shortcut(Shortcut::Go(Page::Mixer))), t0);
+        assert!(effects.is_empty(), "{effects:?}");
+        assert_eq!(s.page(), Page::Mixer);
     }
 
     #[test]
