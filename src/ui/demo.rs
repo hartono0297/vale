@@ -117,6 +117,12 @@
 //!   and stretched thin, the others streaming up, the slot empty) and
 //!   `bata-play-bungee-bounce` (2.13 s, the bottom of a bounce: the mantle
 //!   squashed on the taut rope, a Pill pulled down by it).
+//! - The falk's Kelelawar story, frozen at two moments, always with the falk
+//!   (its coat from `DI_FALK_COLOR`, `DI_CAT_ACCESSORY` as above):
+//!   `bata-play-kelelawar-hang` (1.9 s, hanging upside down by its feet from
+//!   the lip, swung 7.4 degrees, the Pill tilted 0.44 degrees with it) and
+//!   `bata-play-kelelawar-open` (3.3 s, the wings spread wide, the happy
+//!   face).
 //! - `bata-play-cat-body`: the seated cat (body, legs, paws, tail) beside
 //!   the island at rest, tail up and one paw lifted, always the cat (its coat
 //!   from `DI_CAT_COLOR`, `DI_CAT_ACCESSORY` as above).
@@ -571,8 +577,8 @@ enum CliDemo {
 /// What a play scene freezes (`bata-play-island`, `bata-play-swing`,
 /// `bata-play-digits`, the `bata-maling-angka-*`, `bata-play-syal-*` and
 /// `bata-play-petak-*`, `bata-play-bantal-*`, `bata-play-piano-*`,
-/// `bata-play-penasaran-*` and `bata-play-bungee-*` moments,
-/// `bata-play-peluk-hug`, `bata-play-cat-body`,
+/// `bata-play-penasaran-*`, `bata-play-bungee-*` and `bata-play-kelelawar-*`
+/// moments, `bata-play-peluk-hug`, `bata-play-cat-body`,
 /// `bata-play-octopus-arms`, `bata-play-falk-open`, `bata-play-falk-hang`).
 #[derive(Clone, Copy, PartialEq)]
 enum DemoPlay {
@@ -603,6 +609,8 @@ enum DemoPlay {
     PelukPulau(f32),
     /// The octopus's Bungee at this many seconds, always with the octopus.
     Bungee(f32),
+    /// The falk's Kelelawar at this many seconds, always with the falk.
+    Kelelawar(f32),
     /// The seated cat beside the island at rest, tail up, one paw lifted,
     /// always the cat.
     CatBody,
@@ -1259,6 +1267,12 @@ fn demo_play(
             let stage = Stage { style, shape, beat, look, layout, minute };
             return PlayFrame::of(stories::shot(Story::Bungee, &stage), beat);
         }
+        DemoPlay::Kelelawar(t) => {
+            let beat = Beat { t, ..beat };
+            let look = CatLook { mascot: Mascot::Falk, ..cat };
+            let stage = Stage { style, shape, beat, look, layout, minute };
+            return PlayFrame::of(stories::shot(Story::Kelelawar, &stage), beat);
+        }
         DemoPlay::CatBody => {
             let beat = Beat { spread: 0.0, ..beat };
             let pose = CatPose {
@@ -1549,7 +1563,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 240] = [
+const SCENES: [Scene; 242] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -2262,6 +2276,15 @@ const SCENES: [Scene; 240] = [
     Scene {
         play: DemoPlay::Bungee(2.13),
         ..bata("bata-play-bungee-bounce", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    // Kelelawar, frozen: hanging from the lip, the wings spread.
+    Scene {
+        play: DemoPlay::Kelelawar(1.9),
+        ..bata("bata-play-kelelawar-hang", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    Scene {
+        play: DemoPlay::Kelelawar(3.3),
+        ..bata("bata-play-kelelawar-open", ShapeKind::Idle, View0::Idle, Expr::Idle)
     },
     Scene {
         play: DemoPlay::CatBody,
@@ -3397,7 +3420,7 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                 palette,
                 // A story scene draws its own mascot, whatever `DI_MASCOT` says.
                 cat: match scene.play {
-                    DemoPlay::MalingAngka(_) | DemoPlay::FalkOpen | DemoPlay::FalkHang => CatLook {
+                    DemoPlay::MalingAngka(_) | DemoPlay::Kelelawar(_) | DemoPlay::FalkOpen | DemoPlay::FalkHang => CatLook {
                         mascot: Mascot::Falk,
                         ..cat
                     },
