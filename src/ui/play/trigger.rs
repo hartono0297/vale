@@ -95,19 +95,32 @@ pub fn presence_ok(since_input: Duration) -> bool {
     (PRESENCE_MIN..=PRESENCE_MAX).contains(&since_input)
 }
 
+/// `story` is the mascot's, and not a clock one while the clock is off.
+fn owns(story: Story, mascot: Mascot, clock_on: bool) -> bool {
+    story.mascot() == mascot && (clock_on || !story.needs_clock())
+}
+
+/// `story` is the mascot's to play now: it owns it and it is ready
+/// (`stories::ready`).
+fn playable(story: Story, mascot: Mascot, clock_on: bool) -> bool {
+    owns(story, mascot, clock_on) && ready(story)
+}
+
 /// Every story the mascot owns, ready or not, without the clock ones when
 /// the clock is off.
 fn owned(mascot: Mascot, clock_on: bool) -> Vec<Story> {
-    ALL.into_iter()
-        .filter(|s| s.mascot() == mascot && (clock_on || !s.needs_clock()))
-        .collect()
+    ALL.into_iter().filter(|s| owns(*s, mascot, clock_on)).collect()
 }
 
-/// The stories the mascot can play: the ones it owns that are ready
-/// (`stories::ready`). Empty when none is, and then it never plays
-/// (`gate::Env::has_story`).
+/// The stories the mascot can play. Empty when none is ready, and then it
+/// never plays (`gate::Env::has_story`).
 pub fn pool(mascot: Mascot, clock_on: bool) -> Vec<Story> {
-    owned(mascot, clock_on).into_iter().filter(|s| ready(*s)).collect()
+    ALL.into_iter().filter(|s| playable(*s, mascot, clock_on)).collect()
+}
+
+/// `pool` is not empty, without building it (read on every frame of a play).
+pub fn has_ready(mascot: Mascot, clock_on: bool) -> bool {
+    ALL.into_iter().any(|s| playable(s, mascot, clock_on))
 }
 
 /// Never returns `last`, unless it is the pool's only story. `roll` is a
@@ -205,6 +218,16 @@ mod tests {
         assert!(pool(Mascot::Falk, false).is_empty(), "Maling angka needs the clock");
         assert!(pool(Mascot::Cat, true).is_empty(), "no cat story yet");
         assert!(pool(Mascot::Octopus, true).is_empty(), "no octopus story yet");
+    }
+
+    #[test]
+    fn has_ready_says_whether_the_pool_has_a_story() {
+        for m in [Mascot::Cat, Mascot::Falk, Mascot::Octopus] {
+            for clock_on in [true, false] {
+                assert_eq!(has_ready(m, clock_on), !pool(m, clock_on).is_empty(), "{m:?} clock_on={clock_on}");
+            }
+        }
+        assert!(has_ready(Mascot::Falk, true));
     }
 
     #[test]

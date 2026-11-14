@@ -221,8 +221,9 @@ pub struct Pose {
     /// A story's crest for the falk, in place of the face's own
     /// (`mascot::crest_pose`).
     pub crest: Option<crate::ui::mascot::CrestPose>,
-    /// A story opens the falk's beak, whatever the face.
-    pub beak_open: bool,
+    /// A story's say on the falk's beak, whatever the face: `Some(open)`
+    /// overrides it, `None` leaves it to the face (`mascot::beak_open`).
+    pub beak_open: Option<bool>,
 }
 
 impl Pose {

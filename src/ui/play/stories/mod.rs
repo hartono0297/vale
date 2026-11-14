@@ -57,6 +57,10 @@ impl Shot {
     }
 }
 
+/// The head's pivot on its 64-unit grid: a `MascotShot` moves, turns and
+/// scales the head about it.
+pub const HEAD_PIVOT: (f32, f32) = (32.0, 40.0);
+
 /// The mascot's head as a story moves it, from its resting place in the
 /// slot: its pivot (grid (32, 40)) moved by `dx`, `dy` (dip), the head turned
 /// by `rot_deg` (clockwise) and scaled by `sx`, `sy` (in its own axes) about
@@ -84,7 +88,7 @@ impl MascotShot {
         Pose {
             blink: self.blink,
             crest: Some(self.crest),
-            beak_open: self.beak_open,
+            beak_open: Some(self.beak_open),
             glance_x: base.glance_x + self.glance.0,
             glance_y: base.glance_y + self.glance.1,
             ..base

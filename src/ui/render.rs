@@ -69,7 +69,7 @@ use super::motion::{StripFrame, Transit};
 use super::panel_layout::Region;
 use super::play::shape::{Deform, outline, rigid, turn_about};
 use super::play::state::{Beat, spread_offsets};
-use super::play::stories::{MascotShot, Prop, Shot, whistle_arcs};
+use super::play::stories::{HEAD_PIVOT, MascotShot, Prop, Shot, whistle_arcs};
 use super::robot::{
     Expr, EyesPose, GRID, Pose, RobotPainter, eyes_area, eyes_centre, eyes_offset_in,
 };
@@ -2554,6 +2554,11 @@ impl Renderer {
                 self.paint_robot(area, r);
             }
         }
+        // A story's props over the mascot and the clock, still inside the
+        // island's clip: the island's edge cuts the falling digit off.
+        if let Some(p) = play {
+            self.paint_props(shape, frame, p);
+        }
         // The busy toast's logo, at the slot's alpha, over the island's own
         // fill: no shadow on it.
         self.legible.set(0.0);
@@ -2630,20 +2635,17 @@ impl Renderer {
         } else {
             unsafe { target.rt.PopAxisAlignedClip() };
         }
-        if let Some(p) = play {
-            self.paint_props(shape, frame, p);
-        }
         leaving.and(content)
     }
 
-    /// The mascot as a story moves it: the head's pivot (its grid's
-    /// (32, 40)) moved from its place in `area`, the head turned and scaled
+    /// The mascot as a story moves it: the head's pivot (`HEAD_PIVOT` on its
+    /// grid) moved from its place in `area`, the head turned and scaled
     /// about it, with the story's face. The painter draws it as ever, so the
     /// coat and the accessory come along. Inside the island's clip, like the
     /// resting mascot.
     fn paint_story_mascot(&self, area: Rect, robot: RobotFrame, m: &MascotShot) {
         let k = area.w / GRID;
-        let pivot = (area.x + 32.0 * k, area.y + 40.0 * k);
+        let pivot = (area.x + HEAD_PIVOT.0 * k, area.y + HEAD_PIVOT.1 * k);
         let own = Matrix3x2::scale_around(m.sx, m.sy, Vector2::new(pivot.0, pivot.1))
             * turn_about(m.rot_deg, pivot, (m.dx, m.dy));
         let rt = &self.target.as_ref().expect("target ensured by paint").rt;
@@ -2662,8 +2664,9 @@ impl Renderer {
         unsafe { rt.SetTransform(&before) };
     }
 
-    /// A story's props, over everything, the island's edge included: a clock
-    /// digit away from the clock, and the whistle arcs.
+    /// A story's props, over the mascot and the clock, in the island's clip
+    /// the caller holds: a clock digit away from the clock, and the whistle
+    /// arcs.
     fn paint_props(&self, shape: ShapeRect, frame: &Frame, play: &PlayFrame) {
         if play.props.is_empty() {
             return;
@@ -5087,6 +5090,15 @@ mod tests {
     /// A `Frame` of nothing: the idle island with every list empty, running
     /// `play` if given, for `f` to look at (its views borrow locals).
     fn with_frame<R>(play: Option<PlayFrame>, f: impl FnOnce(&Frame) -> R) -> R {
+        with_frame_clock(play, None, f)
+    }
+
+    /// `with_frame` with the idle clock showing `clock`.
+    fn with_frame_clock<R>(
+        play: Option<PlayFrame>,
+        clock: Option<String>,
+        f: impl FnOnce(&Frame) -> R,
+    ) -> R {
         use crate::calendar::CalStatus;
         let today = NaiveDate::from_ymd_opt(2026, 11, 14).unwrap();
         let now = today.and_hms_opt(12, 0, 0).unwrap();
@@ -5150,7 +5162,7 @@ mod tests {
             cat: CatLook::default(),
             fill_alpha: 1.0,
             legibility: 0.0,
-            clock: None,
+            clock,
             idle_lead: 0.0,
             lyric: None,
             lyric_scroll: 0.0,
@@ -5317,13 +5329,13 @@ mod tests {
 
     /// What `draw` paints on a fresh, transparent target of `dip` (logical
     /// px) at the renderer's scale.
-    fn painted(r: &mut Renderer, dip: (f32, f32), draw: impl FnOnce(&Renderer)) -> Px {
+    fn painted(r: &mut Renderer, dip: (f32, f32), draw: impl FnOnce(&mut Renderer)) -> Px {
         let size = SIZE {
             cx: (dip.0 * r.scale).ceil() as i32,
             cy: (dip.1 * r.scale).ceil() as i32,
         };
         r.ensure_target(size).unwrap();
-        let rt = &r.target.as_ref().unwrap().rt;
+        let rt = r.target.as_ref().unwrap().rt.clone();
         unsafe {
             rt.SetDpi(96.0 * r.scale, 96.0 * r.scale);
             rt.BeginDraw();
@@ -5504,6 +5516,36 @@ mod tests {
 
     fn at_rest() -> PlayFrame {
         play_frame(1.0)
+    }
+
+    #[test]
+    fn a_story_prop_is_clipped_to_the_island() {
+        // The stolen digit falls through the lip; like the head, it is cut
+        // off by the island's edge (the mockup's "inside" layer), never
+        // drawn over the desktop below.
+        let mut r = renderer();
+        for style in [Style::Notch, Style::Pill] {
+            let s = shape(style, 190.0, 34.0);
+            let bottom = s.y + s.h;
+            let at = (s.x + s.w / 2.0, bottom + 2.0);
+            let play = |props: Vec<Prop>| PlayFrame { props, ..play_frame(1.0) };
+            let dip = (crate::ui::geometry::WINDOW_W, bottom + 30.0);
+            let draw = |r: &mut Renderer, props: Vec<Prop>| {
+                with_frame_clock(Some(play(props)), Some("14:32".to_owned()), |frame| {
+                    painted(r, dip, |r| r.paint_island(style, s, frame).unwrap())
+                })
+            };
+            let with = draw(&mut r, vec![Prop::Digit { index: 4, at, rot_deg: 0.0, alpha: 1.0 }]);
+            let without = draw(&mut r, Vec::new());
+            let k = r.scale;
+            // Nothing at all from a dip and a half under the lip down.
+            let below = ((bottom + 1.5) * k).ceil() as usize;
+            let ink: f32 = (below..with.h).flat_map(|y| (0..with.w).map(move |x| (x, y))).map(|(x, y)| with.alpha(x, y)).sum();
+            assert_eq!(ink, 0.0, "{style:?}: the prop shows under the island");
+            // And it is drawn: the part inside the island differs.
+            let (_, loud) = gap(&with, &without);
+            assert!(loud > 5, "{style:?}: the prop drew nothing inside the island");
+        }
     }
 
     #[test]

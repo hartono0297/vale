@@ -138,12 +138,14 @@ pub fn falk_beak(open: bool) -> Vec<Vec<Seg>> {
 }
 
 pub fn beak_open(expr: Expr, pose: &Pose) -> bool {
-    pose.beak_open
-        || match expr {
-            Expr::Sing | Expr::Alert => true,
-            Expr::Music => pose.dancing,
-            _ => false,
-        }
+    if let Some(story) = pose.beak_open {
+        return story;
+    }
+    match expr {
+        Expr::Sing | Expr::Alert => true,
+        Expr::Music => pose.dancing,
+        _ => false,
+    }
 }
 
 /// The typing feather tip at (x, y).

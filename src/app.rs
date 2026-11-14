@@ -133,7 +133,7 @@ use crate::ui::play::{click_through, swallows};
 use crate::ui::play::gate::{Env, instant_stop, may_start, must_stop};
 use crate::ui::play::state::Play;
 use crate::ui::play::stories;
-use crate::ui::play::trigger::{Moment, PRESENCE_MIN, Story, cooldown, pick, pool, wait_for};
+use crate::ui::play::trigger::{Moment, PRESENCE_MIN, Story, cooldown, has_ready, pick, wait_for};
 use crate::ui::settings_layout::{CardId, MonitorRow};
 use crate::ui::robot::{
     self, Brain, Expr, EyesBlink, EyesPose, GreetSettings, Motion, Rng, Spot, TypingPaws,
@@ -2375,7 +2375,7 @@ impl App {
             asleep,
             recording: hotkeys::any_recording(self.rec.active(), self.screen.recording()),
             clock_on: self.config.idle_clock,
-            has_story: !pool(self.config.mascot, self.config.idle_clock).is_empty(),
+            has_story: has_ready(self.config.mascot, self.config.idle_clock),
         }
     }
 
