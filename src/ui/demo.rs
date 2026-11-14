@@ -73,6 +73,9 @@
 //!   (2.46 s, the second tap), `-bawa` (4.1 s, the digit carried home),
 //!   `-tumbuh` (4.85 s, the clock regrowing it), `-kaget` (5.3 s, the crest
 //!   shot up and the stolen digit falling) and `-siul` (6.55 s, the whistle).
+//! - `bata-play-cat-body`: the seated cat (body, legs, paws, tail) beside
+//!   the island at rest, tail up and one paw lifted, always the cat (its coat
+//!   from `DI_CAT_COLOR`, `DI_CAT_ACCESSORY` as above).
 //! - `DI_FONT=mono` sets the UI typeface to JetBrains Mono in every scene
 //!   that builds a renderer (`--demo`, `--demo-cli`, `--demo-robot`,
 //!   `--demo-devices`, `--demo-arrange`) and in `--settings`; unset or an
@@ -236,7 +239,9 @@ use super::render::{
 };
 use super::play::shape::{Deform, Dent};
 use super::play::state::Beat;
-use super::play::stories;
+use super::mascot::CrestPose;
+use super::play::art::cat::{CatPose, Paw, Tail, cat_at};
+use super::play::stories::{self, Layer, MascotShot, Part};
 use super::play::trigger::Story;
 use super::robot::{Expr, EyesPose, Motion, PAW_LIFT, Pose};
 use super::shelf_motion::{SHELF_ENTER_MS, SHELF_MOVE_MS, SHELF_STAGGER_MS, ShelfMotion};
@@ -507,7 +512,7 @@ enum CliDemo {
 }
 
 /// What a play scene freezes (`bata-play-island`, `bata-play-swing`,
-/// `bata-play-digits`, the `bata-maling-angka-*` moments).
+/// `bata-play-digits`, the `bata-maling-angka-*` moments, `bata-play-cat-body`).
 #[derive(Clone, Copy, PartialEq)]
 enum DemoPlay {
     No,
@@ -521,6 +526,9 @@ enum DemoPlay {
     Digits,
     /// The falk's Maling angka at this many seconds, always with the falk.
     MalingAngka(f32),
+    /// The seated cat beside the island at rest, tail up, one paw lifted,
+    /// always the cat.
+    CatBody,
 }
 
 /// `View` without its payloads, so scenes can be `const`.
@@ -1015,8 +1023,9 @@ const fn rec_hot_scene(name: &'static str, muted: [bool; 2], hot: Source) -> Sce
 
 /// The frozen frames of the play scenes (`Scene::play`) on the island `shape`:
 /// the mascot and the clock spread to the island's ends, and the island
-/// deformed as `which` says, or a story's own moment.
-fn demo_play(which: DemoPlay, style: Style, shape: ShapeRect) -> PlayFrame {
+/// deformed as `which` says, or a story's own moment. The cat's body takes
+/// its coat from `cat`.
+fn demo_play(which: DemoPlay, style: Style, shape: ShapeRect, cat: CatLook) -> PlayFrame {
     let beat = Beat {
         spread: 1.0,
         alpha: 1.0,
@@ -1026,6 +1035,38 @@ fn demo_play(which: DemoPlay, style: Style, shape: ShapeRect) -> PlayFrame {
         DemoPlay::MalingAngka(t) => {
             let beat = Beat { t, ..beat };
             return PlayFrame::of(stories::shot(Story::MalingAngka, style, shape, beat), beat);
+        }
+        DemoPlay::CatBody => {
+            let beat = Beat { spread: 0.0, ..beat };
+            let pose = CatPose {
+                dk: 0.0,
+                rise: 1.0,
+                head: (0.0, 0.0, 0.0),
+                face: MascotShot {
+                    dx: 0.0,
+                    dy: 0.0,
+                    rot_deg: 0.0,
+                    sx: 1.0,
+                    sy: 1.0,
+                    expr: Expr::Idle,
+                    crest: CrestPose { rot_deg: 0.0, scale: 1.0 },
+                    glance: (0.0, 0.0),
+                    blink: false,
+                    beak_open: false,
+                },
+                paws: [Paw::default(), Paw { dx: 1.5, dy: -6.0, lift: 0.8, sq: 0.0 }],
+                tail: Some(Tail::default()),
+            };
+            // Seated on the screen beside the island's right end, below its lip.
+            let at = (shape.x + shape.w + 26.0, shape.y + shape.h + 22.0);
+            let look = CatLook { mascot: Mascot::Cat, ..cat };
+            let mut shot = stories::Shot::rest(style, shape);
+            shot.parts.push(Part {
+                layer: Layer::Back,
+                draw: cat_at(at, 0.0, 1.0, 1.0, &pose, look),
+                alpha: 1.0,
+            });
+            return PlayFrame::of(shot, beat);
         }
         DemoPlay::No | DemoPlay::Dent => Deform {
             dents: vec![Dent {
@@ -1258,7 +1299,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 223] = [
+const SCENES: [Scene; 224] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -1912,6 +1953,10 @@ const SCENES: [Scene; 223] = [
     Scene {
         play: DemoPlay::MalingAngka(6.55),
         ..bata("bata-maling-angka-siul", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    Scene {
+        play: DemoPlay::CatBody,
+        ..bata("bata-play-cat-body", ShapeKind::Idle, View0::Idle, Expr::Idle)
     },
     Scene {
         clock: Some("23:48"),
@@ -3035,6 +3080,10 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                         mascot: Mascot::Falk,
                         ..cat
                     },
+                    DemoPlay::CatBody => CatLook {
+                        mascot: Mascot::Cat,
+                        ..cat
+                    },
                     _ => cat,
                 },
                 fill_alpha,
@@ -3183,7 +3232,7 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                     || slide != 0.0
                     || scene.reveal.is_some()
                     || scene.fade_from.is_some(),
-                play: (scene.play != DemoPlay::No).then(|| demo_play(scene.play, style, shape)),
+                play: (scene.play != DemoPlay::No).then(|| demo_play(scene.play, style, shape, cat)),
             };
             if let Err(error) = renderer.draw(&win, style, shape, &frame, opacity) {
                 eprintln!("demo: draw failed: {error}");

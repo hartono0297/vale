@@ -173,6 +173,9 @@ pub enum Draw {
         pivot: (f32, f32),
         items: Vec<Draw>,
     },
+    /// `items` cut to `clip`'s figures (filled nonzero): what falls outside
+    /// it is not drawn (the Calico cat's patches on its body).
+    Clipped { clip: Vec<Seg>, items: Vec<Draw> },
 }
 
 /// The head's ink on its 64-unit grid, whichever mascot, face, crest (up to
@@ -240,6 +243,20 @@ impl Draw {
                     return Rect { x: at.0, y: at.1, w: 0.0, h: 0.0 };
                 };
                 moved(&group_matrix(*at, *rot_deg, *scale, *pivot), boxes.fold(first, union))
+            }
+            Draw::Clipped { clip, items } => {
+                let mut boxes = items.iter().map(|d| d.bounds_at(unit));
+                let Some(first) = boxes.next() else {
+                    return Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 };
+                };
+                let (a, b) = (boxes.fold(first, union), path_box(clip, 0.0));
+                let (x, y) = (a.x.max(b.x), a.y.max(b.y));
+                Rect {
+                    x,
+                    y,
+                    w: ((a.x + a.w).min(b.x + b.w) - x).max(0.0),
+                    h: ((a.y + a.h).min(b.y + b.h) - y).max(0.0),
+                }
             }
         }
     }
@@ -571,6 +588,16 @@ mod tests {
             items: vec![dot],
         };
         assert!(near(moved.bounds(), Rect { x: 51.0, y: 59.0, w: 2.0, h: 2.0 }), "{:?}", moved.bounds());
+    }
+
+    #[test]
+    fn a_clipped_part_is_bounded_by_its_items_within_its_clip() {
+        let clip = circle_segs((10.0, 10.0), 5.0);
+        let dot = |x: f32| Draw::Ellipse { c: (x, 10.0), r: (2.0, 2.0), rgb: 0 };
+        // Two dots, the right one half out of the clip: the box is the
+        // clip's where the items reach past it.
+        let cut = Draw::Clipped { clip, items: vec![dot(8.0), dot(15.0)] };
+        assert!(near(cut.bounds(), Rect { x: 6.0, y: 8.0, w: 9.0, h: 4.0 }), "{:?}", cut.bounds());
     }
 
     #[test]

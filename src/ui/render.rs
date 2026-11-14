@@ -2969,6 +2969,38 @@ impl Renderer {
                     }
                 });
             }
+            Draw::Clipped { clip, items } => {
+                // A layer of its own: the back layer's mask and a figure's
+                // fade may already be pushed on the shared ones. Only while
+                // a play draws a clipped part (the Calico cat's patches).
+                let mask = super::robot::path_filled(&self.d2d, clip, D2D1_FILL_MODE_WINDING)
+                    .and_then(|m| m.cast::<ID2D1Geometry>());
+                let layer = unsafe { target.rt.CreateLayer(None) };
+                let (Ok(mask), Ok(layer)) = (mask, layer) else {
+                    return;
+                };
+                let params = D2D1_LAYER_PARAMETERS {
+                    contentBounds: D2D_RECT_F {
+                        left: -f32::MAX,
+                        top: -f32::MAX,
+                        right: f32::MAX,
+                        bottom: f32::MAX,
+                    },
+                    geometricMask: ManuallyDrop::new(Some(mask)),
+                    maskAntialiasMode: D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                    maskTransform: Matrix3x2::identity(),
+                    opacity: 1.0,
+                    opacityBrush: ManuallyDrop::new(None),
+                    layerOptions: D2D1_LAYER_OPTIONS_NONE,
+                };
+                unsafe { target.rt.PushLayer(&params, &layer) };
+                // The layer keeps its own reference while pushed.
+                drop(ManuallyDrop::into_inner(params.geometricMask));
+                for item in items {
+                    self.paint_draw(item, alpha, unit, at);
+                }
+                unsafe { target.rt.PopLayer() };
+            }
         }
     }
 
@@ -6193,6 +6225,114 @@ mod tests {
                             }
                         }
                         assert!(ink > 100, "{mascot:?} {accessory:?}: the head drew nothing");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_clipped_part_shows_only_inside_its_clip() {
+        // A bar cut to its left half, inside a group scaled 2x: the clip
+        // moves with the group's transform, in front and in the back layer
+        // (which already has its own clip pushed).
+        use crate::ui::robot::Seg::{Close, Line, Move};
+        let rect = |w: f32, h: f32| vec![Move(0.0, 0.0), Line(w, 0.0), Line(w, h), Line(0.0, h), Close];
+        let mut r = renderer();
+        let s = shape(Style::Pill, 190.0, 34.0);
+        let below = s.y + s.h + 20.0;
+        for layer in [Layer::Front, Layer::Back] {
+            let group = Draw::Group {
+                at: (100.0, below),
+                rot_deg: 0.0,
+                scale: (2.0, 2.0),
+                pivot: (0.0, 0.0),
+                items: vec![Draw::Clipped { clip: rect(10.0, 5.0), items: vec![Draw::Fill { path: rect(20.0, 5.0), rgb: GREEN }] }],
+            };
+            let play = PlayFrame { parts: vec![Part { layer, draw: group, alpha: 1.0 }], ..play_frame(1.0) };
+            let draw = |r: &mut Renderer, play: PlayFrame| {
+                with_frame_all(Some(play), None, None, 1.0, |frame| {
+                    painted(r, (crate::ui::geometry::WINDOW_W, below + 20.0), |r| r.paint_island(Style::Pill, s, frame).unwrap())
+                })
+            };
+            let (with, without) = (draw(&mut r, play), draw(&mut r, play_frame(1.0)));
+            let k = r.scale;
+            let at = |x: f32| ((x * k) as usize, ((below + 5.0) * k) as usize);
+            assert!(green(pixel(&with, at(110.0))), "{layer:?}: {:?} inside the clip", pixel(&with, at(110.0)));
+            assert!(same(pixel(&with, at(130.0)), pixel(&without, at(130.0))), "{layer:?}: {:?} past the clip", pixel(&with, at(130.0)));
+        }
+    }
+
+    #[test]
+    fn a_seated_cat_carries_its_accessory_outside_the_island() {
+        // The cat sitting beside the island in the back layer, with the bow:
+        // its head comes from the app's painter, so the raspberry bow
+        // (0xD23F6A) comes along; and no ink leaves the figure's bounds.
+        use crate::theme::{CatAccessory, CatColor, Mascot};
+        use crate::ui::mascot::CrestPose;
+        use crate::ui::play::art::cat::{CatPose, Paw, Tail, cat_at};
+        let mut r = renderer();
+        let k = r.scale;
+        let robot = Some(RobotFrame { expr: Expr::Idle, pose: Pose::default() });
+        for style in [Style::Notch, Style::Pill] {
+            for color in [CatColor::Terracotta, CatColor::Calico, CatColor::Black] {
+                let s = shape(style, 190.0, 34.0);
+                let dip = (crate::ui::geometry::WINDOW_W, s.y + s.h + 80.0);
+                let pose = CatPose {
+                    dk: 0.0,
+                    rise: 1.0,
+                    head: (0.0, 0.0, 0.0),
+                    face: MascotShot {
+                        dx: 0.0,
+                        dy: 0.0,
+                        rot_deg: 0.0,
+                        sx: 1.0,
+                        sy: 1.0,
+                        expr: Expr::Idle,
+                        crest: CrestPose { rot_deg: 0.0, scale: 1.0 },
+                        glance: (0.0, 0.0),
+                        blink: false,
+                        beak_open: false,
+                    },
+                    paws: [Paw::default(), Paw { dx: 1.5, dy: -6.0, lift: 0.8, sq: 0.0 }],
+                    tail: Some(Tail::default()),
+                };
+                let paint = |r: &mut Renderer, accessory: CatAccessory, cat: bool| {
+                    let look = CatLook { mascot: Mascot::Cat, color, accessory, ..CatLook::default() };
+                    r.cat.set(look);
+                    let fig = cat_at((s.x + s.w + 30.0, s.y + s.h + 40.0), 0.0, 1.0, 1.0, &pose, look);
+                    let b = fig.bounds();
+                    let parts = if cat { vec![Part { layer: Layer::Back, draw: fig, alpha: 1.0 }] } else { Vec::new() };
+                    let play = PlayFrame { parts, ..play_frame(0.0) };
+                    let px = with_frame_all(Some(play), None, robot, 1.0, |frame| {
+                        painted(r, dip, |r| r.paint_island(style, s, frame).unwrap())
+                    });
+                    (px, b)
+                };
+                let case = format!("{style:?} {color:?}");
+                for accessory in [CatAccessory::Bow, CatAccessory::None] {
+                    let ((with, b), (without, _)) = (paint(&mut r, accessory, true), paint(&mut r, accessory, false));
+                    let (mut bow, mut ink) = (0, 0);
+                    for y in 0..with.h {
+                        for x in 0..with.w {
+                            let p = pixel(&with, (x, y));
+                            if p == pixel(&without, (x, y)) {
+                                continue;
+                            }
+                            ink += 1;
+                            let (dx, dy) = ((x as f32 + 0.5) / k, (y as f32 + 0.5) / k);
+                            let off = dx < b.x - 0.5 || dx > b.x + b.w + 0.5 || dy < b.y - 0.5 || dy > b.y + b.h + 0.5;
+                            assert!(!off, "{case} {accessory:?}: ink at ({dx}, {dy}) outside {b:?}");
+                            let [blue, green, red, alpha] = p;
+                            if alpha > 240 && red > 180 && green < 100 && (70..140).contains(&blue) {
+                                bow += 1;
+                            }
+                        }
+                    }
+                    assert!(ink > 300, "{case}: the cat drew too little ({ink} px)");
+                    match accessory {
+                        CatAccessory::Bow => assert!(bow > 10, "{case}: the bow did not come along ({bow} px)"),
+                        _ => assert_eq!(bow, 0, "{case}: raspberry without the bow"),
                     }
                 }
             }
