@@ -2556,7 +2556,9 @@ impl App {
         };
         let shape = play_shape_of(self.config.style, self.notch_size(), self.config.mascot);
         let jumped = std::mem::take(&mut self.play_clock_jumped);
-        let inside = self.cursor_on_island(cursor, now);
+        // Off the idle view (a panel or a notice came up) the island is not
+        // the idle shape any more: it keeps every click.
+        let inside = !env.idle_view || self.cursor_on_island(cursor, now);
         let buttons = [VK_LBUTTON, VK_RBUTTON, VK_MBUTTON]
             .into_iter()
             .any(|vk| (unsafe { GetAsyncKeyState(i32::from(vk.0)) }) as u16 & 0x8000 != 0);
@@ -8782,7 +8784,6 @@ fn eq_capture_wanted(timer_on: bool, setting_on: bool) -> bool {
     timer_on && setting_on
 }
 
-/// The idle clock's minute timer runs only while the idle island shows it.
 /// What a story was started for, and how the island looked then: a style,
 /// size or mascot that differs later ends it.
 struct ActivePlay {
@@ -8941,6 +8942,7 @@ fn eq_time_based(compact: bool, playing: bool, live_bars: bool, play: bool) -> b
     (compact && playing && !live_bars) || play
 }
 
+/// The idle clock's minute timer runs only while the idle island shows it.
 fn clock_timer_wanted(view: &View, idle_clock: bool) -> bool {
     idle_clock && *view == View::Idle
 }

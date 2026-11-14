@@ -4045,6 +4045,8 @@ impl Renderer {
             let own = Matrix3x2::scale_around(fx.scale, fx.scale, Vector2::new(c.0, c.1))
                 * turn_about(fx.rot_deg, c, (fx.dx, fx.dy));
             unsafe { rt.SetTransform(&(own * before)) };
+            // No CLIP: it would cut a character at its own layout box, which a
+            // character scaled past it (the regrow's overshoot) overhangs.
             self.text_legible(
                 origin,
                 &one,
