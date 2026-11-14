@@ -3805,11 +3805,15 @@ fn cat_page(b: &mut Builder, s: &State) {
 /// width and the five segments in a block under it. A mascot with no ready
 /// story (whatever the clock) gets the row dimmed and says so.
 fn mascot_play_card(b: &mut Builder, s: &State) {
+    mascot_play_card_for(b, s, crate::ui::play::trigger::has_ready(s.mascot, true));
+}
+
+/// `mascot_play_card` for a mascot that has a ready story or not (`ready`).
+fn mascot_play_card_for(b: &mut Builder, s: &State, ready: bool) {
     let items: Vec<(Hit, String)> = MASCOT_PLAY_ORDER
         .iter()
         .map(|v| (Hit::MascotPlay(*v), b.t(mascot_play_key(*v))))
         .collect();
-    let ready = crate::ui::play::trigger::has_ready(s.mascot, true);
     let desc_key = if ready {
         Key::MascotPlayDesc
     } else {
@@ -8511,15 +8515,61 @@ mod tests {
         }
     }
 
+    /// The "Otomatis" row in `l`: its description, line by line joined, and
+    /// whether its segments take clicks.
+    fn mascot_play_row(l: &Layout, lang: Lang) -> (String, bool) {
+        let (track, _, _) = l.segmented(Group::MascotPlay).expect("the row");
+        let label = l
+            .texts
+            .iter()
+            .position(|t| t.text == text(lang, Key::MascotPlayLabel))
+            .expect("label");
+        let top = l.texts[label].rect.y;
+        let desc = l.texts[label + 1..]
+            .iter()
+            .filter(|t| t.rect.y > top && t.rect.y < track.y)
+            .map(|t| t.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let enabled = l.controls.iter().any(|c| {
+            matches!(c, Control::Segmented { group: Group::MascotPlay, enabled: true, .. })
+        });
+        (desc, enabled)
+    }
+
     /// A mascot with no ready story gets the row dimmed and an honest line
-    /// instead of the promise; a mascot whose stories are ready (all three
-    /// now) gets both.
+    /// instead of the promise; one with a ready story gets both. Every
+    /// mascot has one now, so the card is laid out for a mascot without.
     #[test]
     fn mascot_play_row_is_dimmed_for_a_mascot_with_no_ready_story() {
+        for lang in [Lang::Id, Lang::En] {
+            for ready in [false, true] {
+                let s = State { lang, robot: true, ..states()[0].clone() };
+                let mut b = Builder {
+                    m: &Estimate,
+                    lang,
+                    l: Layout::default(),
+                    y: FIRST_CARD_Y,
+                    g: Geom::new((CLIENT_W, CLIENT_H)),
+                };
+                mascot_play_card_for(&mut b, &s, ready);
+                let (desc, enabled) = mascot_play_row(&b.l, lang);
+                assert_eq!(enabled, ready, "{lang:?} ready={ready}");
+                let key = if ready { Key::MascotPlayDesc } else { Key::MascotPlayComing };
+                assert_eq!(desc, text(lang, key), "{lang:?} ready={ready}");
+            }
+        }
+        assert_eq!(text(Lang::Id, Key::MascotPlayComing), "Animasi untuk maskot ini menyusul.");
+        assert_eq!(text(Lang::En, Key::MascotPlayComing), "Animations for this mascot are coming.");
+    }
+
+    /// Every mascot has a ready story, so the page offers each the whole row,
+    /// the clock off too.
+    #[test]
+    fn mascot_play_row_is_offered_to_every_mascot() {
         use crate::theme::MascotPlay as P;
         for lang in [Lang::Id, Lang::En] {
             for mascot in [Mascot::Cat, Mascot::Octopus, Mascot::Falk] {
-                // The clock off: a falk owner still has a story to ask for.
                 let s = State {
                     lang,
                     robot: true,
@@ -8529,31 +8579,12 @@ mod tests {
                     scroll: 1e6,
                     ..states()[0].clone()
                 };
-                let l = layout(Section::Cat, &s, &Estimate);
-                let (track, _, _) = l.segmented(Group::MascotPlay).expect("the row");
-                let label = l
-                    .texts
-                    .iter()
-                    .position(|t| t.text == text(lang, Key::MascotPlayLabel))
-                    .expect("label");
-                let top = l.texts[label].rect.y;
-                let desc = l.texts[label + 1..]
-                    .iter()
-                    .filter(|t| t.rect.y > top && t.rect.y < track.y)
-                    .map(|t| t.text.as_str())
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                let enabled = l.controls.iter().any(|c| {
-                    matches!(c, Control::Segmented { group: Group::MascotPlay, enabled: true, .. })
-                });
-                let ready = crate::ui::play::trigger::has_ready(mascot, true);
-                assert_eq!(enabled, ready, "{lang:?} {mascot:?}");
-                let key = if ready { Key::MascotPlayDesc } else { Key::MascotPlayComing };
-                assert_eq!(desc, text(lang, key), "{lang:?} {mascot:?}");
+                assert!(crate::ui::play::trigger::has_ready(mascot, true), "{mascot:?}");
+                let (desc, enabled) = mascot_play_row(&layout(Section::Cat, &s, &Estimate), lang);
+                assert!(enabled, "{lang:?} {mascot:?}");
+                assert_eq!(desc, text(lang, Key::MascotPlayDesc), "{lang:?} {mascot:?}");
             }
         }
-        assert_eq!(text(Lang::Id, Key::MascotPlayComing), "Animasi untuk maskot ini menyusul.");
-        assert_eq!(text(Lang::En, Key::MascotPlayComing), "Animations for this mascot are coming.");
     }
 
     /// The design's full "Hemat: tanpa kedip dan gerak, ekspresi tetap"
