@@ -34,7 +34,7 @@ pub fn normals(p: &[Pt]) -> Vec<Pt> {
 
 /// A smooth run through `pts`, continuing from the current point: a quad
 /// per inner point to the midpoint after it, then a line to the last.
-fn smooth(pts: &[Pt], out: &mut Vec<Seg>) {
+pub fn smooth(pts: &[Pt], out: &mut Vec<Seg>) {
     let n = pts.len();
     for i in 1..n.saturating_sub(1) {
         out.push(Seg::Quad(

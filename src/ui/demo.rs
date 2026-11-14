@@ -80,6 +80,11 @@
 //!   long arms winding round the island's right end (the arms of its three
 //!   stories), always the octopus (its coat from `DI_OCTOPUS_COLOR`,
 //!   `DI_CAT_ACCESSORY` as above).
+//! - `bata-play-falk-open`: the falk out of its slot beside the island's
+//!   right end, wings open; `bata-play-falk-hang`: hanging upside down by its
+//!   feet from the lip below its slot, wings folded, as in its Kelelawar
+//!   story. Always the falk (its coat from `DI_FALK_COLOR`, `DI_CAT_ACCESSORY`
+//!   as above).
 //! - `DI_FONT=mono` sets the UI typeface to JetBrains Mono in every scene
 //!   that builds a renderer (`--demo`, `--demo-cli`, `--demo-robot`,
 //!   `--demo-devices`, `--demo-arrange`) and in `--settings`; unset or an
@@ -226,8 +231,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use super::cat_style::CatLook;
 use super::dock::{self, DockFrame};
 use super::geometry::{
-    ANIM_MS, NOTCH_OPACITY_DEFAULT, NotchSize, ShapeKind, ShapeRect, TOAST_SLOT_EXTRA, Under,
-    ease_out_back, idle_shape_typing, lerp_shape, lyric_box_w, lyric_max_w, lyric_scroll_offset,
+    ANIM_MS, NOTCH_OPACITY_DEFAULT, NotchSize, ROBOT_COMPACT, ShapeKind, ShapeRect, TOAST_SLOT_EXTRA, Under,
+    ease_out_back, idle_layout_lead, idle_shape_typing, lerp_shape, lyric_box_w, lyric_max_w, lyric_scroll_offset,
     lyric_shape_sized, lyric_slot_width, lyric_width_min, shape_with_robot_sized, typing_lead,
     with_rec_caption, with_toast_slot,
 };
@@ -242,9 +247,10 @@ use super::render::{
     ShelfPreviewView, SystemView, ToastBadgeView, ToastLogoView,
 };
 use super::play::shape::{Deform, Dent};
-use super::play::state::Beat;
+use super::play::state::{Beat, spread_offsets};
 use super::mascot::CrestPose;
 use super::play::art::cat::{CatPose, Paw, Tail, cat_at};
+use super::play::art::falk::{BirdPose, WingPose, bird, bird_at, bird_parts};
 use super::play::art::octopus;
 use super::play::art::tube::{along, catmull_rom, curl, plen};
 use super::play::rim::rim;
@@ -520,7 +526,7 @@ enum CliDemo {
 
 /// What a play scene freezes (`bata-play-island`, `bata-play-swing`,
 /// `bata-play-digits`, the `bata-maling-angka-*` moments, `bata-play-cat-body`,
-/// `bata-play-octopus-arms`).
+/// `bata-play-octopus-arms`, `bata-play-falk-open`, `bata-play-falk-hang`).
 #[derive(Clone, Copy, PartialEq)]
 enum DemoPlay {
     No,
@@ -540,6 +546,11 @@ enum DemoPlay {
     /// The octopus's mantle alone in the slot and two long arms winding round
     /// the island's right end, always the octopus.
     OctopusArms,
+    /// The falk beside the island's right end, wings open, always the falk.
+    FalkOpen,
+    /// The falk hanging upside down from the lip below its slot, wings
+    /// folded, as in Kelelawar; always the falk.
+    FalkHang,
 }
 
 /// `View` without its payloads, so scenes can be `const`.
@@ -1057,6 +1068,63 @@ fn octopus_arms(style: Style, shape: ShapeRect, coat: OctopusColor) -> Vec<Part>
     parts
 }
 
+/// The falk out of its slot (the slot head moved down out of the island,
+/// where its clip hides it), the island making room. Open: beside the
+/// island's right end, wings open, upright. Hanging: as Kelelawar has it
+/// once out, its feet on the lip 6 right of the slot's centre, upside down,
+/// wings folded; the tail, body and wings behind the island, the feet and
+/// the head in front.
+fn falk_scene(hang: bool, style: Style, shape: ShapeRect, coat: FalkColor) -> stories::Shot {
+    let face = MascotShot {
+        dx: 0.0,
+        dy: 0.0,
+        rot_deg: 0.0,
+        sx: 1.0,
+        sy: 1.0,
+        expr: Expr::Idle,
+        crest: CrestPose { rot_deg: 10.0, scale: 1.0 },
+        glance: (0.0, 0.0),
+        blink: false,
+        beak_open: false,
+        bare_octopus: false,
+        flush: 0.0,
+    };
+    let wings = if hang { WingPose::FOLD } else { WingPose::SPREAD };
+    let pose = BirdPose {
+        wl: wings,
+        wr: wings,
+        wl_before: wings,
+        wr_before: wings,
+        wl_front: false,
+        wr_front: false,
+        face,
+        tail_rot: 0.0,
+        tail_spread: 0.0,
+        tuck: false,
+    };
+    let mut shot = stories::Shot::rest(style, shape);
+    shot.mascot = Some(MascotShot { dy: 3.0 * ROBOT_COMPACT, ..face });
+    let part = |layer, draw| Part { layer, draw, alpha: 1.0 };
+    let bottom = shape.y + shape.h;
+    if hang {
+        let room = spread_offsets(idle_layout_lead(shape, true, true, 0.0), shape, 1.0);
+        let slot = room.robot.expect("the idle island has a mascot slot");
+        let at = (slot.x + slot.w / 2.0 + 6.0, bottom + 0.4);
+        let b = bird_parts(&pose, coat);
+        let mut back = vec![b.tail];
+        back.extend(b.body);
+        let mut front = b.feet;
+        front.push(b.head);
+        front.extend(b.wings_front);
+        shot.parts.push(part(Layer::Back, bird_at(at, 180.0, 1.0, 1.0, back)));
+        shot.parts.push(part(Layer::Front, bird_at(at, 180.0, 1.0, 1.0, front)));
+    } else {
+        let at = (shape.x + shape.w + 48.0, bottom + 46.0);
+        shot.parts.push(part(Layer::Back, bird_at(at, 0.0, 1.0, 1.0, vec![bird(&pose, coat)])));
+    }
+    shot
+}
+
 /// The frozen frames of the play scenes (`Scene::play`) on the island `shape`:
 /// the mascot and the clock spread to the island's ends, and the island
 /// deformed as `which` says, or a story's own moment. The cat's body takes
@@ -1105,6 +1173,9 @@ fn demo_play(which: DemoPlay, style: Style, shape: ShapeRect, cat: CatLook) -> P
                 alpha: 1.0,
             });
             return PlayFrame::of(shot, beat);
+        }
+        DemoPlay::FalkOpen | DemoPlay::FalkHang => {
+            return PlayFrame::of(falk_scene(which == DemoPlay::FalkHang, style, shape, cat.falk), beat);
         }
         DemoPlay::OctopusArms => {
             let mut shot = stories::Shot::rest(style, shape);
@@ -1356,7 +1427,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 225] = [
+const SCENES: [Scene; 227] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -2018,6 +2089,14 @@ const SCENES: [Scene; 225] = [
     Scene {
         play: DemoPlay::OctopusArms,
         ..bata("bata-play-octopus-arms", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    Scene {
+        play: DemoPlay::FalkOpen,
+        ..bata("bata-play-falk-open", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    Scene {
+        play: DemoPlay::FalkHang,
+        ..bata("bata-play-falk-hang", ShapeKind::Idle, View0::Idle, Expr::Idle)
     },
     Scene {
         clock: Some("23:48"),
@@ -3137,7 +3216,7 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                 palette,
                 // A story scene draws its own mascot, whatever `DI_MASCOT` says.
                 cat: match scene.play {
-                    DemoPlay::MalingAngka(_) => CatLook {
+                    DemoPlay::MalingAngka(_) | DemoPlay::FalkOpen | DemoPlay::FalkHang => CatLook {
                         mascot: Mascot::Falk,
                         ..cat
                     },
@@ -5543,6 +5622,51 @@ mod tests {
                             b.x >= 0.0 && b.y >= 0.0 && b.x + b.w <= WINDOW_W && b.y + b.h <= WINDOW_H,
                             "{case}: {b:?}"
                         );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_falk_scenes_draw_the_bird_out_of_its_slot_in_the_window() {
+        use crate::ui::geometry::{WINDOW_H, WINDOW_W};
+        use crate::ui::play::testing::shape;
+        use stories::Draw;
+        // How many heads a drawable holds, groups opened.
+        fn heads(d: &Draw) -> usize {
+            match d {
+                Draw::Head { .. } => 1,
+                Draw::Group { items, .. } | Draw::Clipped { items, .. } => items.iter().map(heads).sum(),
+                _ => 0,
+            }
+        }
+        for style in [Style::Notch, Style::Pill] {
+            for (w, h) in [(160.0, 28.0), (190.0, 34.0), (300.0, 44.0)] {
+                let s = shape(style, w, h);
+                for coat in FalkColor::ALL {
+                    let cat = CatLook { falk: *coat, ..CatLook::default() };
+                    for (which, layers) in [(DemoPlay::FalkOpen, vec![Layer::Back]), (DemoPlay::FalkHang, vec![Layer::Back, Layer::Front])] {
+                        let frame = demo_play(which, style, s, cat);
+                        let case = format!("{style:?} {w}x{h} {coat:?} {layers:?}");
+                        // The slot head has left the island: its clip hides it.
+                        let m = frame.mascot.expect("the slot head moved");
+                        assert!(m.dy >= ROBOT_COMPACT + h, "{case}: {m:?}");
+                        // One bird, its head in it once, in the scene's layers.
+                        assert_eq!(frame.parts.iter().map(|p| p.layer).collect::<Vec<_>>(), layers, "{case}");
+                        assert_eq!(frame.parts.iter().map(|p| heads(&p.draw)).sum::<usize>(), 1, "{case}");
+                        for p in &frame.parts {
+                            let b = p.draw.bounds();
+                            assert!(
+                                b.x >= 0.0 && b.y >= 0.0 && b.x + b.w <= WINDOW_W && b.y + b.h <= WINDOW_H,
+                                "{case}: {b:?}"
+                            );
+                            // Out under the island; hanging, the toes grip the lip
+                            // and the tail rises behind the island (its clip cuts it).
+                            if p.layer == Layer::Front || which == DemoPlay::FalkOpen {
+                                assert!(b.y >= s.y + s.h - 3.0, "{case}: {b:?}");
+                            }
+                        }
                     }
                 }
             }

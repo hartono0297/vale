@@ -6396,6 +6396,91 @@ mod tests {
     }
 
     #[test]
+    fn a_falk_with_open_wings_carries_its_accessory_outside_the_island() {
+        // The bird beside the island, wings open, upright and hanging upside
+        // down, with the bow: its head comes from the app's painter, so the
+        // raspberry bow (0xD23F6A) comes along; and no ink leaves the
+        // figure's bounds.
+        use crate::theme::{CatAccessory, FalkColor, Mascot};
+        use crate::ui::mascot::CrestPose;
+        use crate::ui::play::art::falk::{BirdPose, WingPose, bird, bird_at};
+        let mut r = renderer();
+        let k = r.scale;
+        let robot = Some(RobotFrame { expr: Expr::Idle, pose: Pose::default() });
+        let open = WingPose::SPREAD;
+        let pose = BirdPose {
+            wl: open,
+            wr: open,
+            wl_before: WingPose::mix(open, WingPose::FOLD, 0.2),
+            wr_before: open,
+            wl_front: false,
+            wr_front: true,
+            face: MascotShot {
+                dx: 0.0,
+                dy: 0.0,
+                rot_deg: 0.0,
+                sx: 1.0,
+                sy: 1.0,
+                expr: Expr::Idle,
+                crest: CrestPose { rot_deg: 10.0, scale: 1.0 },
+                glance: (0.0, 0.0),
+                blink: false,
+                beak_open: false,
+                bare_octopus: false,
+                flush: 0.0,
+            },
+            tail_rot: 0.0,
+            tail_spread: 0.0,
+            tuck: false,
+        };
+        for style in [Style::Notch, Style::Pill] {
+            for (color, rot) in [(FalkColor::Lutino, 0.0), (FalkColor::Grey, 180.0), (FalkColor::WhiteFace, 30.0)] {
+                let s = shape(style, 190.0, 34.0);
+                let dip = (crate::ui::geometry::WINDOW_W, s.y + s.h + 110.0);
+                let paint = |r: &mut Renderer, accessory: CatAccessory, falk: bool| {
+                    let look = CatLook { mascot: Mascot::Falk, falk: color, accessory, ..CatLook::default() };
+                    r.cat.set(look);
+                    let fig = bird_at((s.x + s.w + 60.0, s.y + s.h + 55.0), rot, 1.0, 1.0, vec![bird(&pose, color)]);
+                    let b = fig.bounds();
+                    let parts = if falk { vec![Part { layer: Layer::Back, draw: fig, alpha: 1.0 }] } else { Vec::new() };
+                    let play = PlayFrame { parts, ..play_frame(0.0) };
+                    let px = with_frame_all(Some(play), None, robot, 1.0, |frame| {
+                        painted(r, dip, |r| r.paint_island(style, s, frame).unwrap())
+                    });
+                    (px, b)
+                };
+                let case = format!("{style:?} {color:?} {rot}");
+                for accessory in [CatAccessory::Bow, CatAccessory::None] {
+                    let ((with, b), (without, _)) = (paint(&mut r, accessory, true), paint(&mut r, accessory, false));
+                    let (mut bow, mut ink) = (0, 0);
+                    for y in 0..with.h {
+                        for x in 0..with.w {
+                            let p = pixel(&with, (x, y));
+                            if p == pixel(&without, (x, y)) {
+                                continue;
+                            }
+                            ink += 1;
+                            let (dx, dy) = ((x as f32 + 0.5) / k, (y as f32 + 0.5) / k);
+                            let off = dx < b.x - 0.5 || dx > b.x + b.w + 0.5 || dy < b.y - 0.5 || dy > b.y + b.h + 0.5;
+                            assert!(!off, "{case} {accessory:?}: ink at ({dx}, {dy}) outside {b:?}");
+                            let [blue, green, red, alpha] = p;
+                            if alpha > 240 && red > 180 && green < 100 && (70..140).contains(&blue) {
+                                bow += 1;
+                            }
+                        }
+                    }
+                    assert!(ink > 1000, "{case}: the falk drew too little ({ink} px)");
+                    // The falk's bow is small at the slot's size: 10 px at 1x.
+                    match accessory {
+                        CatAccessory::Bow => assert!(bow > 5, "{case}: the bow did not come along ({bow} px)"),
+                        _ => assert_eq!(bow, 0, "{case}: raspberry without the bow"),
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_digit_prop_lands_where_the_clock_would_move_that_digit() {
         // The stolen digit hangs from the beak by its cell's centre: drawn as
         // a prop at a point, it covers what the clock's own character moved
