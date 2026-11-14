@@ -5196,7 +5196,7 @@ mod tests {
     fn play_frame(spread: f32) -> PlayFrame {
         PlayFrame {
             deform: Deform::default(),
-            beat: Beat { spread, alpha: 1.0, t: 0.0 },
+            beat: Beat { spread, alpha: 1.0, t: 0.0, cut_at: None },
             digits: [DigitFx::IDENTITY; 5],
             slot: Slot::App,
             halo: 1.0,

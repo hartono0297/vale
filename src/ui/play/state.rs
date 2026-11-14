@@ -16,6 +16,10 @@ pub struct Beat {
     pub alpha: f32,
     /// The story's own seconds; keeps advancing through the wind-down.
     pub t: f32,
+    /// The story's second the wind-down began at, once it has: a story keeps
+    /// hidden what it had not brought out by then, so nothing pops in while
+    /// it eases home.
+    pub cut_at: Option<f32>,
 }
 
 pub struct Play {
@@ -48,7 +52,7 @@ impl Play {
     pub fn beat(&self, now: Instant) -> Beat {
         let t = now.saturating_duration_since(self.started).as_secs_f32();
         if self.instant {
-            return Beat { spread: 0.0, alpha: 0.0, t };
+            return Beat { spread: 0.0, alpha: 0.0, t, cut_at: None };
         }
         let wind = self.wind_start();
         // The opening stops where the cut finds it, so the spread only falls.
@@ -56,7 +60,8 @@ impl Play {
         let rise = ease_in_out_cubic(opened.as_secs_f32() / WIND_DOWN.as_secs_f32());
         let down = now.saturating_duration_since(wind).as_secs_f32();
         let alpha = 1.0 - ease_in_out_cubic(down / WIND_DOWN.as_secs_f32());
-        Beat { spread: rise * alpha, alpha, t }
+        let cut_at = (now >= wind).then(|| wind.saturating_duration_since(self.started).as_secs_f32());
+        Beat { spread: rise * alpha, alpha, t, cut_at }
     }
 
     /// Begin the wind-down now. The first call fixes the end.
@@ -182,6 +187,24 @@ mod tests {
         assert!(b0.t < b1.t && b1.t < b2.t && b2.t < b3.t, "painters never see time go back");
         assert!((b2.alpha - 0.5).abs() < 1e-6, "halfway through is half, got {}", b2.alpha);
         assert_eq!(b2.spread, b2.alpha, "mid-story the spread falls on alpha's curve");
+    }
+
+    #[test]
+    fn the_beat_carries_the_story_time_the_wind_down_began_at() {
+        // None while it plays; from the cut on, the story's second it began
+        // at, whether something cut it short or its time ran out.
+        let t0 = Instant::now();
+        let mut p = Play::start(Story::SyalEkor, t0);
+        assert_eq!(p.beat(t0 + MS(399)).cut_at, None);
+        p.end(t0 + MS(400));
+        for ms in [400, 450, 599] {
+            let b = p.beat(t0 + MS(ms));
+            assert!((b.cut_at.unwrap() - 0.4).abs() < 1e-4, "{ms} ms: {:?}", b.cut_at);
+        }
+        let q = Play::start(Story::SyalEkor, t0);
+        let secs = Story::SyalEkor.secs();
+        let late = q.beat(t0 + Duration::from_secs_f32(secs + 0.1));
+        assert!((late.cut_at.unwrap() - secs).abs() < 1e-4, "{:?}", late.cut_at);
     }
 
     #[test]

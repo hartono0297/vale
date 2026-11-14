@@ -1145,6 +1145,7 @@ fn demo_play(which: DemoPlay, style: Style, shape: ShapeRect, cat: CatLook, layo
         spread: 1.0,
         alpha: 1.0,
         t: 0.0,
+        cut_at: None,
     };
     let deform = match which {
         DemoPlay::MalingAngka(t) => {

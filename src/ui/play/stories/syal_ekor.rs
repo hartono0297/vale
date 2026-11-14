@@ -161,8 +161,9 @@ pub fn shot(stage: &Stage) -> Shot {
     let crouch_k = CROUCH * unit / k;
     let duck = kf(t, &[(0.0, 0.0, Lin), (DUCKED, 1.0, Sio), (LEFT, 1.0, Lin), (secs, 0.0, Sio)]) * (2.0 * a).min(1.0);
     // Never brought out inside a wind-down: cut before the hand-over, the
-    // slot head goes home alone.
-    let show = if a < 1.0 && t < SHOWN {
+    // slot head goes home alone, however far the story's time runs on.
+    let seen = beat.cut_at.map_or(t, |c| c.min(t));
+    let show = if a < 1.0 && seen < SHOWN {
         0.0
     } else {
         kf(t, &[(DUCKED, 0.0, Lin), (SHOWN, 1.0, Lin), (LEAVING, 1.0, Lin), (LEFT, 0.0, Lin)])
@@ -301,7 +302,7 @@ mod tests {
 
     /// At `t`, wound down to `alpha` (the island spread open), with the clock.
     fn at(style: Style, w: f32, h: f32, t: f32, alpha: f32) -> Shot {
-        shot(&stage(style, w, h, Beat { spread: 1.0, alpha, t }, true))
+        shot(&stage(style, w, h, Beat { spread: 1.0, alpha, t, cut_at: None }, true))
     }
 
     /// The slot head `m` as the renderer places it on `st`: its pivot (window
@@ -335,7 +336,7 @@ mod tests {
             for (w, h) in SIZES {
                 for t in [0.36, 0.4, 0.44, 8.01, 8.05, 8.09] {
                     let case = format!("{style:?} {w}x{h} t={t}");
-                    let st = stage(style, w, h, Beat { spread: 1.0, alpha: 1.0, t }, true);
+                    let st = stage(style, w, h, Beat { spread: 1.0, alpha: 1.0, t, cut_at: None }, true);
                     let shot = shot(&st);
                     // Both drawn at once, the figure fading over the slot head,
                     // in the same place at the same size: the head never moves.
@@ -363,7 +364,7 @@ mod tests {
                 let mut last: Option<((f32, f32), f32)> = None;
                 let mut t = 0.0;
                 while t <= Story::SyalEkor.secs() {
-                    let st = stage(style, w, h, Beat { spread: 1.0, alpha: 1.0, t }, true);
+                    let st = stage(style, w, h, Beat { spread: 1.0, alpha: 1.0, t, cut_at: None }, true);
                     let shot = shot(&st);
                     let now = match (shot.slot, figure_head(&shot)) {
                         (Slot::Story(m), _) => Some(slot_head(&st, &m)),
@@ -492,7 +493,7 @@ mod tests {
                     let mut crossed = false;
                     for i in (0..=100).rev() {
                         let a = i as f32 / 100.0;
-                        let st = stage(style, w, h, Beat { spread: a, alpha: a, t: 4.3 }, clock);
+                        let st = stage(style, w, h, Beat { spread: a, alpha: a, t: 4.3, cut_at: None }, clock);
                         let shot = shot(&st);
                         if a <= 0.75 {
                             assert!(crate::ui::play::shape::is_rest(style, &shot.deform), "{case} alpha={a}");
@@ -523,7 +524,7 @@ mod tests {
                     }
                     assert!(crossed, "{case}: no cross-fade seen");
                     let s = shape(style, w, h);
-                    assert_eq!(shot(&stage(style, w, h, Beat { spread: 0.0, alpha: 0.0, t: 4.3 }, clock)), Shot::rest(style, s), "{case}");
+                    assert_eq!(shot(&stage(style, w, h, Beat { spread: 0.0, alpha: 0.0, t: 4.3, cut_at: None }, clock)), Shot::rest(style, s), "{case}");
                 }
             }
         }
@@ -586,10 +587,31 @@ mod tests {
     }
 
     #[test]
+    fn a_cut_just_before_the_hand_over_never_flashes_the_cat_in_the_wind_down() {
+        // A real wind-down from a cut at 0.40 s: the story's time runs on past
+        // the hand-over (0.45 s) while alpha falls, and the figure, not shown
+        // at the cut, never shows.
+        use crate::ui::play::state::Play;
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let mut play = Play::start(Story::SyalEkor, t0);
+        let cut = t0 + Duration::from_millis(400);
+        play.end(cut);
+        let mut last = f32::INFINITY;
+        for ms in 0..=200 {
+            let beat = play.beat(cut + Duration::from_millis(ms));
+            let shot = shot(&stage(Style::Notch, 190.0, 34.0, beat, true));
+            let alpha = figure_head(&shot).map_or(0.0, |(_, _, a)| a);
+            assert!(alpha <= last, "{ms} ms into the wind-down (t={}, alpha {}): the figure at {alpha}", beat.t, beat.alpha);
+            last = alpha;
+        }
+    }
+
+    #[test]
     fn the_cat_and_its_tail_wear_the_coat() {
         for color in [CatColor::Terracotta, CatColor::Calico, CatColor::White, CatColor::Black] {
             let look = CatLook { mascot: Mascot::Cat, color, ..CatLook::default() };
-            let st = Stage { look, ..stage(Style::Notch, 190.0, 34.0, Beat { spread: 1.0, alpha: 1.0, t: 4.3 }, true) };
+            let st = Stage { look, ..stage(Style::Notch, 190.0, 34.0, Beat { spread: 1.0, alpha: 1.0, t: 4.3, cut_at: None }, true) };
             let shot = shot(&st);
             let tail = tail_part(&shot).expect("the tail");
             let Draw::Group { items, .. } = &tail.draw else { unreachable!() };

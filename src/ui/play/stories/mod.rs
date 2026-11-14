@@ -727,7 +727,7 @@ macro_rules! story_contract_tests {
                     for clock in contract_clocks() {
                         for t in [0.0, $story.secs()] {
                             for spread in [0.0, 1.0] {
-                                let shot = contract_shot(style, w, h, Beat { spread, alpha: 1.0, t }, clock);
+                                let shot = contract_shot(style, w, h, Beat { spread, alpha: 1.0, t, cut_at: None }, clock);
                                 if let Err(why) = $crate::ui::play::stories::at_rest(style, &shot) {
                                     panic!("{style:?} {w}x{h} clock={clock} t={t} spread={spread}: {why}");
                                 }
@@ -747,7 +747,7 @@ macro_rules! story_contract_tests {
                     let mut t = 0.0;
                     while t <= $story.secs() {
                         for spread in [0.0, 1.0] {
-                            let shot = contract_shot(style, 190.0, 34.0, Beat { spread, alpha: 0.0, t }, clock);
+                            let shot = contract_shot(style, 190.0, 34.0, Beat { spread, alpha: 0.0, t, cut_at: None }, clock);
                             if let Err(why) = $crate::ui::play::stories::at_rest(style, &shot) {
                                 panic!("{style:?} clock={clock} t={t} spread={spread}: {why}");
                             }
@@ -770,7 +770,7 @@ macro_rules! story_contract_tests {
                         for alpha in [1.0, 0.5, 0.2] {
                             let mut t = 0.0;
                             while t <= $story.secs() {
-                                let beat = Beat { spread: alpha, alpha, t };
+                                let beat = Beat { spread: alpha, alpha, t, cut_at: None };
                                 let b = contract_shot(style, w, h, beat, clock).bounds();
                                 // Above the screen's top edge is hidden by it, as the
                                 // mockup's bezel hides it.
@@ -792,7 +792,7 @@ macro_rules! story_contract_tests {
                 for (w, h) in $crate::ui::play::stories::CONTRACT_SIZES {
                     for clock in contract_clocks() {
                         for t in [0.001, $story.secs() - 0.001] {
-                            let shot = contract_shot(style, w, h, Beat { spread: 1.0, alpha: 1.0, t }, clock);
+                            let shot = contract_shot(style, w, h, Beat { spread: 1.0, alpha: 1.0, t, cut_at: None }, clock);
                             if let Err(why) = $crate::ui::play::stories::near_rest(&shot, 1e-3) {
                                 panic!("{style:?} {w}x{h} clock={clock} t={t}: {why}");
                             }
