@@ -161,16 +161,8 @@ fn figure(pose: &CatPose, look: CatLook) -> Vec<Draw> {
             6,
         );
         let p = curl(&along(&d, plen(&d), 26), t.curl, 9.0, 10, (w * 0.6).to_radians());
-        let style = LimbStyle {
-            wf: Some(tail_width),
-            // The mockup's `tl.puff || 1`.
-            wm: if t.puff == 0.0 { 1.0 } else { t.puff },
-            fluff: 0.05,
-            side_shade: Some((1, 0.3)),
-            stripes: Some(Stripes { start: 8.0, every: 7.5, w: 3.2, skip_base: 5.0, rgb: c.shade }),
-            tip: Some((6.0, c.shade)),
-            ..LimbStyle::default()
-        };
+        // The mockup's `tl.puff || 1`.
+        let style = slim_tail(if t.puff == 0.0 { 1.0 } else { t.puff });
         out.extend(striped(&p, &style, c.fur, c.shade, rim));
     }
     let (body, side, hips) = (svg(SL_BODY), svg(SL_SIDE), [svg(SL_HL), svg(SL_HR)]);
@@ -217,6 +209,27 @@ fn figure(pose: &CatPose, look: CatLook) -> Vec<Draw> {
         out.push(paw((x0 + p.dx, 84.0 + p.dy), c, p));
     }
     out
+}
+
+/// The mockup's `slimTail`: the seated cat's long tail, `wm` times as wide,
+/// for `tail` to draw (its stripes and tip take the coat's shade there).
+pub fn slim_tail(wm: f32) -> LimbStyle {
+    LimbStyle {
+        wf: Some(tail_width),
+        wm,
+        fluff: 0.05,
+        side_shade: Some((1, 0.3)),
+        stripes: Some(Stripes { start: 8.0, every: 7.5, w: 3.2, skip_base: 5.0, rgb: 0 }),
+        tip: Some((6.0, 0)),
+        ..LimbStyle::default()
+    }
+}
+
+/// One small paw of the coat on its own (the mockup's `smallPaw` with no
+/// lift), centred on its grid's origin: a story places it, as Petak umpet's
+/// paw gripping the island's edge.
+pub fn small_paw(look: CatLook) -> Draw {
+    paw((0.0, 0.0), Coat::of(look.head_rgb(), 0.0), &Paw::default())
 }
 
 /// A tail of a story's own, off the body (the scarf of Syal ekor): `style`'s

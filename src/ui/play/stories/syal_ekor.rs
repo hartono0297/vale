@@ -7,7 +7,7 @@
 
 use std::f32::consts::{PI, TAU};
 
-use super::{Draw, Ease, HEAD_PIVOT, Layer, MascotShot, Part, Shot, Slot, Stage, blinks, bump, kf, lerp, ring};
+use super::{Draw, Ease, HEAD_PIVOT, Layer, MascotShot, Part, Shot, Slot, Stage, blinks, bump, kf, lerp, rim_pt, ring};
 use crate::config::Style;
 use crate::ui::geometry::{ROBOT_COMPACT, ShapeRect, corner_radius};
 use crate::ui::play::art::cat::{CAT_SC, CatPose, Paw, SEAT, cat_at, tail};
@@ -71,24 +71,6 @@ fn mix_hop(t: f32, a_in: f32, a_out: f32) -> Hop {
     if t < a_out - 0.1 { hop_in(t, a_in) } else { hop_out(t, a_out) }
 }
 
-/// A point `off` outside the island's left end (the mockup's `rimPt(-1, u,
-/// off)`): `u` 0 at the top, 1 where the lip starts. The Notch's straight
-/// side to 0.55, then its corner; the Pill's half circle all the way.
-fn rim_pt(style: Style, s: ShapeRect, u: f32, off: f32) -> (f32, f32) {
-    let r = corner_radius(style, s);
-    let (left, top, bottom) = (s.x, s.y, s.y + s.h);
-    let (big, cx) = (r + off, left + r);
-    if style == Style::Pill {
-        let a = (-90.0 + 180.0 * u.clamp(0.0, 1.0)).to_radians();
-        return (cx - big * a.cos(), top + s.h / 2.0 + big * a.sin());
-    }
-    if u < 0.55 {
-        return (left - off, lerp(top - off, bottom - r, u / 0.55));
-    }
-    let a = (90.0 * (u - 0.55) / 0.45).to_radians();
-    (cx - big * a.cos(), bottom - r + big * a.sin())
-}
-
 /// The scarf's control points (the mockup's `scarfPath`): from beside the
 /// cat under the lip, round the left end `gap` off it, then up the Notch's
 /// side, or onto the Pill's face so it reads as a scarf over a shoulder.
@@ -99,7 +81,7 @@ fn scarf_controls(style: Style, s: ShapeRect, gap: f32) -> Vec<(f32, f32)> {
     let n = if pill { 10 } else { 6 };
     for k in 0..=n {
         let f = k as f32 / n as f32;
-        p.push(rim_pt(style, s, if pill { 1.0 - f } else { lerp(1.0, 0.55, f) }, gap));
+        p.push(rim_pt(style, s, -1.0, if pill { 1.0 - f } else { lerp(1.0, 0.55, f) }, gap));
     }
     if pill {
         let r = corner_radius(style, s);

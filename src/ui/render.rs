@@ -4101,8 +4101,9 @@ impl Renderer {
     ///
     /// The Notch is that body plus the two shoulders `notch_path` draws. They
     /// join the body to the screen edge, which never swings: they sit on the
-    /// edge, meet the body's sides where `d` puts them (`top_corners`), and
-    /// ignore the swing. At rest the union is the resting island, so nothing
+    /// edge, meet the body's sides where `d` puts them (`top_corners`, which
+    /// follows a swung side), and never turn. At rest the union is the
+    /// resting island, so nothing
     /// pops when a play starts or ends.
     fn played_path(
         &self,
@@ -5189,6 +5190,28 @@ mod tests {
                 let edge = |y: f32| (0..800).map(|i| s.x - 6.0 + i as f32 * 0.025).find(|&x| contains(&island, x, y)).unwrap_or(f32::NAN);
                 let (above, below) = (edge(foot - 0.4), edge(foot + 0.4));
                 assert!((above - below).abs() < 0.5, "{w}x{h} {d:?}: {above} above the foot, {below} below");
+            }
+        }
+    }
+
+    #[test]
+    fn a_rocking_notch_leaves_no_ledge_at_its_shoulder() {
+        // Petak umpet's pounce rocks the Notch about the screen edge by up to
+        // 2.4 degrees: on the side that swings in, the body's side must meet
+        // the static shoulder's foot, with no step between them.
+        let r = renderer();
+        for (w, h) in [(160.0, 28.0), (190.0, 34.0), (300.0, 44.0)] {
+            let s = shape(Style::Notch, w, h);
+            let foot = s.y + crate::ui::geometry::shoulder_depth(s);
+            for swing_deg in [-2.6, -1.2, 1.2, 2.6] {
+                let d = Deform { swing_deg, ..Deform::default() };
+                let island = r.island_geometry(Style::Notch, s, Some(&d)).unwrap();
+                let left = |y: f32| (0..1200).map(|i| s.x - 10.0 + i as f32 * 0.025).find(|&x| contains(&island, x, y)).unwrap_or(f32::NAN);
+                let right = |y: f32| (0..1200).map(|i| s.x + s.w + 10.0 - i as f32 * 0.025).find(|&x| contains(&island, x, y)).unwrap_or(f32::NAN);
+                for (side, edge) in [("left", &left as &dyn Fn(f32) -> f32), ("right", &right)] {
+                    let (above, below) = (edge(foot - 0.4), edge(foot + 0.4));
+                    assert!((above - below).abs() < 0.2, "{w}x{h} swing {swing_deg} {side}: {above} above the foot, {below} below");
+                }
             }
         }
     }

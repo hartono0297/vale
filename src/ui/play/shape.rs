@@ -183,16 +183,29 @@ fn left_pull(s: ShapeRect, bulge: f32, x: f32, y: f32) -> f32 {
 
 /// The body's left and right side at the foot of the Notch's shoulders
 /// (`shoulder_depth` below the screen edge), where each shoulder meets it:
-/// moved by the squeeze, the left bulge and the jolt, not by the swing (the
-/// shoulders tuck into a swinging body instead). A dent is not followed;
-/// none reaches that high. The Pill has no shoulders.
+/// moved by the squeeze, the left bulge, the jolt and the swing (a swung
+/// side crosses the foot's height elsewhere: on the side, its corner or the
+/// run above the screen edge, as `outline` draws them). The shoulders
+/// themselves never turn: they slide along the edge with it. Unswung, a dent
+/// is not followed; none reaches that high. The Pill has no shoulders.
 pub fn top_corners(s: ShapeRect, d: &Deform) -> (f32, f32) {
     let cx = s.x + s.w / 2.0;
     let foot = s.y + shoulder_depth(s);
     let keep = 1.0 - d.squeeze;
-    let left = s.x + left_pull(s, d.bulge_left, s.x, foot);
-    let right = s.x + s.w;
-    (cx + (left - cx) * keep + d.jolt, cx + (right - cx) * keep + d.jolt)
+    if d.swing_deg == 0.0 {
+        let left = s.x + left_pull(s, d.bulge_left, s.x, foot);
+        let right = s.x + s.w;
+        return (cx + (left - cx) * keep + d.jolt, cx + (right - cx) * keep + d.jolt);
+    }
+    // The first crossing of the foot's height from each end of the drawn
+    // outline, which starts and ends above the screen edge while it swings.
+    let pts = outline(Style::Notch, s, d);
+    let cross = |a: &(f32, f32), b: &(f32, f32)| {
+        ((a.1 - foot) * (b.1 - foot) <= 0.0 && a.1 != b.1).then(|| a.0 + (foot - a.1) / (b.1 - a.1) * (b.0 - a.0))
+    };
+    let left = pts.windows(2).find_map(|w| cross(&w[0], &w[1]));
+    let right = pts.windows(2).rev().find_map(|w| cross(&w[1], &w[0]));
+    (left.unwrap_or(s.x), right.unwrap_or(s.x + s.w))
 }
 
 /// The mockup's dent `{x, w, d}` (a bell on the lower outline at `x`, `w`
@@ -512,6 +525,30 @@ mod tests {
             let side = left_side_at(&outline(Style::Notch, s, &d), foot);
             assert!((l - side).abs() < 0.05, "{w}x{h}: shoulder at {l}, side at {side}");
             assert!((r - (cx + s.w / 2.0 * 0.982 + 1.6)).abs() < 1e-3, "{w}x{h}: {r}");
+        }
+    }
+
+    #[test]
+    fn a_swinging_notchs_shoulders_meet_its_sides_at_their_foot() {
+        // The swing turns the body's sides about the screen edge's middle;
+        // each shoulder's foot is where its side crosses the foot's height,
+        // so the side that swings in leaves no ledge under its shoulder.
+        for (w, h) in SIZES {
+            let s = shape(Style::Notch, w, h);
+            let foot = s.y + crate::ui::geometry::shoulder_depth(s);
+            for swing_deg in [-12.0, -2.6, 2.6, 12.0] {
+                for d in [
+                    Deform { swing_deg, ..Default::default() },
+                    Deform { swing_deg, bulge_left: -2.2, jolt: 1.6, squeeze: 0.018, ..Default::default() },
+                ] {
+                    let pts = outline(Style::Notch, s, &d);
+                    let right: Vec<_> = pts.iter().rev().copied().collect();
+                    let (l, r) = top_corners(s, &d);
+                    let (side_l, side_r) = (left_side_at(&pts, foot), left_side_at(&right, foot));
+                    assert!((l - side_l).abs() < 1e-3 && (r - side_r).abs() < 1e-3,
+                        "{w}x{h} {d:?}: shoulders at {l}, {r}, sides at {side_l}, {side_r}");
+                }
+            }
         }
     }
 

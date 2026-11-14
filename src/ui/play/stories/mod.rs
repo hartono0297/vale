@@ -3,6 +3,7 @@
 //! paints a shot, nothing here touches Direct2D.
 
 pub mod maling_angka;
+pub mod petak_umpet;
 pub mod syal_ekor;
 
 use std::f32::consts::{PI, TAU};
@@ -23,7 +24,7 @@ use crate::ui::robot::{Expr, GRID, Pose, Seg};
 /// The story has a timeline to play. Only ready stories enter the pool
 /// (`trigger::pool`), so a mascot with none never plays.
 pub fn ready(story: Story) -> bool {
-    matches!(story, Story::MalingAngka | Story::SyalEkor)
+    matches!(story, Story::MalingAngka | Story::SyalEkor | Story::PetakUmpet)
 }
 
 /// What a story plays on: the island, where the play stands, the mascot's
@@ -503,6 +504,7 @@ pub fn shot(story: Story, stage: &Stage) -> Shot {
     let shot = match story {
         Story::MalingAngka => maling_angka::shot(stage),
         Story::SyalEkor => syal_ekor::shot(stage),
+        Story::PetakUmpet => petak_umpet::shot(stage),
         _ => Shot::rest(stage.style, stage.shape),
     };
     debug_assert!(bare_heads_fit(story, &shot), "{story:?} draws a bare head");
@@ -563,6 +565,12 @@ enum Ease {
     Io,
     /// Cubic out (`o`).
     O,
+    /// Cubic in (`i`).
+    I,
+    /// Quadratic in (`qi`).
+    Qi,
+    /// An overshoot (`ob`).
+    Ob,
     /// Sine in and out (`sio`).
     Sio,
     /// A soft overshoot (`sb`).
@@ -576,6 +584,12 @@ impl Ease {
             Ease::Io if t < 0.5 => 4.0 * t * t * t,
             Ease::Io => 1.0 - (-2.0 * t + 2.0).powi(3) / 2.0,
             Ease::O => 1.0 - (1.0 - t).powi(3),
+            Ease::I => t * t * t,
+            Ease::Qi => t * t,
+            Ease::Ob => {
+                let (c1, c3) = (1.9, 2.9);
+                1.0 + c3 * (t - 1.0).powi(3) + c1 * (t - 1.0).powi(2)
+            }
             Ease::Sio => -((PI * t).cos() - 1.0) / 2.0,
             Ease::Sb => {
                 let (c1, c3) = (0.9, 1.9);
@@ -632,6 +646,26 @@ fn blinks(t: f32, at: &[f32]) -> f32 {
 
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
+}
+
+/// A point `off` outside one end of the island (the mockup's `rimPt`): the
+/// left end for `side` -1, the right for 1; `u` 0 at the top, 1 where the
+/// lip starts. The Notch's straight side to 0.55, then its corner; the
+/// Pill's half circle all the way.
+fn rim_pt(style: Style, s: ShapeRect, side: f32, u: f32, off: f32) -> (f32, f32) {
+    let r = crate::ui::geometry::corner_radius(style, s);
+    let (top, bottom) = (s.y, s.y + s.h);
+    let (edge, cx) = if side < 0.0 { (s.x, s.x + r) } else { (s.x + s.w, s.x + s.w - r) };
+    let big = r + off;
+    if style == Style::Pill {
+        let a = (-90.0 + 180.0 * u.clamp(0.0, 1.0)).to_radians();
+        return (cx + side * big * a.cos(), top + s.h / 2.0 + big * a.sin());
+    }
+    if u < 0.55 {
+        return (edge + side * off, lerp(top - off, bottom - r, u / 0.55));
+    }
+    let a = (90.0 * (u - 0.55) / 0.45).to_radians();
+    (cx + side * big * a.cos(), bottom - r + big * a.sin())
 }
 
 /// `fx` eased toward the character at rest as `alpha` falls to 0.
