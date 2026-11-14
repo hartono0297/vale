@@ -14,7 +14,7 @@ use std::f32::consts::TAU;
 use super::syal_ekor::mix_hop;
 use super::{Draw, Ease, Layer, MascotShot, Part, Shot, Slot, Stage, blinks, bump, island_box, kept, kf, lerp, ring, toward_rest};
 use crate::config::Style;
-use crate::ui::geometry::corner_radius;
+use crate::ui::geometry::{ShapeRect, corner_radius};
 use crate::ui::play::art::cat::{CatPose, Paw, cat_at, slim_tail, tail};
 use crate::ui::play::art::tube::{along, catmull_rom, plen};
 use crate::ui::play::shape::{Deform, lip_dent};
@@ -93,6 +93,33 @@ fn note(at: (f32, f32), k: f32) -> Draw {
     }
 }
 
+/// How far the tail's centre line keeps inside the island's edge: half
+/// its widest (6.4 x 0.42, 5 % more with its fluff), the Black cat's rim
+/// 0.8 past that, and a little to spare.
+const TAIL_PAD: f32 = 2.4;
+
+/// `p` kept `pad` inside the island's upper half: under its top edge and,
+/// on the Pill, inside its half circles (pulled toward the end's centre), so
+/// a tail about it never shows in the gap above the island. The mockup ties
+/// the arc to the flat top only; the sweep takes the tip into the right end.
+fn keep_in(style: Style, s: ShapeRect, p: (f32, f32), pad: f32) -> (f32, f32) {
+    let (x, y) = (p.0, p.1.max(s.y + pad));
+    if style != Style::Pill {
+        return (x, y);
+    }
+    let (r, mid, right) = (corner_radius(style, s), s.y + s.h / 2.0, s.x + s.w);
+    let cx = if x < s.x + r {
+        s.x + r
+    } else if x > right - r {
+        right - r
+    } else {
+        return (x, y);
+    };
+    let (dx, dy) = (x - cx, y - mid);
+    let (d, m) = (dx.hypot(dy), r - pad);
+    if dy >= 0.0 || d <= m { (x, y) } else { (cx + dx * m / d, mid + dy * m / d) }
+}
+
 /// `items` (window dip) as one figure in `layer`.
 fn figure(layer: Layer, items: Vec<Draw>, alpha: f32) -> Part {
     Part { layer, draw: Draw::Group { at: (0.0, 0.0), rot_deg: 0.0, scale: (1.0, 1.0), pivot: (0.0, 0.0), items }, alpha }
@@ -153,11 +180,9 @@ pub fn shot(stage: &Stage) -> Shot {
                 glow[i] = glow[i].max(bump(t, tn - 0.04, 0.5));
             }
         }
-        if (SWEEP.0..SWEEP.1 + 0.3).contains(&t) {
-            dy -= 3.0 * (-((tip_x - cx) / 5.0).powi(2)).exp() * sweeping(t);
-            let lit_at = SWEEP.0 + (cx - sweep_from) / sweep_len * (SWEEP.1 - SWEEP.0);
-            glow[i] = glow[i].max(bump(t, lit_at, 0.45));
-        }
+        dy -= 3.0 * (-((tip_x - cx) / 5.0).powi(2)).exp() * sweeping(t);
+        let lit_at = SWEEP.0 + (cx - sweep_from) / sweep_len * (SWEEP.1 - SWEEP.0);
+        glow[i] = glow[i].max(bump(t, lit_at, 0.45));
         let mut rot_deg = 0.0;
         if i == 4 {
             dy += 2.0 * bump(t, LAST - 0.04, 0.2) + 3.2 * fall;
@@ -247,8 +272,11 @@ pub fn shot(stage: &Stage) -> Shot {
             ],
             6,
         );
-        let line = along(&d, plen(&d) * ext, 40);
-        out.parts.push(figure(Layer::Front, tail(&line, &slim_tail(0.42 * (ext / 0.2).min(1.0)), look), play));
+        let line: Vec<_> = along(&d, plen(&d) * ext, 40).into_iter().map(|p| keep_in(style, s, p, TAIL_PAD)).collect();
+        // It also fades in and out over 0.15 s as it leaves and rejoins
+        // the cat, so it never pops in a frame.
+        let shown = kf(t, &[(1.38, 0.0, Lin), (1.53, 1.0, Lin), (7.27, 1.0, Lin), (7.42, 0.0, Lin)]);
+        out.parts.push(figure(Layer::Front, tail(&line, &slim_tail(0.42 * (ext / 0.2).min(1.0)), look), shown * play));
     }
 
     // The lit lip under each key, the notes floating off, and the sweep's
@@ -265,8 +293,11 @@ pub fn shot(stage: &Stage) -> Shot {
     }
     for (tn, j) in NOTES.iter().copied().chain([(LAST, 4)]) {
         let k = (t - tn) / 0.7;
-        if k > 0.02 && k < 1.0 {
-            out.parts.push(Part { layer: Layer::Front, draw: note((dig[j] + 3.0, top + 7.0), k), alpha: (1.0 - k) * play });
+        if k > 0.0 && k < 1.0 {
+            // Fading in over 0.12 s (the mockup shows it at once), a
+            // frame's fade at most.
+            let alpha = (1.0 - k).min(k / 0.17) * play;
+            out.parts.push(Part { layer: Layer::Front, draw: note((dig[j] + 3.0, top + 7.0), k), alpha });
         }
     }
     let lit = bump(t, SWEEP.1 - 0.1, 0.6);
@@ -474,72 +505,242 @@ mod tests {
         }
     }
 
-    /// The highest point `d`'s ink reaches (window dip): its curves sampled,
-    /// not their control points, which `bounds` counts.
-    fn ink_top(d: &Draw) -> f32 {
-        let path_top = |path: &[Seg], pad: f32| {
-            let (mut top, mut at) = (f32::MAX, (0.0, 0.0));
-            for seg in path {
-                let n = 16;
-                let pts: Vec<(f32, f32)> = match *seg {
-                    Seg::Move(x, y) | Seg::Line(x, y) => vec![(x, y)],
-                    Seg::Quad(ax, ay, x, y) => (1..=n).map(|i| {
-                        let (t, u) = (i as f32 / n as f32, 1.0 - i as f32 / n as f32);
-                        (u * u * at.0 + 2.0 * u * t * ax + t * t * x, u * u * at.1 + 2.0 * u * t * ay + t * t * y)
-                    }).collect(),
-                    Seg::Cubic(ax, ay, bx, by, x, y) => (1..=n).map(|i| {
-                        let (t, u) = (i as f32 / n as f32, 1.0 - i as f32 / n as f32);
-                        (
-                            u * u * u * at.0 + 3.0 * u * u * t * ax + 3.0 * u * t * t * bx + t * t * t * x,
-                            u * u * u * at.1 + 3.0 * u * u * t * ay + 3.0 * u * t * t * by + t * t * t * y,
-                        )
-                    }).collect(),
-                    Seg::Close => vec![],
-                };
-                for p in pts {
-                    top = top.min(p.1 - pad);
-                    at = p;
-                }
+    /// The points `path` passes through: its ends and its curves sampled
+    /// (not their control points, which `bounds` counts).
+    fn samples(path: &[Seg]) -> Vec<(f32, f32)> {
+        let (mut out, mut at) = (Vec::new(), (0.0, 0.0));
+        for seg in path {
+            let n = 16;
+            let pts: Vec<(f32, f32)> = match *seg {
+                Seg::Move(x, y) | Seg::Line(x, y) => vec![(x, y)],
+                Seg::Quad(ax, ay, x, y) => (1..=n).map(|i| {
+                    let (t, u) = (i as f32 / n as f32, 1.0 - i as f32 / n as f32);
+                    (u * u * at.0 + 2.0 * u * t * ax + t * t * x, u * u * at.1 + 2.0 * u * t * ay + t * t * y)
+                }).collect(),
+                Seg::Cubic(ax, ay, bx, by, x, y) => (1..=n).map(|i| {
+                    let (t, u) = (i as f32 / n as f32, 1.0 - i as f32 / n as f32);
+                    (
+                        u * u * u * at.0 + 3.0 * u * u * t * ax + 3.0 * u * t * t * bx + t * t * t * x,
+                        u * u * u * at.1 + 3.0 * u * u * t * ay + 3.0 * u * t * t * by + t * t * t * y,
+                    )
+                }).collect(),
+                Seg::Close => vec![],
+            };
+            for q in pts {
+                out.push(q);
+                at = q;
             }
-            top
-        };
+        }
+        out
+    }
+
+    /// The tail's ink as (point, how far its ink reaches round it): its
+    /// fills' outlines, and its strokes (the Black cat's rim) with half their
+    /// width. The tail's group leaves the window's dip as they are.
+    fn ink(d: &Draw, out: &mut Vec<((f32, f32), f32)>) {
         match d {
-            Draw::Fill { path, .. } | Draw::Tint { path, .. } => path_top(path, 0.0),
-            Draw::Stroke { path, width, .. } => path_top(path, width / 2.0),
-            Draw::Group { at: (0.0, 0.0), rot_deg: 0.0, scale: (1.0, 1.0), pivot: (0.0, 0.0), items } => {
-                items.iter().map(ink_top).fold(f32::MAX, f32::min)
-            }
-            other => other.bounds().y,
+            Draw::Fill { path, .. } | Draw::Tint { path, .. } => out.extend(samples(path).into_iter().map(|q| (q, 0.0))),
+            Draw::Stroke { path, width, .. } => out.extend(samples(path).into_iter().map(|q| (q, width / 2.0))),
+            Draw::Group { at: (0.0, 0.0), rot_deg: 0.0, scale: (1.0, 1.0), pivot: (0.0, 0.0), items } => items.iter().for_each(|i| ink(i, out)),
+            other => panic!("unexpected in the tail: {other:?}"),
+        }
+    }
+
+    /// How far inside the upper half of the resting island (x, y) is, dip
+    /// (negative outside): under the top edge, inside the Pill's half
+    /// circles, inside the Notch's straight sides.
+    fn depth_inside(style: Style, s: crate::ui::geometry::ShapeRect, (x, y): (f32, f32)) -> f32 {
+        let (r, right, mid) = (corner_radius(style, s), s.x + s.w, s.y + s.h / 2.0);
+        if style == Style::Pill && x < s.x + r {
+            r - (x - (s.x + r)).hypot(y - mid)
+        } else if style == Style::Pill && x > right - r {
+            r - (x - (right - r)).hypot(y - mid)
+        } else {
+            (y - s.y).min(x - s.x).min(right - x)
         }
     }
 
     #[test]
-    fn the_tail_arcs_under_the_islands_top_edge() {
-        // Its arc is tied to the top edge, so on the Pill it stays inside
-        // the island and never shows in the gap above it.
+    fn the_tail_stays_inside_the_island_round_its_ends() {
+        // Its arc is tied to the island's edge, the Pill's rounded ends
+        // included (the sweep takes the tip into the right one), so on the
+        // Pill it never shows in the gap above it: every sampled point of its
+        // ink in the island's upper half (below it the tail leaves the cat on
+        // the lip), the Black cat's rim counted, in every coat.
+        for color in [CatColor::Terracotta, CatColor::Calico, CatColor::White, CatColor::Black] {
+            let look = CatLook { mascot: Mascot::Cat, color, ..CatLook::default() };
+            for style in [Style::Notch, Style::Pill] {
+                for (w, h) in SIZES {
+                    let s = shape(style, w, h);
+                    let mut seen = false;
+                    let mut worst = (f32::MAX, 0.0, (0.0, 0.0));
+                    let mut t = 1.3;
+                    while t < 7.5 {
+                        let st = Stage { look, ..stage(style, w, h, Beat { spread: 1.0, alpha: 1.0, t, cut_at: None }) };
+                        if let Some(p) = tail_part(&shot(&st)) {
+                            let mut pts = Vec::new();
+                            ink(&p.draw, &mut pts);
+                            for (q, reach) in pts.into_iter().filter(|(q, _)| q.1 < s.y + s.h / 2.0) {
+                                let d = depth_inside(style, s, q) - reach;
+                                if d < worst.0 {
+                                    worst = (d, t, q);
+                                }
+                            }
+                            seen = true;
+                        }
+                        t += 0.02;
+                    }
+                    assert!(seen, "{color:?} {style:?} {w}x{h}: no tail");
+                    assert!(worst.0 >= -0.05, "{color:?} {style:?} {w}x{h}: ink {} dip outside at t={} {:?}", -worst.0, worst.1, worst.2);
+                }
+            }
+        }
         for style in [Style::Notch, Style::Pill] {
             for (w, h) in SIZES {
-                let s = shape(style, w, h);
-                let mut seen = false;
-                let mut worst = (f32::MAX, 0.0);
-                let mut t = 1.3;
-                while t < 7.5 {
-                    if let Some(p) = tail_part(&at(style, w, h, t)) {
-                        let top = ink_top(&p.draw) - s.y;
-                        if top < worst.0 {
-                            worst = (top, t);
-                        }
-                        seen = true;
-                    }
-                    t += 0.02;
-                }
-                assert!(seen, "{style:?} {w}x{h}: no tail");
-                assert!(worst.0 >= -0.3, "{style:?} {w}x{h}: {} dip above the top at t={}", -worst.0, worst.1);
                 // It reaches out over the clock while it plays, and is in
                 // before and after.
                 let b = tail_part(&at(style, w, h, 3.0)).unwrap().draw.bounds();
                 assert!(b.x + b.w > chars(style, w, h)[3], "{style:?} {w}x{h}: {b:?}");
                 assert!(tail_part(&at(style, w, h, 1.3)).is_none() && tail_part(&at(style, w, h, 7.5)).is_none());
+            }
+        }
+    }
+
+    /// Which part `p` is, the same from frame to frame: the cat, the tail,
+    /// the glow under a character, the note over one, the sweep's edge.
+    fn which(p: &Part) -> String {
+        match &p.draw {
+            Draw::Group { items, .. } if items.iter().any(|d| matches!(d, Draw::Head { .. })) => "cat".into(),
+            Draw::Group { at, items, .. } if items.len() == 2 => format!("note {:.2}", at.0),
+            Draw::Group { .. } => "tail".into(),
+            Draw::Ellipse { c, .. } => format!("glow {:.2}", c.0),
+            Draw::Stroke { .. } => "sweep".into(),
+            other => format!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn no_part_pops_in_or_out_between_frames() {
+        // Played through at 60 Hz: every part (one gone counts as 0) and
+        // the halo change by a frame's fade at most.
+        for style in [Style::Notch, Style::Pill] {
+            for (w, h) in SIZES {
+                let mut last: Option<Shot> = None;
+                let mut frame = 0;
+                loop {
+                    let t = frame as f32 / 60.0;
+                    if t > Story::PianoEkor.secs() {
+                        break;
+                    }
+                    let now = at(style, w, h, t);
+                    if let Some(was) = &last {
+                        let alpha = |shot: &Shot, k: &str| shot.parts.iter().filter(|p| which(p) == k).map(|p| p.alpha).sum::<f32>();
+                        for p in was.parts.iter().chain(&now.parts) {
+                            let k = which(p);
+                            let (a, b) = (alpha(was, &k), alpha(&now, &k));
+                            assert!((a - b).abs() <= FRAME_FADE + 1e-4, "{style:?} {w}x{h} t={t}: {k} from {a} to {b}");
+                        }
+                        assert_eq!(now.halo, 1.0, "{style:?} {w}x{h} t={t}");
+                    }
+                    last = Some(now);
+                    frame += 1;
+                }
+            }
+        }
+    }
+
+    /// The notes floating off: where each is (window dip) and its alpha.
+    fn notes(shot: &Shot) -> Vec<((f32, f32), f32)> {
+        shot.parts
+            .iter()
+            .filter_map(|p| match &p.draw {
+                Draw::Group { at, items, .. } if items.len() == 2 => Some((*at, p.alpha)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_notes_float_off_the_keys_they_play() {
+        for style in [Style::Notch, Style::Pill] {
+            for (w, h) in SIZES {
+                let case = format!("{style:?} {w}x{h}");
+                let (x, top) = (chars(style, w, h), shape(style, w, h).y);
+                // None before the first key.
+                assert!(notes(&at(style, w, h, 2.0)).is_empty(), "{case}");
+                // Halfway up its 7 dip rise, the first note over digit 0; the
+                // second just leaving digit 1, fading in.
+                let n = notes(&at(style, w, h, 2.4));
+                assert_eq!(n.len(), 2, "{case}: {n:?}");
+                assert!((n[0].0.0 - (x[0] + 3.0)).abs() < 1e-3 && (n[0].0.1 - (top + 7.0 - 3.5)).abs() < 1e-3 && (n[0].1 - 0.5).abs() < 1e-3, "{case}: {n:?}");
+                assert!((n[1].0.0 - (x[1] + 3.0)).abs() < 1e-3 && n[1].1 > 0.0 && n[1].1 < 0.5, "{case}: {n:?}");
+                // Three at most at once on the climb; the hard last note alone
+                // over the minute's last digit; gone 0.7 s after it.
+                assert_eq!(notes(&at(style, w, h, 3.0)).len(), 3, "{case}");
+                let last = notes(&at(style, w, h, 5.95));
+                assert_eq!(last.len(), 1, "{case}: {last:?}");
+                assert!((last[0].0.0 - (x[4] + 3.0)).abs() < 1e-3, "{case}: {last:?}");
+                assert!(notes(&at(style, w, h, 6.31)).is_empty(), "{case}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_later_keys_are_played_in_order() {
+        // After the climb, back down: 3.4, 3.7, 4.0 and 4.3 s on the
+        // characters 3, 1, 0 and 1, each a single dip.
+        for style in [Style::Notch, Style::Pill] {
+            for (w, h) in SIZES {
+                let mut dips = Vec::new();
+                let mut was = [false; 5];
+                let mut t = 3.25;
+                while t <= 4.6 {
+                    let shot = at(style, w, h, t);
+                    for (i, fx) in shot.digits.iter().enumerate() {
+                        let on = fx.dy > 1.0;
+                        if on && !was[i] {
+                            dips.push((t, i));
+                        }
+                        was[i] = on;
+                    }
+                    t += 0.005;
+                }
+                let order: Vec<usize> = dips.iter().map(|d| d.1).collect();
+                assert_eq!(order, vec![3, 1, 0, 1], "{style:?} {w}x{h}: {dips:?}");
+                for ((t, _), tn) in dips.iter().zip([3.4, 3.7, 4.0, 4.3]) {
+                    assert!((t - tn).abs() < 0.06, "{style:?} {w}x{h}: {dips:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_slot_head_and_the_cat_never_show_more_than_one_mascot() {
+        // Their alphas sum to 1 at most: while it plays, and through real
+        // wind-downs cut during the hop out of the dark, the play and the hop
+        // back.
+        let both = |shot: &Shot| {
+            let head = match shot.slot {
+                Slot::Story(m) => m.alpha,
+                Slot::App => 1.0,
+                Slot::Empty => 0.0,
+            };
+            head + cat(shot).map_or(0.0, |(p, _)| p.alpha)
+        };
+        for style in [Style::Notch, Style::Pill] {
+            let mut t = 0.0;
+            while t <= Story::PianoEkor.secs() {
+                let sum = both(&at(style, 190.0, 34.0, t));
+                assert!(sum <= 1.0 + 1e-4, "{style:?} t={t}: {sum}");
+                t += 0.005;
+            }
+            for cut in [1.2, 3.0, 7.7] {
+                for phase in [0.0, 8.0] {
+                    for (ms, beat, shot) in wind_down_frames(cut, phase, |beat| shot(&stage(style, 190.0, 34.0, beat))) {
+                        let sum = both(&shot);
+                        assert!(sum <= 1.0 + 1e-4, "{style:?} cut {cut} +{ms:.1} ms (alpha {}): {sum}", beat.alpha);
+                    }
+                }
             }
         }
     }
