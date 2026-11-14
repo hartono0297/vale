@@ -191,17 +191,13 @@ pub fn shot(stage: &Stage) -> Shot {
     }
 
     // The island: the lip pressed down where the cat sits, and a small
-    // bounce after the sweep. The mockup scales the island's height by
-    // `1 + nb`; `Deform` has no height scale, so a broad dent moves the lip
-    // by as much (the Notch's whole height, the Pill's half about its
-    // centre). The ring has died to under 0.005 dip by 6.6 s and stops there.
+    // bounce of its height after the sweep (the mockup's `sy: 1 + nb`; the
+    // Notch from the screen edge, the Pill about its centre). The ring has
+    // died to under 0.005 dip by 6.6 s and stops there.
     let nb = if (SWEEP.1..6.6).contains(&t) { ring(t, SWEEP.1, 0.03, 2.4, 3.5) } else { 0.0 };
-    let reach = if style == Style::Pill { s.h / 2.0 } else { s.h };
     out.deform = Deform {
-        dents: vec![
-            lip_dent(style, s, x, 11.0, 1.8 * out_of_dark),
-            lip_dent(style, s, s.x + s.w / 2.0, s.w / 2.0, reach * nb * play),
-        ],
+        dents: vec![lip_dent(style, s, x, 11.0, 1.8 * out_of_dark)],
+        stretch: nb * play,
         ..Deform::default()
     };
     out.island = island_box(style, s, &out.deform);
@@ -893,6 +889,33 @@ mod tests {
             let Draw::Group { items, .. } = &tail_part(&shot).expect("the tail").draw else { unreachable!() };
             assert!(items.iter().any(|d| matches!(d, Draw::Fill { rgb, .. } if *rgb == look.head_rgb())), "{color:?}");
             assert!(cat(&shot).is_some(), "{color:?}");
+        }
+    }
+
+    #[test]
+    fn the_island_bounces_in_height_after_the_sweep() {
+        // The mockup's `sy: 1 + nb`: the island's height rings after the
+        // sweep (`Deform::stretch`); the lip is pressed only where the cat
+        // sits.
+        for style in [Style::Notch, Style::Pill] {
+            for (w, h) in SIZES {
+                let case = format!("{style:?} {w}x{h}");
+                for t in [5.1, 5.2, 5.35, 5.6, 6.0] {
+                    let d = at(style, w, h, t).deform;
+                    let nb = ring(t, SWEEP.1, 0.03, 2.4, 3.5);
+                    assert!((d.stretch - nb).abs() < 1e-6, "{case} t={t}: {} vs {nb}", d.stretch);
+                    assert_eq!(d.dents.len(), 1, "{case} t={t}: {:?}", d.dents);
+                }
+                // Up first, then down past rest.
+                assert!(at(style, w, h, 5.12).deform.stretch > 0.015, "{case}");
+                assert!(at(style, w, h, 5.35).deform.stretch < -0.005, "{case}");
+                for t in [4.9, SWEEP.1, 6.65, 8.0] {
+                    assert_eq!(at(style, w, h, t).deform.stretch, 0.0, "{case} t={t}");
+                }
+                // Wound down, it settles with the rest of the island.
+                let half = shot(&stage(style, w, h, Beat { spread: 0.5, alpha: 0.5, t: 5.12, cut_at: None })).deform.stretch;
+                assert!(half.abs() < at(style, w, h, 5.12).deform.stretch, "{case}: {half}");
+            }
         }
     }
 }
