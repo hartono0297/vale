@@ -64,6 +64,11 @@
 //!   eleven faces of each), `maskot-warna` (every coat of the three on its
 //!   `auto` surface) and `maskot-ekstra` (the falk's hop at its top, the
 //!   octopus flushed, asleep coiled, and both waving).
+//! - The falk's Maling angka story, frozen at five moments, always with the
+//!   falk (its coat and `DI_CAT_ACCESSORY` as above): `bata-maling-angka-ketuk`
+//!   (2.46 s, the second tap), `-bawa` (4.1 s, the digit carried home),
+//!   `-tumbuh` (4.85 s, the clock regrowing it), `-kaget` (5.3 s, the crest
+//!   shot up and the stolen digit falling) and `-siul` (6.55 s, the whistle).
 //! - `DI_FONT=mono` sets the UI typeface to JetBrains Mono in every scene
 //!   that builds a renderer (`--demo`, `--demo-cli`, `--demo-robot`,
 //!   `--demo-devices`, `--demo-arrange`) and in `--settings`; unset or an
@@ -222,9 +227,13 @@ use super::motion::{
 use super::notch_fill::{self, fill_alpha};
 use super::render::{
     CleanerView, CliView, ClipNoticeView, ClipView, DevicesView, FolderMenuView, Frame, MoleView, RecFrame, RecordView, VideoThumbView,
-    NoticeCloseView, NotifView, Progress, Renderer, RobotFrame, SearchView, SheetKind, ShotView,
+    DigitFx, NoticeCloseView, NotifView, PlayFrame, Progress, Renderer, RobotFrame, SearchView, SheetKind, ShotView,
     SystemView, ToastBadgeView, ToastLogoView,
 };
+use super::play::shape::{Deform, Dent};
+use super::play::state::Beat;
+use super::play::stories;
+use super::play::trigger::Story;
 use super::robot::{Expr, EyesPose, Motion, PAW_LIFT, Pose};
 use super::shelf_motion::{SHELF_ENTER_MS, SHELF_MOVE_MS, SHELF_STAGGER_MS, ShelfMotion};
 use super::window::IslandWindow;
@@ -405,6 +414,9 @@ struct Scene {
     /// The notice's ✕ is drawn (at `DI_DEMO_CLOSE`'s alpha, else fully); the
     /// flag says the pointer is on it. A notice that is not closable draws none.
     close: Option<bool>,
+    /// A mid-play frame, frozen (`demo_play`): the mascot and the clock at the
+    /// island's ends, the island deformed. Nothing is captured.
+    play: DemoPlay,
 }
 
 /// The cleaner's states (deepclean-opsi-d.html p10 and d1).
@@ -488,6 +500,23 @@ enum CliDemo {
     /// keputusan-v3.1 p2: the folder menu open (2 windows, 1 favourite,
     /// 2 recent).
     FolderMenu,
+}
+
+/// What a play scene freezes (`bata-play-island`, `bata-play-swing`,
+/// `bata-play-digits`, the `bata-maling-angka-*` moments).
+#[derive(Clone, Copy, PartialEq)]
+enum DemoPlay {
+    No,
+    /// A dent in the lip and a small squeeze.
+    Dent,
+    /// The Notch swung by 3.4 degrees, so its low side shows.
+    Swing,
+    /// The island turned a few degrees with no digit moved by its own, and
+    /// the clock's first digit lifted and turned: the clock follows the
+    /// island, and one character has a place of its own.
+    Digits,
+    /// The falk's Maling angka at this many seconds, always with the falk.
+    MalingAngka(f32),
 }
 
 /// `View` without its payloads, so scenes can be `const`.
@@ -698,6 +727,7 @@ const BASE: Scene = Scene {
     offer_strip: false,
     dot: false,
     close: None,
+    play: DemoPlay::No,
 };
 
 const fn clipboard(name: &'static str, which: ClipDemo) -> Scene {
@@ -979,6 +1009,59 @@ const fn rec_hot_scene(name: &'static str, muted: [bool; 2], hot: Source) -> Sce
     }
 }
 
+/// The frozen frames of the play scenes (`Scene::play`) on the island `shape`:
+/// the mascot and the clock spread to the island's ends, and the island
+/// deformed as `which` says, or a story's own moment.
+fn demo_play(which: DemoPlay, style: Style, shape: ShapeRect) -> PlayFrame {
+    let beat = Beat {
+        spread: 1.0,
+        alpha: 1.0,
+        t: 0.0,
+    };
+    let deform = match which {
+        DemoPlay::MalingAngka(t) => {
+            let beat = Beat { t, ..beat };
+            return PlayFrame::of(stories::shot(Story::MalingAngka, style, shape, beat), beat);
+        }
+        DemoPlay::No | DemoPlay::Dent => Deform {
+            dents: vec![Dent {
+                u: 0.5,
+                depth: -0.25,
+                width: 0.6,
+            }],
+            squeeze: 0.06,
+            ..Deform::default()
+        },
+        // As far as any story swings the Notch (the cat's Petak umpet).
+        DemoPlay::Swing => Deform {
+            swing_deg: 3.4,
+            ..Deform::default()
+        },
+        // The Notch swings, the Pill swings and tilts: both turn the clock.
+        DemoPlay::Digits => Deform {
+            swing_deg: 3.4,
+            tilt_deg: 3.0,
+            ..Deform::default()
+        },
+    };
+    let mut digits = [DigitFx::IDENTITY; 5];
+    if which == DemoPlay::Digits {
+        digits[0] = DigitFx {
+            dy: -4.0,
+            rot_deg: 14.0,
+            scale: 1.1,
+            ..DigitFx::IDENTITY
+        };
+    }
+    PlayFrame {
+        deform,
+        beat,
+        digits,
+        mascot: None,
+        props: Vec::new(),
+    }
+}
+
 /// A scene of Bata in the notch (studio-robot.html p3).
 const fn bata(name: &'static str, kind: ShapeKind, view: View0, expr: Expr) -> Scene {
     Scene {
@@ -1171,7 +1254,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 211] = [
+const SCENES: [Scene; 219] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -1786,6 +1869,41 @@ const SCENES: [Scene; 211] = [
         ..BASE
     },
     bata("bata-kosong", ShapeKind::Idle, View0::Idle, Expr::Idle),
+    Scene {
+        play: DemoPlay::Dent,
+        ..bata("bata-play-island", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    Scene {
+        play: DemoPlay::Swing,
+        ..bata("bata-play-swing", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    Scene {
+        play: DemoPlay::Digits,
+        ..bata("bata-play-digits", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    // Maling angka, frozen: the second tap, the digit carried home, the
+    // clock regrowing it, the crest shot up as the stolen one falls, the
+    // whistle.
+    Scene {
+        play: DemoPlay::MalingAngka(2.46),
+        ..bata("bata-maling-angka-ketuk", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    Scene {
+        play: DemoPlay::MalingAngka(4.1),
+        ..bata("bata-maling-angka-bawa", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    Scene {
+        play: DemoPlay::MalingAngka(4.85),
+        ..bata("bata-maling-angka-tumbuh", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    Scene {
+        play: DemoPlay::MalingAngka(5.3),
+        ..bata("bata-maling-angka-kaget", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
+    Scene {
+        play: DemoPlay::MalingAngka(6.55),
+        ..bata("bata-maling-angka-siul", ShapeKind::Idle, View0::Idle, Expr::Idle)
+    },
     Scene {
         clock: Some("23:48"),
         ..bata("bata-tidur", ShapeKind::Idle, View0::Idle, Expr::Sleep)
@@ -2877,7 +2995,14 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                 }),
                 tiles: scene_tiles(&scene),
                 palette,
-                cat,
+                // A story scene draws its own mascot, whatever `DI_MASCOT` says.
+                cat: match scene.play {
+                    DemoPlay::MalingAngka(_) => CatLook {
+                        mascot: Mascot::Falk,
+                        ..cat
+                    },
+                    _ => cat,
+                },
                 fill_alpha,
                 legibility: notch_fill::legibility(fill_alpha),
                 clock: match scene.clock {
@@ -3024,6 +3149,7 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                     || slide != 0.0
                     || scene.reveal.is_some()
                     || scene.fade_from.is_some(),
+                play: (scene.play != DemoPlay::No).then(|| demo_play(scene.play, style, shape)),
             };
             if let Err(error) = renderer.draw(&win, style, shape, &frame, opacity) {
                 eprintln!("demo: draw failed: {error}");

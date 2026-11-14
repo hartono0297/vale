@@ -11,7 +11,7 @@ use crate::i18n::Lang;
 use crate::pages::PageEntry;
 use crate::pomodoro::PomoSettings;
 use crate::theme::{
-    Accent, CatAccessory, CatColor, FalkColor, Mascot, OctopusColor, Surface, WindowTheme,
+    Accent, CatAccessory, CatColor, FalkColor, Mascot, MascotPlay, OctopusColor, Surface, WindowTheme,
 };
 use crate::tiles::TileEntry;
 use crate::ui::geometry::{
@@ -230,6 +230,9 @@ pub struct Config {
     /// The octopus's coat. A bad value reads as Coral.
     #[serde(default, deserialize_with = "octopus_color")]
     pub octopus_color: OctopusColor,
+    /// How often the mascot plays on its own. A bad value reads as Sesekali.
+    #[serde(default, deserialize_with = "mascot_play")]
+    pub mascot_play: MascotPlay,
 }
 
 /// The lyrics card's rectangle in screen coordinates, physical pixels.
@@ -514,6 +517,14 @@ fn cat_color<'de, D: Deserializer<'de>>(d: D) -> Result<CatColor, D::Error> {
 fn mascot<'de, D: Deserializer<'de>>(d: D) -> Result<Mascot, D::Error> {
     let v = serde_json::Value::deserialize(d)?;
     Ok(v.as_str().and_then(Mascot::from_name).unwrap_or_default())
+}
+
+/// A mascot play frequency; anything else is Sesekali.
+fn mascot_play<'de, D: Deserializer<'de>>(d: D) -> Result<MascotPlay, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(v.as_str()
+        .and_then(MascotPlay::from_name)
+        .unwrap_or_default())
 }
 
 /// A falk coat name; anything else is Lutino.
@@ -823,6 +834,7 @@ impl Default for Config {
             mascot: Mascot::Cat,
             falk_color: FalkColor::Lutino,
             octopus_color: OctopusColor::Coral,
+            mascot_play: MascotPlay::Sesekali,
             cat_accessory: CatAccessory::None,
             cat_follow_pointer: true,
             cat_dance: true,
@@ -977,6 +989,7 @@ pub fn merge_owned(disk: Config, mem: &Config) -> Config {
         mascot: mem.mascot,
         falk_color: mem.falk_color,
         octopus_color: mem.octopus_color,
+        mascot_play: mem.mascot_play,
         cat_accessory: mem.cat_accessory,
         cat_follow_pointer: mem.cat_follow_pointer,
         cat_dance: mem.cat_dance,
@@ -1366,6 +1379,7 @@ mod tests {
             mascot: Mascot::Octopus,
             falk_color: FalkColor::Grey,
             octopus_color: OctopusColor::Blue,
+            mascot_play: MascotPlay::Sapaan,
             cat_accessory: CatAccessory::Bow,
             cat_follow_pointer: false,
             cat_dance: false,
@@ -3059,6 +3073,28 @@ mod tests {
         );
         let back = parse(&serde_json::to_string_pretty(&mem).unwrap());
         assert_eq!(back, mem);
+    }
+
+    #[test]
+    fn mascot_play_defaults_to_sesekali_and_reads_leniently() {
+        assert_eq!(Config::default().mascot_play, MascotPlay::Sesekali);
+        assert_eq!(
+            parse(r#"{"mascot_play":"jarang"}"#).mascot_play,
+            MascotPlay::Jarang
+        );
+        assert_eq!(
+            parse(r#"{"mascot_play":"kadang2"}"#).mascot_play,
+            MascotPlay::Sesekali
+        );
+        assert_eq!(
+            parse(r#"{"mascot_play":7}"#).mascot_play,
+            MascotPlay::Sesekali
+        );
+        let odd = parse(r#"{"mascot_play":null,"robot_sleep_minutes":25}"#);
+        assert_eq!(
+            (odd.mascot_play, odd.robot_sleep_minutes),
+            (MascotPlay::Sesekali, 25)
+        );
     }
 
     #[test]

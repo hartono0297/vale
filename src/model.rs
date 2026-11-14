@@ -613,6 +613,9 @@ pub enum Event {
     /// A mouse button went down outside the island while the panel was kept
     /// open: it closes.
     Dismiss,
+    /// "Mainkan maskot" in the menu: an open panel shuts (the pointer may be
+    /// on it), so the play runs around the closed island.
+    PanelShut,
     /// "Halaman panel", at startup and when the settings window changes it.
     PanelPages(PanelPages),
     /// "Pintasan", at startup and when the settings window changes it.

@@ -365,6 +365,10 @@ impl App {
 
     /// `WM_HOTKEY` or the PrtSc hook: what the row does.
     pub(super) fn on_hotkey(&mut self, id: HotkeyId) {
+        // A hotkey ends a running story, easing home, whatever the row does.
+        if let Some(active) = self.play.as_mut() {
+            active.play.end(std::time::Instant::now());
+        }
         match id {
             HotkeyId::Clipboard => self.on_clip_hotkey(),
             HotkeyId::Search => self.on_search_hotkey(),

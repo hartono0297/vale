@@ -894,6 +894,11 @@ impl IslandState {
                     }
                 }
             }
+            Event::PanelShut => {
+                if self.panel_open() {
+                    self.collapse();
+                }
+            }
             Event::EditorOpen(on) => self.editor_open = on,
             // Only a panel that shows may be held: a dropdown never opens one.
             Event::MenuOpen(on) => self.menu_open = on && self.panel_open(),
@@ -1269,9 +1274,24 @@ impl IslandState {
         self.base_view()
     }
 
+    /// The view the island would have if the panel were shut right now.
+    pub fn view_if_panel_shut(&self) -> View {
+        if let Some((notice, _)) = &self.current
+            && !self.toast_tucked()
+        {
+            return View::Notice(notice.clone());
+        }
+        self.base_view_with(false)
+    }
+
     /// What the island shows with the current notice left out: the view a
     /// tucked toast sits on.
     fn base_view(&self) -> View {
+        self.base_view_with(true)
+    }
+
+    /// `base_view`; with `panel` false the panel is taken as shut.
+    fn base_view_with(&self, panel: bool) -> View {
         if self.fullscreen {
             return View::Hidden;
         }
@@ -1281,7 +1301,7 @@ impl IslandState {
             return View::ScreenCountdown(n);
         }
         // Sticky notices do not block the panel; they show as a strip inside it.
-        if self.panel_open() {
+        if panel && self.panel_open() {
             return View::Panel(self.page);
         }
         if let Some(notice) = self.sticky.last() {
@@ -3751,6 +3771,118 @@ mod tests {
         assert_eq!(s.view(), View::Panel(Page::Media));
         leave(&mut s, t0);
         assert_eq!(s.view(), View::MediaCompact);
+    }
+
+    #[test]
+    fn panel_shut_closes_a_panel_the_pointer_is_still_on_and_does_nothing_otherwise() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::PanelShut, t0);
+        assert_eq!(s.view(), View::Idle);
+        s.apply(Event::Hover(true), t0);
+        assert!(matches!(s.view(), View::Panel(_)));
+        // Dismiss would not do it: the pointer is on the island, nothing is latched.
+        s.apply(Event::Dismiss, t0);
+        assert!(matches!(s.view(), View::Panel(_)));
+        s.apply(Event::PanelShut, t0);
+        assert_eq!(s.view(), View::Idle);
+        // It stays shut for this visit.
+        s.apply(Event::Tick, t0 + Duration::from_secs(5));
+        assert_eq!(s.view(), View::Idle);
+        // A new visit (leave, then return) opens it again.
+        s.apply(Event::Hover(false), t0 + Duration::from_secs(6));
+        s.apply(Event::Hover(true), t0 + Duration::from_secs(7));
+        assert!(matches!(s.view(), View::Panel(_)));
+    }
+
+    #[test]
+    fn panel_shut_closes_a_latched_panel_too() {
+        let t0 = Instant::now();
+        // Hover and stay: the panel is latched by the open mode.
+        let mut s = mode(OpenMode::HoverStay, t0);
+        s.apply(Event::Hover(true), t0);
+        s.apply(Event::Click(Hit::Body), t0);
+        s.apply(Event::PanelShut, t0);
+        assert_eq!(s.view(), View::Idle);
+        // Click mode, pointer on the island after the click.
+        let mut s = mode(OpenMode::Click, t0);
+        s.apply(Event::Hover(true), t0);
+        s.apply(Event::Click(Hit::Body), t0);
+        assert!(matches!(s.view(), View::Panel(_)));
+        s.apply(Event::PanelShut, t0);
+        assert_eq!(s.view(), View::Idle);
+        // Click mode, pointer already gone (latched, hover false).
+        let mut s = mode(OpenMode::Click, t0);
+        s.apply(Event::Hover(true), t0);
+        s.apply(Event::Click(Hit::Body), t0);
+        s.apply(Event::Hover(false), t0);
+        assert!(matches!(s.view(), View::Panel(_)));
+        s.apply(Event::PanelShut, t0);
+        assert_eq!(s.view(), View::Idle);
+    }
+
+    /// The play gates' view of the island, as `App::play_env` reads it.
+    fn play_env_of(s: &IslandState) -> crate::ui::play::gate::Env {
+        let view = s.view();
+        crate::ui::play::gate::Env {
+            idle_view: view == View::Idle,
+            panel_open: matches!(view, View::Panel(_)),
+            ..crate::ui::play::testing::ok_env()
+        }
+    }
+
+    /// The env the menu judges its "Mainkan maskot" entry by.
+    fn menu_item_env(s: &IslandState) -> crate::ui::play::gate::Env {
+        crate::ui::tray::shut_panel_env(&play_env_of(s), s.view_if_panel_shut() == View::Idle)
+    }
+
+    #[test]
+    fn the_play_item_shows_over_a_panel_the_hover_opened() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Hover(true), t0);
+        assert!(matches!(s.view(), View::Panel(_)));
+        let env = play_env_of(&s);
+        assert!(env.panel_open && !env.idle_view, "what App::play_env really reports");
+        assert!(crate::ui::tray::play_item_shown(&menu_item_env(&s)));
+        // Without the shut-panel mapping the real env hides it: the R37 bug.
+        assert!(!crate::ui::tray::play_item_shown(&env));
+    }
+
+    #[test]
+    fn the_play_item_stays_hidden_when_media_is_under_the_open_panel() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Media(Some(media(true))), t0);
+        s.apply(Event::Hover(true), t0);
+        assert!(matches!(s.view(), View::Panel(_)));
+        assert_eq!(s.view_if_panel_shut(), View::MediaCompact);
+        assert!(!crate::ui::tray::play_item_shown(&menu_item_env(&s)));
+        // Closed panel, media showing: hidden as before.
+        let mut s = st();
+        s.apply(Event::Media(Some(media(true))), t0);
+        assert!(!crate::ui::tray::play_item_shown(&menu_item_env(&s)));
+    }
+
+    #[test]
+    fn the_play_item_stays_hidden_when_a_sticky_notice_is_under_the_open_panel() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Notice(waiting("a")), t0);
+        s.apply(Event::Hover(true), t0);
+        let shut = s.view_if_panel_shut();
+        assert!(matches!(shut, View::Notice(_)), "{shut:?}");
+        assert!(!crate::ui::tray::play_item_shown(&menu_item_env(&s)));
+    }
+
+    #[test]
+    fn view_if_panel_shut_is_the_view_while_the_panel_is_not_open() {
+        let t0 = Instant::now();
+        let mut s = st();
+        assert_eq!(s.view_if_panel_shut(), View::Idle);
+        s.apply(Event::Hover(true), t0);
+        assert_eq!(s.view_if_panel_shut(), View::Idle);
+        assert!(matches!(s.view(), View::Panel(_)));
     }
 
     #[test]

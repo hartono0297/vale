@@ -102,8 +102,8 @@ use crate::pages::PanelPages;
 use crate::pomodoro::PomoSettings;
 use crate::sources::battery::battery_present;
 use crate::theme::{
-    self, Accent, CatAccessory, CatColor, Coat, FalkColor, Mascot, OctopusColor, Surface,
-    WindowPalette, WindowTheme,
+    self, Accent, CatAccessory, CatColor, Coat, FalkColor, Mascot, MascotPlay, OctopusColor,
+    Surface, WindowPalette, WindowTheme,
 };
 use crate::tiles::{CustomKind, CustomProblem, CustomTile, LABEL_MAX, ShortcutTiles, TARGET_MAX};
 use crate::captions::prefs::CaptionPrefs;
@@ -178,6 +178,7 @@ pub enum Action {
     Robot(bool),
     RobotMotion(Motion),
     RobotSleep(u32),
+    MascotPlay(MascotPlay),
     Greeting(bool),
     /// Settings → Maskot: the mascot, each mascot's own coat, the accessory
     /// (shared by all three), "Ikuti kursor" and "Mengecil jadi mata".
@@ -568,6 +569,7 @@ pub struct Model {
     pub robot: bool,
     pub robot_motion: Motion,
     pub robot_sleep: u32,
+    pub mascot_play: MascotPlay,
     pub greeting: bool,
     pub cat_color: CatColor,
     /// Which mascot, and the falk's and octopus's coats.
@@ -666,6 +668,7 @@ impl Model {
             robot: cfg.robot,
             robot_motion: cfg.robot_animation,
             robot_sleep: cfg.robot_sleep_minutes,
+            mascot_play: cfg.mascot_play,
             greeting: cfg.morning_greeting,
             cat_color: cfg.cat_color,
             mascot: cfg.mascot,
@@ -1807,6 +1810,7 @@ impl Settings {
             robot: m.robot,
             robot_motion: m.robot_motion,
             robot_sleep: m.robot_sleep,
+            mascot_play: m.mascot_play,
             greeting: m.greeting,
             cat_color: m.cat_color,
             mascot: m.mascot,
@@ -2012,6 +2016,10 @@ impl Settings {
                     .iter()
                     .position(|v| *v == m.robot_motion)
                     .unwrap_or(0) as f32,
+                Group::MascotPlay => crate::ui::settings_layout::MASCOT_PLAY_ORDER
+                    .iter()
+                    .position(|v| *v == m.mascot_play)
+                    .unwrap_or(0) as f32,
                 Group::ShotIgnore => usize::from(m.shot.on_ignore == ShotIgnore::Delete) as f32,
                 // The form's own choice, not the model's.
                 Group::TileKind => 0.0,
@@ -2053,6 +2061,7 @@ impl Settings {
             Group::CliStart,
             Group::Shell,
             Group::Motion,
+            Group::MascotPlay,
             Group::ShotIgnore,
             Group::ShotTool,
             Group::ShotAfterCapture,
@@ -2713,6 +2722,7 @@ impl Settings {
                     post(Action::RobotSleep(v))
                 }
             }
+            Hit::MascotPlay(v) if v != m.mascot_play => post(Action::MascotPlay(v)),
             Hit::Greeting => post(Action::Greeting(!m.greeting)),
             Hit::Mascot(v) if v != m.mascot => post(Action::Mascot(v)),
             Hit::CatColor(v) if v != m.cat_color => post(Action::CatColor(v)),
@@ -3126,6 +3136,7 @@ impl Settings {
             | Hit::WidgetsLayer(_)
             | Hit::WidgetsFullscreen(_)
             | Hit::Motion(_)
+            | Hit::MascotPlay(_)
             | Hit::ShotIgnore(_)
             | Hit::ShotTool(_)
             | Hit::ShotAfterCapture(_)
@@ -4921,6 +4932,7 @@ pub fn run_demo(args: &[String]) {
             Action::Robot(v) => m.robot = v,
             Action::RobotMotion(v) => m.robot_motion = v,
             Action::RobotSleep(v) => m.robot_sleep = v,
+            Action::MascotPlay(v) => m.mascot_play = v,
             Action::Greeting(v) => m.greeting = v,
             Action::Mascot(_)
             | Action::CatColor(_)

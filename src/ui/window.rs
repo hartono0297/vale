@@ -6,9 +6,10 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, HWND_BOTTOM, HWND_TOPMOST, IDC_ARROW, LoadCursorW, RegisterClassExW,
-    SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetWindowPos, ShowWindow,
-    WINDOW_EX_STYLE, WNDCLASSEXW, WNDPROC, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_POPUP,
+    GWL_EXSTYLE, GetWindowLongPtrW, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SetWindowLongPtrW, SetWindowPos, ShowWindow, WINDOW_EX_STYLE, WNDCLASSEXW, WNDPROC,
+    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+    WS_POPUP,
 };
 use windows::core::{Error, Result, w};
 
@@ -35,6 +36,8 @@ pub struct IslandWindow {
     front: bool,
     /// The island's monitor's width in logical px (the lyric notch's cap).
     screen_w: f32,
+    /// `WS_EX_TRANSPARENT` is set: every click falls through to what is below.
+    click_through: bool,
 }
 
 impl IslandWindow {
@@ -96,6 +99,7 @@ impl IslandWindow {
                 tall: false,
                 front: true,
                 screen_w,
+                click_through: false,
             })
         }
     }
@@ -109,6 +113,25 @@ impl IslandWindow {
         self.tall = tall;
         self.size.cy = (height(tall) * self.scale).round() as i32;
         true
+    }
+
+    /// Makes every pixel of the island pass clicks to the window below
+    /// (`WS_EX_TRANSPARENT`), or lets the alpha rule govern again. The style
+    /// is written only when this changes.
+    pub fn set_click_through(&mut self, on: bool) {
+        if self.click_through == on {
+            return;
+        }
+        self.click_through = on;
+        unsafe {
+            let ex = GetWindowLongPtrW(self.hwnd, GWL_EXSTYLE) as u32;
+            let ex = if on {
+                ex | WS_EX_TRANSPARENT.0
+            } else {
+                ex & !WS_EX_TRANSPARENT.0
+            };
+            SetWindowLongPtrW(self.hwnd, GWL_EXSTYLE, ex as isize);
+        }
     }
 
     pub fn hwnd(&self) -> HWND {

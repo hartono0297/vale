@@ -1,7 +1,8 @@
 use windows::Win32::Foundation::{COLORREF, D2DERR_RECREATE_TARGET, POINT, RECT, SIZE};
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D_RECT_F, D2D_SIZE_F, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_FIGURE_BEGIN_FILLED,
-    D2D1_FIGURE_END_CLOSED, D2D1_GRADIENT_STOP, D2D1_PIXEL_FORMAT,
+    D2D1_FIGURE_BEGIN_HOLLOW, D2D1_FIGURE_END_CLOSED, D2D1_FIGURE_END_OPEN, D2D1_FILL_MODE_ALTERNATE,
+    D2D1_GRADIENT_STOP, D2D1_PIXEL_FORMAT,
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1_ANTIALIAS_MODE_ALIASED, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_ARC_SEGMENT, D2D1_ARC_SIZE_SMALL, D2D1_CAP_STYLE_ROUND,
@@ -19,7 +20,8 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_WEIGHT, DWRITE_FONT_WEIGHT_MEDIUM,
     DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
     DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_TEXT_ALIGNMENT, DWRITE_TEXT_ALIGNMENT_CENTER,
-    DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TEXT_METRICS,
+    DWRITE_HIT_TEST_METRICS, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_TRAILING,
+    DWRITE_TEXT_METRICS,
     DWRITE_TRIMMING, DWRITE_TRIMMING_GRANULARITY_CHARACTER, DWRITE_WORD_WRAPPING_NO_WRAP,
     DWRITE_WORD_WRAPPING_WRAP, DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat,
     IDWriteTextLayout, IDWriteTypography,
@@ -53,7 +55,7 @@ use super::dirty::{self, Drawn, Plan, ViewKind};
 use super::dock::{DockFrame, DockZone};
 use super::fonts::{self, Face, Role};
 use super::geometry::{
-    BAR_COUNT, BAR_GAP, BAR_W, HitRegions, LYRIC_FADE_W, NOTICE_CLOSE_DISC, NOTICE_CLOSE_GLYPH,
+    BAR_COUNT, BAR_GAP, BAR_W, HitRegions, IdleLayout, LYRIC_FADE_W, NOTICE_CLOSE_DISC, NOTICE_CLOSE_GLYPH,
     NoticeLayout, Rect, SHOT_BUTTON_PAD, SHOT_THUMB_RADIUS, ShapeRect, Under, badge_letter,
     badge_style, compact_layout, compact_layout_robot, corner_radius, equalizer_heights,
     idle_layout_lead, lyric_layout, lyric_layout_robot, lyric_overflow, notice_action,
@@ -65,7 +67,12 @@ use super::geometry::{
 use super::icons::{Icon, IconSet};
 use super::motion::{StripFrame, Transit};
 use super::panel_layout::Region;
-use super::robot::{Expr, EyesPose, Pose, RobotPainter, eyes_area, eyes_centre, eyes_offset_in};
+use super::play::shape::{Deform, outline, rigid, turn_about};
+use super::play::state::{Beat, spread_offsets};
+use super::play::stories::{HEAD_PIVOT, MascotShot, Prop, Shot, whistle_arcs};
+use super::robot::{
+    Expr, EyesPose, GRID, Pose, RobotPainter, eyes_area, eyes_centre, eyes_offset_in,
+};
 use super::shelf_motion::ShelfMotion;
 use super::window::IslandWindow;
 use crate::audio::MixerRow;
@@ -295,6 +302,103 @@ pub struct Frame<'a> {
     /// fade, a strip): the whole surface is redrawn and presented, not just
     /// what the shape covers (`ui::dirty`).
     pub full_redraw: bool,
+    /// A play runs: the island is drawn from its deformed outline and the
+    /// mascot and the clock move apart. `None` (always, at rest) draws the
+    /// island as ever, and costs nothing.
+    pub play: Option<PlayFrame>,
+}
+
+/// What a running play asks of the renderer this frame: how the island is
+/// deformed, where the play stands (`Beat::spread` moves the mascot and the
+/// clock, `Beat::t` is the story's own time) and what happens to each
+/// character of the clock.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlayFrame {
+    pub deform: Deform,
+    pub beat: Beat,
+    /// One per character of the clock (`%H:%M`). All `IDENTITY` draws the
+    /// clock as the one run it is at rest.
+    pub digits: [DigitFx; 5],
+    /// The story's mascot in place of the one resting in its slot; `None`
+    /// draws the mascot as ever.
+    pub mascot: Option<MascotShot>,
+    /// Painted last, over the island and its edge.
+    pub props: Vec<Prop>,
+}
+
+impl PlayFrame {
+    /// The story's `shot` at `beat`.
+    pub fn of(shot: Shot, beat: Beat) -> Self {
+        Self {
+            deform: shot.deform,
+            beat,
+            digits: shot.digits,
+            mascot: shot.mascot,
+            props: shot.props,
+        }
+    }
+}
+
+/// What a play does to one character of the clock: shifted by `dx`, `dy`
+/// (dip), turned by `rot_deg` and scaled by `scale` about the character's own
+/// centre, and drawn at `alpha` of the clock's own.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DigitFx {
+    pub dx: f32,
+    pub dy: f32,
+    pub rot_deg: f32,
+    pub scale: f32,
+    pub alpha: f32,
+}
+
+impl DigitFx {
+    /// Leaves the character where and as the layout puts it.
+    pub const IDENTITY: DigitFx = DigitFx {
+        dx: 0.0,
+        dy: 0.0,
+        rot_deg: 0.0,
+        scale: 1.0,
+        alpha: 1.0,
+    };
+}
+
+/// Whether any character needs a place of its own. When none does, the clock
+/// stays the single run it is at rest.
+pub fn per_character_wanted(fx: &[DigitFx]) -> bool {
+    fx.iter().any(|f| *f != DigitFx::IDENTITY)
+}
+
+/// How far a played Notch's shoulder runs into the body (dip).
+const SHOULDER_TUCK: f32 = 3.0;
+
+/// A digit prop's outline: its glyph in the island's colour this far off in
+/// eight directions (dip), under the glyph itself.
+const PROP_OUTLINE: [(f32, f32); 8] = [
+    (-0.7, 0.0),
+    (0.7, 0.0),
+    (0.0, -0.7),
+    (0.0, 0.7),
+    (-0.5, -0.5),
+    (0.5, -0.5),
+    (-0.5, 0.5),
+    (0.5, 0.5),
+];
+/// The whistle arcs' stroke (dip).
+const WHISTLE_W: f32 = 0.85;
+
+/// The play this frame draws. Only the idle island plays, and never the one
+/// shrunk to the eyes; any other frame keeps the island's own shape.
+fn playing<'a>(play: Option<&'a PlayFrame>, view: &View, eyes: bool) -> Option<&'a PlayFrame> {
+    play.filter(|_| *view == View::Idle && !eyes)
+}
+
+/// The idle layout as a play puts it: the mascot and the clock pushed to the
+/// island's ends by the beat's spread. Untouched without a play.
+fn play_layout(layout: IdleLayout, shape: ShapeRect, play: Option<&PlayFrame>) -> IdleLayout {
+    match play {
+        Some(p) => spread_offsets(layout, shape, p.beat.spread),
+        None => layout,
+    }
 }
 
 /// The notice's ✕ this frame: its fade and whether the pointer is on it.
@@ -1190,7 +1294,7 @@ impl Renderer {
         // Taken: it is only set again once this frame is on the screen, so a
         // failed frame leaves the next one a full redraw.
         let prev = self.last.take();
-        let cur = self.signature(win, style, shape, frame, opacity);
+        let cur = self.signature(win.size(), win.origin(), style, shape, frame, opacity);
         let mut plan = dirty::plan(prev.as_ref(), &cur);
         // A lost target is rebuilt once; a second failure is reported.
         if let Err(error) = self.paint(style, shape, frame, opacity, plan) {
@@ -1236,14 +1340,13 @@ impl Renderer {
     /// What this frame is, for `dirty::plan`.
     fn signature(
         &self,
-        win: &IslandWindow,
+        size: SIZE,
+        origin: POINT,
         style: Style,
         shape: ShapeRect,
         frame: &Frame,
         opacity: f32,
     ) -> Drawn {
-        let size = win.size();
-        let origin = win.origin();
         let kind = ViewKind::of(frame.view);
         let t = &frame.transit;
         // What the renderer can see for itself: the panel, and any transition
@@ -1272,6 +1375,7 @@ impl Renderer {
             style,
             halo: self.halo,
             force_full,
+            play: frame.play.is_some(),
             bounds,
         }
     }
@@ -2262,6 +2366,13 @@ impl Renderer {
     fn paint_island(&mut self, style: Style, shape: ShapeRect, frame: &Frame) -> Result<()> {
         let view = frame.view;
         let radius = corner_radius(style, shape);
+        // A play draws the island from its deformed outline. Built before
+        // anything is pushed, so a failure here leaves nothing to undo.
+        let play = playing(frame.play.as_ref(), view, frame.eyes);
+        let played = match play {
+            Some(p) => Some(self.island_geometry(style, shape, Some(&p.deform))?),
+            None => None,
+        };
         let target = self.target.as_ref().expect("target ensured by paint");
         unsafe {
             // A nearly invisible margin around and above the small island:
@@ -2284,8 +2395,14 @@ impl Renderer {
                 self.palette.surface,
                 frame.fill_alpha.clamp(0.0, 1.0),
             ));
-            match style {
-                Style::Pill => target.rt.FillRoundedRectangle(
+            // The fill goes down first and the content over it, play or not.
+            // Art behind the island or inside it (a story's, later) must not
+            // lean on this fill being opaque, since it can be see-through:
+            // behind is clipped to `outside_island`, inside to the island's
+            // own geometry.
+            match (&played, style) {
+                (Some(island), _) => target.rt.FillGeometry(island, &target.brush, None),
+                (None, Style::Pill) => target.rt.FillRoundedRectangle(
                     &D2D1_ROUNDED_RECT {
                         rect: d2d_rect(shape_rect(shape)),
                         radiusX: radius,
@@ -2293,7 +2410,7 @@ impl Renderer {
                     },
                     &target.brush,
                 ),
-                Style::Notch => {
+                (None, Style::Notch) => {
                     let path = self.notch_path(shape, radius)?;
                     target.rt.FillGeometry(&path, &target.brush, None);
                 }
@@ -2314,11 +2431,16 @@ impl Renderer {
             self.paint_eyes_pill(style, shape, frame.transit.content_alpha, frame.eyes_pose);
             return Ok(());
         }
-        unsafe {
-            target.rt.PushAxisAlignedClip(
-                &d2d_rect(shape_rect(shape)),
-                D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
-            );
+        // The content stays inside the island: a play's deformed outline cuts
+        // the mascot where the Pill's rounded end curves away.
+        match &played {
+            Some(island) => self.push_mask(island, 1.0),
+            None => unsafe {
+                target.rt.PushAxisAlignedClip(
+                    &d2d_rect(shape_rect(shape)),
+                    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                );
+            },
         }
         // The panel that is closing fades out as its shape shrinks, while the
         // compact view or notice that follows fades in with the morph.
@@ -2401,15 +2523,21 @@ impl Renderer {
                     frame.clock.is_some(),
                     frame.idle_lead,
                 );
+                let l = play_layout(l, shape, play);
                 if let (Some(area), Some(r)) = (l.robot, robot) {
-                    self.paint_robot(area, r);
+                    match play.and_then(|p| p.mascot.as_ref()) {
+                        Some(m) => self.paint_story_mascot(area, r, m),
+                        None => self.paint_robot(area, r),
+                    }
                 }
                 if let (Some(area), Some(time)) = (l.clock, &frame.clock) {
                     // A sleeping Bata dims the clock beside it, as in the design.
                     let asleep = robot.is_some_and(|r| r.expr == Expr::Sleep);
-                    self.text(
+                    self.paint_clock(
+                        style,
+                        shape,
+                        play,
                         time,
-                        &self.fonts.clock,
                         area,
                         if asleep { 0.6 } else { 1.0 },
                     );
@@ -2425,6 +2553,11 @@ impl Renderer {
             if let Some(Some((area, r))) = self.robot_later.take() {
                 self.paint_robot(area, r);
             }
+        }
+        // A story's props over the mascot and the clock, still inside the
+        // island's clip: the island's edge cuts the falling digit off.
+        if let Some(p) = play {
+            self.paint_props(shape, frame, p);
         }
         // The busy toast's logo, at the slot's alpha, over the island's own
         // fill: no shadow on it.
@@ -2497,8 +2630,142 @@ impl Renderer {
         }
         self.legible.set(0.0);
         let target = self.target.as_ref().expect("target ensured by paint");
-        unsafe { target.rt.PopAxisAlignedClip() };
+        if played.is_some() {
+            unsafe { target.rt.PopLayer() };
+        } else {
+            unsafe { target.rt.PopAxisAlignedClip() };
+        }
         leaving.and(content)
+    }
+
+    /// The mascot as a story moves it: the head's pivot (`HEAD_PIVOT` on its
+    /// grid) moved from its place in `area`, the head turned and scaled
+    /// about it, with the story's face. The painter draws it as ever, so the
+    /// coat and the accessory come along. Inside the island's clip, like the
+    /// resting mascot.
+    fn paint_story_mascot(&self, area: Rect, robot: RobotFrame, m: &MascotShot) {
+        let k = area.w / GRID;
+        let pivot = (area.x + HEAD_PIVOT.0 * k, area.y + HEAD_PIVOT.1 * k);
+        let own = Matrix3x2::scale_around(m.sx, m.sy, Vector2::new(pivot.0, pivot.1))
+            * turn_about(m.rot_deg, pivot, (m.dx, m.dy));
+        let rt = &self.target.as_ref().expect("target ensured by paint").rt;
+        let mut before = Matrix3x2::identity();
+        unsafe {
+            rt.GetTransform(&mut before);
+            rt.SetTransform(&(own * before));
+        }
+        self.paint_robot(
+            area,
+            RobotFrame {
+                expr: m.expr,
+                pose: m.pose(robot.pose),
+            },
+        );
+        unsafe { rt.SetTransform(&before) };
+    }
+
+    /// A story's props, over the mascot and the clock, in the island's clip
+    /// the caller holds: a clock digit away from the clock, and the whistle
+    /// arcs.
+    fn paint_props(&self, shape: ShapeRect, frame: &Frame, play: &PlayFrame) {
+        if play.props.is_empty() {
+            return;
+        }
+        let alpha = frame.transit.content_alpha.clamp(0.0, 1.0);
+        let l = idle_layout_lead(
+            shape,
+            frame.robot.is_some(),
+            frame.clock.is_some(),
+            frame.idle_lead,
+        );
+        let clock = play_layout(l, shape, Some(play)).clock;
+        for prop in &play.props {
+            match *prop {
+                Prop::Digit {
+                    index,
+                    at,
+                    rot_deg,
+                    alpha: a,
+                } => {
+                    if let (Some(area), Some(time)) = (clock, &frame.clock) {
+                        self.paint_digit_prop(time, area, index, at, rot_deg, a * alpha);
+                    }
+                }
+                Prop::Whistle { at, alpha: a } => self.paint_whistle(at, a * alpha),
+            }
+        }
+    }
+
+    /// Character `index` of the clock `time` (laid out in `area`, as the
+    /// clock is), its cell centred on `at` and turned by `rot_deg`, over an
+    /// outline in the island's colour so it reads on the mascot and off the
+    /// island.
+    fn paint_digit_prop(
+        &self,
+        time: &str,
+        area: Rect,
+        index: usize,
+        at: (f32, f32),
+        rot_deg: f32,
+        alpha: f32,
+    ) {
+        let wide: Vec<u16> = time.encode_utf16().collect();
+        let Ok(line) = self.layout(&wide, &self.fonts.clock, area.w, area.h) else {
+            return;
+        };
+        let Some((one, origin, c)) = self.clock_char(&line, &wide, index, area) else {
+            return;
+        };
+        let target = self.target.as_ref().expect("target ensured by paint");
+        let options = D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT;
+        let mut before = Matrix3x2::identity();
+        unsafe {
+            target.rt.GetTransform(&mut before);
+            let own = turn_about(rot_deg, c, (at.0 - c.0, at.1 - c.1));
+            target.rt.SetTransform(&(own * before));
+            target.brush.SetColor(&color(self.palette.surface, alpha));
+            for (dx, dy) in PROP_OUTLINE {
+                let moved = Vector2::new(origin.X + dx, origin.Y + dy);
+                target.rt.DrawTextLayout(moved, &one, &target.brush, options);
+            }
+            target.brush.SetColor(&color(self.palette.text, alpha));
+            target.rt.DrawTextLayout(origin, &one, &target.brush, options);
+            target.rt.SetTransform(&before);
+        }
+    }
+
+    /// The three whistle arcs at `at` (`stories::whistle_arcs`), in the text
+    /// colour. Built for the frame: they show for about a second.
+    fn paint_whistle(&self, at: (f32, f32), alpha: f32) {
+        let target = self.target.as_ref().expect("target ensured by paint");
+        for (start, chord, radius, share) in whistle_arcs(at) {
+            let arc = || -> Result<ID2D1PathGeometry> {
+                unsafe {
+                    let path = self.d2d.CreatePathGeometry()?;
+                    let sink = path.Open()?;
+                    sink.BeginFigure(Vector2::new(start.0, start.1), D2D1_FIGURE_BEGIN_HOLLOW);
+                    sink.AddArc(&D2D1_ARC_SEGMENT {
+                        point: Vector2::new(start.0, start.1 + chord),
+                        size: D2D_SIZE_F { width: radius, height: radius },
+                        rotationAngle: 0.0,
+                        sweepDirection: D2D1_SWEEP_DIRECTION_CLOCKWISE,
+                        arcSize: D2D1_ARC_SIZE_SMALL,
+                    });
+                    sink.EndFigure(D2D1_FIGURE_END_OPEN);
+                    sink.Close()?;
+                    Ok(path)
+                }
+            };
+            let Ok(path) = arc() else {
+                continue;
+            };
+            self.set_color(self.palette.text, alpha * share);
+            unsafe {
+                target
+                    .rt
+                    .DrawGeometry(&path, &target.brush, WHISTLE_W, &self.round_cap)
+            };
+        }
     }
 
     /// The cat's two open eyes alone, in the brand terracotta, centred on the
@@ -3489,6 +3756,143 @@ impl Renderer {
         }
     }
 
+    /// A play's island as a closed path: `pts` (`play::outline`) joined by
+    /// straight lines, the last back to the first. A swinging Notch has two
+    /// more points than a resting one (its extension above the screen edge),
+    /// so the list's length is not fixed.
+    ///
+    /// The Notch is that body plus the two shoulders `notch_path` draws. They
+    /// join the body to the screen edge, which never swings: they sit on the
+    /// edge, follow the squeeze, and ignore the swing. At rest the union is
+    /// the resting island, so nothing pops when a play starts or ends.
+    fn played_path(
+        &self,
+        style: Style,
+        s: ShapeRect,
+        squeeze: f32,
+        pts: &[(f32, f32)],
+    ) -> Result<ID2D1PathGeometry> {
+        let at = |&(x, y): &(f32, f32)| Vector2::new(x, y);
+        let body = unsafe {
+            let path = self.d2d.CreatePathGeometry()?;
+            let sink = path.Open()?;
+            if let Some((first, rest)) = pts.split_first() {
+                let rest: Vec<Vector2> = rest.iter().map(at).collect();
+                sink.BeginFigure(at(first), D2D1_FIGURE_BEGIN_FILLED);
+                sink.AddLines(&rest);
+                sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+            }
+            sink.Close()?;
+            path
+        };
+        let shoulder = shoulder_depth(s);
+        if style != Style::Notch || shoulder <= 0.0 {
+            return Ok(body);
+        }
+        // The body's top corners before the swing, the squeeze having moved them.
+        let half = s.w / 2.0 * (1.0 - squeeze);
+        let (left, right) = (s.x + s.w / 2.0 - half, s.x + s.w / 2.0 + half);
+        let left = self.shoulder_path(s.y, left, -1.0, shoulder)?;
+        let right = self.shoulder_path(s.y, right, 1.0, shoulder)?;
+        self.union(&self.union(&body, &left)?, &right)
+    }
+
+    /// One shoulder of the Notch: the fillet from the screen edge (`y`) at
+    /// `out` x `shoulder` beside the body's top corner `x` down to the side
+    /// (`out` is -1 on the left, 1 on the right), built as `notch_path`
+    /// builds it. It runs `SHOULDER_TUCK` into the body, so a swinging body
+    /// whose side leans off `x` leaves no sliver between them.
+    fn shoulder_path(&self, y: f32, x: f32, out: f32, shoulder: f32) -> Result<ID2D1PathGeometry> {
+        let tucked = x - out * SHOULDER_TUCK;
+        let arc = |to: Vector2| D2D1_ARC_SEGMENT {
+            point: to,
+            size: D2D_SIZE_F { width: shoulder, height: shoulder },
+            rotationAngle: 0.0,
+            sweepDirection: D2D1_SWEEP_DIRECTION_CLOCKWISE,
+            arcSize: D2D1_ARC_SIZE_SMALL,
+        };
+        unsafe {
+            let path = self.d2d.CreatePathGeometry()?;
+            let sink = path.Open()?;
+            if out < 0.0 {
+                sink.BeginFigure(Vector2::new(x - shoulder, y), D2D1_FIGURE_BEGIN_FILLED);
+                sink.AddArc(&arc(Vector2::new(x, y + shoulder)));
+                sink.AddLine(Vector2::new(tucked, y + shoulder));
+                sink.AddLine(Vector2::new(tucked, y));
+            } else {
+                sink.BeginFigure(Vector2::new(tucked, y), D2D1_FIGURE_BEGIN_FILLED);
+                sink.AddLine(Vector2::new(tucked, y + shoulder));
+                sink.AddLine(Vector2::new(x, y + shoulder));
+                sink.AddArc(&arc(Vector2::new(x + shoulder, y)));
+            }
+            sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+            sink.Close()?;
+            Ok(path)
+        }
+    }
+
+    /// The area `a` and `b` cover together, as one path.
+    fn union(&self, a: &ID2D1PathGeometry, b: &ID2D1PathGeometry) -> Result<ID2D1PathGeometry> {
+        unsafe {
+            let path = self.d2d.CreatePathGeometry()?;
+            let sink = path.Open()?;
+            // Fine enough to keep the shoulders' arcs as round as the resting
+            // island's.
+            a.CombineWithGeometry(b, D2D1_COMBINE_MODE_UNION, None, 0.02, &sink)?;
+            sink.Close()?;
+            Ok(path)
+        }
+    }
+
+    /// The island as a geometry: a play's deformed island when `play` is
+    /// given, the resting shape otherwise.
+    fn island_geometry(
+        &self,
+        style: Style,
+        s: ShapeRect,
+        play: Option<&Deform>,
+    ) -> Result<ID2D1Geometry> {
+        match play {
+            Some(d) => self
+                .played_path(style, s, d.squeeze, &outline(style, s, d))?
+                .cast(),
+            None => self.shape_geometry(style, s),
+        }
+    }
+
+    /// The window without the island: what is drawn behind the island is
+    /// clipped to it, so the island's own fill never has to hide anything.
+    // Used by the story art the next tasks add.
+    #[allow(dead_code)]
+    fn outside_island(
+        &self,
+        style: Style,
+        s: ShapeRect,
+        play: Option<&Deform>,
+    ) -> Result<ID2D1Geometry> {
+        let size = self.target.as_ref().expect("target ensured by paint").size;
+        let window = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: size.cx as f32 / self.scale,
+            h: size.cy as f32 / self.scale,
+        };
+        self.cut_out(window, &self.island_geometry(style, s, play)?)
+    }
+
+    /// `window` with `island` cut out: the alternate fill rule counts the
+    /// island's inside twice, so it is left empty.
+    fn cut_out(&self, window: Rect, island: &ID2D1Geometry) -> Result<ID2D1Geometry> {
+        unsafe {
+            let window = self.d2d.CreateRectangleGeometry(&d2d_rect(window))?;
+            let group = self.d2d.CreateGeometryGroup(
+                D2D1_FILL_MODE_ALTERNATE,
+                &[Some(window.cast()?), Some(island.clone())],
+            )?;
+            group.cast()
+        }
+    }
+
     /// Fills the union of two rounded rects (rect, radius) once with the
     /// shared brush's current color, so a translucent fill is not doubled
     /// where they overlap.
@@ -3585,6 +3989,102 @@ impl Renderer {
 
     fn text(&self, text: &str, format: &IDWriteTextFormat, area: Rect, alpha: f32) {
         self.text_colored(text, format, area, self.palette.text, alpha);
+    }
+
+    /// The idle clock in `area`. Without a play it is the one run it always
+    /// was, nothing else. A play draws it on the island's rigid motion (it
+    /// turns with the island it sits on), as one run, or one character at a
+    /// time when a character has something of its own to do.
+    fn paint_clock(
+        &self,
+        style: Style,
+        shape: ShapeRect,
+        play: Option<&PlayFrame>,
+        time: &str,
+        area: Rect,
+        alpha: f32,
+    ) {
+        let Some(p) = play else {
+            return self.text(time, &self.fonts.clock, area, alpha);
+        };
+        let rt = &self.target.as_ref().expect("target ensured by paint").rt;
+        let mut before = Matrix3x2::identity();
+        unsafe {
+            rt.GetTransform(&mut before);
+            rt.SetTransform(&(rigid(style, shape, &p.deform) * before));
+        }
+        // Nothing between the set and the restore returns early.
+        if per_character_wanted(&p.digits) {
+            self.clock_per_character(time, area, alpha, &p.digits);
+        } else {
+            self.text(time, &self.fonts.clock, area, alpha);
+        }
+        unsafe { rt.SetTransform(&before) };
+    }
+
+    /// `time` one character at a time, each at the place the whole line's own
+    /// layout gives it (`HitTestTextPosition`: the tracking and the kerning
+    /// are the layout's, not a constant of ours), under its own `DigitFx`.
+    /// A character turns and scales about the centre of its cell. Drawn on
+    /// top of the current transform, which the caller sets and restores.
+    fn clock_per_character(&self, time: &str, area: Rect, alpha: f32, digits: &[DigitFx; 5]) {
+        if time.is_empty() || area.w <= 0.0 {
+            return;
+        }
+        let wide: Vec<u16> = time.encode_utf16().collect();
+        let Ok(line) = self.layout(&wide, &self.fonts.clock, area.w, area.h) else {
+            return;
+        };
+        let rt = &self.target.as_ref().expect("target ensured by paint").rt;
+        let mut before = Matrix3x2::identity();
+        unsafe { rt.GetTransform(&mut before) };
+        for (i, fx) in digits.iter().enumerate().take(wide.len()) {
+            let Some((one, origin, c)) = self.clock_char(&line, &wide, i, area) else {
+                continue;
+            };
+            let own = Matrix3x2::scale_around(fx.scale, fx.scale, Vector2::new(c.0, c.1))
+                * turn_about(fx.rot_deg, c, (fx.dx, fx.dy));
+            unsafe { rt.SetTransform(&(own * before)) };
+            // No CLIP: it would cut a character at its own layout box, which a
+            // character scaled past it (the regrow's overshoot) overhangs.
+            self.text_legible(
+                origin,
+                &one,
+                D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
+                self.palette.text,
+                (alpha * fx.alpha).clamp(0.0, 1.0),
+            );
+        }
+        unsafe { rt.SetTransform(&before) };
+    }
+
+    /// Character `i` of `wide` where `line` (`wide` laid out in `area`) puts
+    /// it: the character in a layout of its own, with the line's tracking,
+    /// tabular figures and height, the point to draw that from (its left edge
+    /// at the cell's x), and the centre of its cell. `None` when DirectWrite
+    /// cannot place it.
+    fn clock_char(
+        &self,
+        line: &IDWriteTextLayout,
+        wide: &[u16],
+        i: usize,
+        area: Rect,
+    ) -> Option<(IDWriteTextLayout, Vector2, (f32, f32))> {
+        if i >= wide.len() {
+            return None;
+        }
+        let (mut x, mut y) = (0.0, 0.0);
+        let mut cell = DWRITE_HIT_TEST_METRICS::default();
+        unsafe { line.HitTestTextPosition(i as u32, false, &mut x, &mut y, &mut cell) }.ok()?;
+        let one = self.layout(&wide[i..=i], &self.fonts.clock, area.w, area.h).ok()?;
+        unsafe {
+            let _ = one.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        }
+        let c = (
+            area.x + cell.left + cell.width / 2.0,
+            area.y + cell.top + cell.height / 2.0,
+        );
+        Some((one, Vector2::new(area.x + x, area.y), c))
     }
 
     /// Text in the palette's secondary colour (captions, times, labels).
@@ -4309,5 +4809,910 @@ mod tests {
         // An empty rect is not a copy.
         let none = dirty::RectI { left: 3, top: 3, right: 3, bottom: 5 };
         assert!(!copy_rect(&src, 56, &mut dst, 40, none));
+    }
+
+    // The play's painting needs a window and a surface, which a test has
+    // not; what it decides and the geometry it clips with need neither.
+    use crate::config::Style;
+    use crate::ui::geometry::idle_layout_lead;
+    use crate::ui::play::shape::Dent;
+    use crate::ui::play::testing::shape;
+    use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
+
+    const SIZES: [(f32, f32); 2] = [(160.0, 28.0), (300.0, 44.0)];
+
+    fn renderer() -> Renderer {
+        // Each test runs on its own thread.
+        let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+        Renderer::new().expect("a renderer needs only COM, no window")
+    }
+
+    fn contains(g: &ID2D1Geometry, x: f32, y: f32) -> bool {
+        unsafe { g.FillContainsPoint(Vector2::new(x, y), None, 0.1) }
+            .expect("contains")
+            .as_bool()
+    }
+
+    /// A deep dent pulled up into the middle of the lip, plus a squeeze.
+    fn dented() -> Deform {
+        Deform {
+            dents: vec![Dent { u: 0.5, depth: -0.25, width: 0.6 }],
+            squeeze: 0.06,
+            ..Deform::default()
+        }
+    }
+
+    fn play_frame(spread: f32) -> PlayFrame {
+        PlayFrame {
+            deform: Deform::default(),
+            beat: Beat { spread, alpha: 1.0, t: 0.0 },
+            digits: [DigitFx::IDENTITY; 5],
+            mascot: None,
+            props: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_played_island_is_the_deformed_outline_and_not_the_resting_shape() {
+        let r = renderer();
+        for style in [Style::Notch, Style::Pill] {
+            for (w, h) in SIZES {
+                let s = shape(style, w, h);
+                let cx = s.x + s.w / 2.0;
+                let played = r.island_geometry(style, s, Some(&dented())).unwrap();
+                let rest = r.island_geometry(style, s, None).unwrap();
+                let case = format!("{style:?} {w}x{h}");
+                // Just above the lip's middle: inside the resting island,
+                // and in the hole the dent pulled up.
+                let dent_hole = (cx, s.y + s.h - 1.0);
+                assert!(contains(&rest, dent_hole.0, dent_hole.1), "{case}: rest");
+                assert!(!contains(&played, dent_hole.0, dent_hole.1), "{case}: dent");
+                // The path is filled, not hollow, and the dent stays near the lip.
+                assert!(contains(&played, cx, s.y + 3.0), "{case}: body");
+                assert!(contains(&played, s.x + 0.2 * s.w, s.y + s.h - 4.0), "{case}: off the dent");
+                // And it ends at the outline.
+                assert!(!contains(&played, cx, s.y + s.h + 3.0), "{case}: below");
+                assert!(!contains(&played, s.x - 20.0, s.y + s.h / 2.0), "{case}: beside");
+            }
+        }
+    }
+
+    /// Whether `p` lies within `band` of `g`'s outline.
+    fn near_edge(g: &ID2D1Geometry, p: Vector2, band: f32) -> bool {
+        unsafe { g.StrokeContainsPoint(p, band, None::<&ID2D1StrokeStyle>, None, 0.05) }
+            .expect("stroke")
+            .as_bool()
+    }
+
+    #[test]
+    fn a_play_at_rest_covers_exactly_what_the_resting_island_does() {
+        // Every play starts and ends at rest, and the renderer swaps one path
+        // builder for the other at those moments: any area on which they
+        // differ is a pop. Compared on a grid across the island and the
+        // Notch's shoulders; a point within a tenth of a dip of either
+        // outline is left out (the played one is a polyline, 0.04 off at most).
+        let r = renderer();
+        for style in [Style::Notch, Style::Pill] {
+            for (w, h) in [(160.0, 28.0), (190.0, 34.0), (300.0, 44.0)] {
+                let s = shape(style, w, h);
+                let played = r.island_geometry(style, s, Some(&Deform::default())).unwrap();
+                let rest = r.island_geometry(style, s, None).unwrap();
+                let reach = crate::ui::geometry::shoulder_depth(s) + 4.0;
+                let (mut seen, mut wrong) = (0, Vec::new());
+                let mut y = s.y - 3.0 + 0.13;
+                while y < s.y + s.h + 3.0 {
+                    let mut x = s.x - reach + 0.07;
+                    while x < s.x + s.w + reach {
+                        let p = Vector2::new(x, y);
+                        if !near_edge(&rest, p, 0.2) && !near_edge(&played, p, 0.2) {
+                            seen += 1;
+                            if contains(&rest, x, y) != contains(&played, x, y) {
+                                wrong.push((x, y));
+                            }
+                        }
+                        x += 0.4;
+                    }
+                    y += 0.4;
+                }
+                let case = format!("{style:?} {w}x{h}");
+                assert!(seen > 1000, "{case}: only {seen} points compared");
+                assert!(wrong.is_empty(), "{case}: {} of {seen} differ, first {:?}", wrong.len(), &wrong[..wrong.len().min(5)]);
+            }
+        }
+    }
+
+    #[test]
+    fn a_swinging_notch_grows_no_wedge_on_its_low_side() {
+        // The screen edge does not swing, so neither do the shoulders joining
+        // the body to it. Joined to the rotated body instead, the low corner
+        // (below the edge by w/2 * sin(swing)) drew a tooth outside the side
+        // line, inside the triangle (extension point, shoulder point, corner).
+        let r = renderer();
+        for (w, h) in [(190.0, 34.0), (300.0, 44.0)] {
+            for swing_deg in [-12.0, -3.4, 3.4, 12.0] {
+                let s = shape(Style::Notch, w, h);
+                let sh = crate::ui::geometry::shoulder_depth(s);
+                let deform = Deform { swing_deg, ..Deform::default() };
+                let pts = outline(Style::Notch, s, &deform);
+                let n = pts.len();
+                let island = r.island_geometry(Style::Notch, s, Some(&deform)).unwrap();
+                // Only the body, for telling it from a wedge.
+                let body = r.played_path(Style::Pill, s, 0.0, &pts).unwrap().cast().unwrap();
+                let unit = |from: (f32, f32), to: (f32, f32)| {
+                    let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+                    let len = dx.hypot(dy);
+                    (dx / len, dy / len)
+                };
+                let (down_l, down_r) = (unit(pts[0], pts[1]), unit(pts[n - 1], pts[n - 2]));
+                // The corner that swung below the edge.
+                let (corner, ext, out, edge, side) = if pts[1].1 > pts[n - 2].1 {
+                    (pts[1], pts[0], (-down_l.1, down_l.0), s.x, -1.0)
+                } else {
+                    (pts[n - 2], pts[n - 1], (down_r.1, -down_r.0), s.x + s.w, 1.0)
+                };
+                let outer = (corner.0 + out.0 * sh, corner.1 + out.1 * sh);
+                let mut seen = 0;
+                for i in 1..9 {
+                    for j in 1..9 {
+                        let (a, b) = (i as f32 / 10.0, j as f32 / 10.0);
+                        if a + b > 0.9 {
+                            continue;
+                        }
+                        let x = corner.0 + a * (outer.0 - corner.0) + b * (ext.0 - corner.0);
+                        let y = corner.1 + a * (outer.1 - corner.1) + b * (ext.1 - corner.1);
+                        // Below the edge, outside the side line, and neither under
+                        // the shoulder at rest (outside the circle of radius sh
+                        // about (edge -+ sh, sh), near it too) nor in the body.
+                        let (cx, cy) = (edge + side * sh, s.y + sh);
+                        let away = (x - edge) * side;
+                        let in_fillet = away <= sh && y <= s.y + sh && (x - cx).hypot(y - cy) >= sh - 0.5;
+                        if y < 1.0 || away < 0.3 || in_fillet || contains(&body, x, y) {
+                            continue;
+                        }
+                        seen += 1;
+                        assert!(!contains(&island, x, y), "{w}x{h} swing {swing_deg}: wedge at ({x:.1}, {y:.1})");
+                    }
+                }
+                assert!(seen > 5, "{w}x{h} swing {swing_deg}: only {seen} points in the wedge");
+            }
+        }
+    }
+
+    #[test]
+    fn the_notchs_shoulders_follow_a_squeeze_and_flare_to_the_screen_edge() {
+        let r = renderer();
+        let s = shape(Style::Notch, 190.0, 34.0);
+        let sh = crate::ui::geometry::shoulder_depth(s);
+        let deform = Deform { squeeze: 0.1, ..Deform::default() };
+        let pts = outline(Style::Notch, s, &deform);
+        let played = r.island_geometry(Style::Notch, s, Some(&deform)).unwrap();
+        let (left, right) = (pts[0].0, pts[pts.len() - 1].0);
+        assert!(left > s.x + 5.0, "the premise: the body is squeezed in");
+        for (edge, out) in [(left, -1.0), (right, 1.0)] {
+            // Out on the flare, up at the edge: inside. Out on it but lower
+            // down, where the fillet has curved back to the side: outside.
+            assert!(contains(&played, edge + out * 3.0, 0.5), "flare at {edge}");
+            assert!(!contains(&played, edge + out * 3.0, 8.0), "below the flare at {edge}");
+            assert!(!contains(&played, edge + out * (sh + 2.0), 0.5), "past the flare at {edge}");
+            assert!(contains(&played, edge - out * 3.0, 8.0), "the body at {edge}");
+        }
+    }
+
+    #[test]
+    fn a_swinging_notch_still_fills_the_screen_edge_from_end_to_end() {
+        // The outline holds extra points above the edge when it swings; a path
+        // that stopped at the usual count would leave a hole there.
+        let r = renderer();
+        for swing_deg in [-12.0, 12.0] {
+            let s = shape(Style::Notch, 190.0, 34.0);
+            let deform = Deform { swing_deg, ..Deform::default() };
+            let pts = outline(Style::Notch, s, &deform);
+            assert!(pts.len() > crate::ui::play::shape::OUTLINE_PTS, "the premise");
+            let played = r.island_geometry(Style::Notch, s, Some(&deform)).unwrap();
+            for x in [s.x + 3.0, s.x + s.w / 2.0, s.x + s.w - 3.0] {
+                assert!(contains(&played, x, 0.5), "swing {swing_deg}, x {x}");
+            }
+            // The shoulders stay on the screen edge, where they rest.
+            for out in [-1.0, 1.0] {
+                let x = if out < 0.0 { s.x } else { s.x + s.w } + out * 3.0;
+                assert!(contains(&played, x, 0.5), "swing {swing_deg}: the flare at {x}");
+            }
+        }
+    }
+
+    #[test]
+    fn outside_the_island_is_the_window_less_the_island_as_it_is_deformed() {
+        let r = renderer();
+        for style in [Style::Notch, Style::Pill] {
+            for (w, h) in SIZES {
+                let s = shape(style, w, h);
+                let cx = s.x + s.w / 2.0;
+                let window = Rect { x: s.x - 40.0, y: 0.0, w: s.w + 80.0, h: 150.0 };
+                let pts = outline(style, s, &dented());
+                let island = r.island_geometry(style, s, Some(&dented())).unwrap();
+                let out = r.cut_out(window, &island).unwrap();
+                let case = format!("{style:?} {w}x{h}");
+                assert!(!contains(&out, cx, s.y + 3.0), "{case}: inside the island");
+                assert!(contains(&out, cx, s.y + s.h + 3.0), "{case}: below it");
+                assert!(contains(&out, s.x - 20.0, s.y + s.h / 2.0), "{case}: beside it");
+                // The dent opens the clip up where the resting island was.
+                assert!(contains(&out, cx, s.y + s.h - 1.0), "{case}: in the dent");
+                // And nothing beyond the window.
+                assert!(!contains(&out, s.x - 60.0, 20.0), "{case}: outside the window");
+                // However the outline winds: the same outline listed the other
+                // way round leaves the same island out.
+                let backwards: Vec<_> = pts.iter().rev().copied().collect();
+                let island = r.played_path(style, s, dented().squeeze, &backwards).unwrap().cast().unwrap();
+                let out = r.cut_out(window, &island).unwrap();
+                assert!(!contains(&out, cx, s.y + 3.0), "{case}: wound the other way");
+                // At rest it is the resting shape that is left out.
+                let rest = r.island_geometry(style, s, None).unwrap();
+                let out = r.cut_out(window, &rest).unwrap();
+                assert!(!contains(&out, cx, s.y + s.h - 1.0), "{case}: rest");
+            }
+        }
+    }
+
+    #[test]
+    fn only_the_idle_island_plays() {
+        let p = play_frame(1.0);
+        assert!(playing(Some(&p), &View::Idle, false).is_some());
+        assert!(playing(None, &View::Idle, false).is_none(), "no play, no play");
+        assert!(playing(Some(&p), &View::Idle, true).is_none(), "shrunk to the eyes");
+        assert!(playing(Some(&p), &View::MediaCompact, false).is_none());
+        assert!(playing(Some(&p), &View::Hidden, false).is_none());
+    }
+
+    #[test]
+    fn a_play_moves_the_mascot_and_the_clock_apart_by_its_spread() {
+        for style in [Style::Notch, Style::Pill] {
+            for (w, h) in SIZES {
+                let s = shape(style, w, h);
+                let rest = idle_layout_lead(s, true, true, 0.0);
+                let at = |spread: f32| play_layout(rest, s, Some(&play_frame(spread)));
+                let case = format!("{style:?} {w}x{h}");
+                assert_eq!(play_layout(rest, s, None), rest, "{case}: no play");
+                assert_eq!(at(0.0), rest, "{case}: no spread");
+                let (half, full) = (at(0.5), at(1.0));
+                let (rest_robot, rest_clock) = (rest.robot.unwrap(), rest.clock.unwrap());
+                assert!(full.robot.unwrap().x < rest_robot.x, "{case}: the mascot goes left");
+                assert!(full.clock.unwrap().x > rest_clock.x, "{case}: the clock goes right");
+                // The spread is the beat's, not a fixed one.
+                assert!(half.robot.unwrap().x < rest_robot.x, "{case}");
+                assert!(half.robot.unwrap().x > full.robot.unwrap().x, "{case}");
+                assert!(half.clock.unwrap().x > rest_clock.x, "{case}");
+                assert!(half.clock.unwrap().x < full.clock.unwrap().x, "{case}");
+                // Both stay inside the island's width.
+                assert!(full.robot.unwrap().x >= s.x, "{case}");
+                assert!(full.clock.unwrap().right() <= s.x + s.w, "{case}");
+            }
+        }
+    }
+
+    /// A `Frame` of nothing: the idle island with every list empty, running
+    /// `play` if given, for `f` to look at (its views borrow locals).
+    fn with_frame<R>(play: Option<PlayFrame>, f: impl FnOnce(&Frame) -> R) -> R {
+        with_frame_clock(play, None, f)
+    }
+
+    /// `with_frame` with the idle clock showing `clock`.
+    fn with_frame_clock<R>(
+        play: Option<PlayFrame>,
+        clock: Option<String>,
+        f: impl FnOnce(&Frame) -> R,
+    ) -> R {
+        use crate::calendar::CalStatus;
+        let today = NaiveDate::from_ymd_opt(2026, 11, 14).unwrap();
+        let now = today.and_hms_opt(12, 0, 0).unwrap();
+        let (output, echoes) = (Output::default(), Echoes::default());
+        let (set, vetoes) = (Default::default(), Default::default());
+        let rec_devices = [String::new(), String::new()];
+        let (details, logos) = (Default::default(), Default::default());
+        let frame = Frame {
+            view: &View::Idle,
+            media: None,
+            pomodoro: &Pomodoro::new(Default::default()),
+            rec: None,
+            caption: None,
+            now: Instant::now(),
+            today,
+            page: Page::ALL[0],
+            strip: None,
+            cal_view: CalView::Month,
+            cal_anchor: today,
+            cal_selected: today,
+            calendar: &CalendarSnapshot::empty(CalStatus::Ok, today),
+            mixer: None,
+            shelf: &[],
+            shelf_drag: false,
+            shelf_motion: &ShelfMotion::default(),
+            phone: None,
+            phone_on: false,
+            devices: DevicesView {
+                list: &[],
+                ejecting: &set,
+                vetoes: &vetoes,
+                expanded: None,
+                scroll: 0.0,
+            },
+            record: RecordView {
+                sources: crate::model::RecSources { mic: true, system: false },
+                recent: &[],
+                devices: &rec_devices,
+                tab: crate::model::RecKind::Audio,
+                discard_armed: false,
+                captions_on: false,
+                total: 0,
+                missing: [false; 2],
+                quality: String::new(),
+                mute_hotkey: None,
+                start_hotkey: None,
+                today,
+            },
+            notes: &[],
+            notes_page: 0,
+            reminders: &[],
+            reminders_page: 0,
+            day_page: 0,
+            page_slide: 0.0,
+            page_trail: [None, None],
+            page_from: None,
+            pages: Vec::new(),
+            dock: DockFrame::default(),
+            tiles: Vec::new(),
+            palette: theme::island(Accent::default(), theme::Surface::Espresso),
+            cat: CatLook::default(),
+            fill_alpha: 1.0,
+            legibility: 0.0,
+            clock,
+            idle_lead: 0.0,
+            lyric: None,
+            lyric_scroll: 0.0,
+            lyric_prev_scroll: 0.0,
+            lyrics_on: false,
+            lyrics_card_open: false,
+            volume: None,
+            cli: CliView {
+                output: &output,
+                echoes: &echoes,
+                scroll: 0,
+                run: Default::default(),
+                shell: Default::default(),
+                cwd: "",
+                input: "",
+                selection: (0, 0),
+                focused: false,
+                suggestions: Vec::new(),
+                selected: 0,
+                tall: false,
+                from_explorer: false,
+                menu: None,
+            },
+            clip: ClipView::empty(now),
+            notif: NotifView {
+                items: &[],
+                logos: &logos,
+                selected: None,
+                scroll: 0,
+                cap: 0,
+                record: false,
+                paused: false,
+                no_access: false,
+                armed: false,
+                now: Local::now(),
+            },
+            search: SearchView {
+                query: "",
+                selection: (0, 0),
+                focused: false,
+                results: &[],
+                selected: 0,
+                details: &details,
+                indexing: false,
+            },
+            arrange: Default::default(),
+            progress: None,
+            robot: None,
+            eyes: false,
+            eyes_pose: Default::default(),
+            eq_heights: None,
+            robot_fades: false,
+            system: None,
+            cleaner: None,
+            shot: None,
+            clip_notice: None,
+            video_notice: None,
+            toast_logo: None,
+            toast_slot_w: 0.0,
+            toast_slot: None,
+            toast_dot: false,
+            strip_badge: None,
+            strip_motion: None,
+            notice_close: None,
+            transit: Transit::default(),
+            full_redraw: false,
+            play,
+        };
+        f(&frame)
+    }
+
+    #[test]
+    fn a_frame_with_a_play_is_signed_as_one() {
+        // The dirty test builds its `Drawn` by hand; this is the one that
+        // asks the renderer's own signature, so a play that fell back to the
+        // dirty-rect path (a signature that forgot it) is caught.
+        let r = renderer();
+        let s = shape(Style::Notch, 190.0, 34.0);
+        let sign = |play| {
+            with_frame(play, |frame| {
+                r.signature(SIZE { cx: 640, cy: 200 }, POINT { x: 0, y: 0 }, Style::Notch, s, frame, 1.0)
+            })
+        };
+        let rest = sign(None);
+        let playing = sign(Some(play_frame(1.0)));
+        assert!(!rest.play);
+        assert!(playing.play);
+        // Without the play the same two frames are a dirty redraw.
+        assert!(matches!(dirty::plan(Some(&rest), &rest.clone()), Plan::Dirty(_)));
+        for (prev, cur) in [(&rest, &playing), (&playing, &playing), (&playing, &rest)] {
+            assert_eq!(dirty::plan(Some(prev), cur), Plan::Full);
+        }
+    }
+
+    #[test]
+    fn identity_digit_effects_mean_the_plain_clock_path() {
+        assert!(!per_character_wanted(&[DigitFx::IDENTITY; 5]));
+        let mut fx = [DigitFx::IDENTITY; 5];
+        fx[0].dy = 3.0;
+        assert!(per_character_wanted(&fx));
+        // Each field alone wakes the per-character path.
+        let wakes = |f: fn(&mut DigitFx)| {
+            let mut fx = [DigitFx::IDENTITY; 5];
+            f(&mut fx[4]);
+            per_character_wanted(&fx)
+        };
+        assert!(wakes(|d| d.dx = 1.0));
+        assert!(wakes(|d| d.rot_deg = 1.0));
+        assert!(wakes(|d| d.scale = 1.1));
+        assert!(wakes(|d| d.alpha = 0.5));
+    }
+
+    /// The pixels of a target `dip` big (premultiplied BGRA, rows packed).
+    struct Px {
+        w: usize,
+        h: usize,
+        bgra: Vec<u8>,
+    }
+
+    impl Px {
+        fn alpha(&self, x: usize, y: usize) -> f32 {
+            f32::from(self.bgra[(y * self.w + x) * 4 + 3])
+        }
+
+        /// The alpha-weighted centre of the ink, in px, and its total weight.
+        fn centre(&self) -> ((f32, f32), f32) {
+            let (mut sx, mut sy, mut sum) = (0.0, 0.0, 0.0);
+            for y in 0..self.h {
+                for x in 0..self.w {
+                    let a = self.alpha(x, y);
+                    (sx, sy, sum) = (sx + a * (x as f32 + 0.5), sy + a * (y as f32 + 0.5), sum + a);
+                }
+            }
+            ((sx / sum, sy / sum), sum)
+        }
+
+        /// The ink's width in px: its first to its last column with any alpha.
+        fn ink_width(&self) -> usize {
+            let col = |x: usize| (0..self.h).any(|y| self.alpha(x, y) > 8.0);
+            let first = (0..self.w).find(|&x| col(x)).unwrap_or(0);
+            let last = (0..self.w).rev().find(|&x| col(x)).unwrap_or(0);
+            last + 1 - first
+        }
+    }
+
+    /// How far apart two renderings are: the largest gap in any channel of
+    /// any pixel, and how many pixels have a channel more than `LOUD` apart.
+    const LOUD: u8 = 40;
+    /// Two renderings of the same clock agree to this many levels (of 255) in
+    /// every channel of every pixel. They measure 0 here; the 2 only keeps a
+    /// rasteriser's rounding from failing the test, and is far under what the
+    /// smallest drift tried (a quarter pixel) gives.
+    const IDENTICAL_WITHIN: u8 = 2;
+    fn gap(a: &Px, b: &Px) -> (u8, usize) {
+        assert_eq!((a.w, a.h), (b.w, b.h));
+        let (mut worst, mut loud) = (0, 0);
+        for (p, q) in a.bgra.chunks(4).zip(b.bgra.chunks(4)) {
+            let d = p.iter().zip(q).map(|(x, y)| x.abs_diff(*y)).max().unwrap();
+            worst = worst.max(d);
+            loud += usize::from(d > LOUD);
+        }
+        (worst, loud)
+    }
+
+    /// What `draw` paints on a fresh, transparent target of `dip` (logical
+    /// px) at the renderer's scale.
+    fn painted(r: &mut Renderer, dip: (f32, f32), draw: impl FnOnce(&mut Renderer)) -> Px {
+        let size = SIZE {
+            cx: (dip.0 * r.scale).ceil() as i32,
+            cy: (dip.1 * r.scale).ceil() as i32,
+        };
+        r.ensure_target(size).unwrap();
+        let rt = r.target.as_ref().unwrap().rt.clone();
+        unsafe {
+            rt.SetDpi(96.0 * r.scale, 96.0 * r.scale);
+            rt.BeginDraw();
+            rt.Clear(Some(&color(0, 0.0)));
+        }
+        draw(r);
+        unsafe { rt.EndDraw(None, None) }.unwrap();
+        let (w, h) = (size.cx as usize, size.cy as usize);
+        let area = WICRect { X: 0, Y: 0, Width: size.cx, Height: size.cy };
+        let lock = unsafe { r.target.as_ref().unwrap().bitmap.Lock(&area, WICBitmapLockRead.0 as u32) }.unwrap();
+        let stride = unsafe { lock.GetStride() }.unwrap() as usize;
+        let (mut len, mut data) = (0u32, std::ptr::null_mut());
+        unsafe { lock.GetDataPointer(&mut len, &mut data) }.unwrap();
+        let rows = unsafe { std::slice::from_raw_parts(data as *const u8, len as usize) };
+        let bgra = (0..h).flat_map(|y| rows[y * stride..y * stride + w * 4].iter().copied()).collect();
+        Px { w, h, bgra }
+    }
+
+    const CLOCK_BOX: (f32, f32) = (80.0, 40.0);
+    const TIMES: [&str; 3] = ["14:32", "00:00", "08:51"];
+
+    fn clock_area(w: f32) -> Rect {
+        Rect { x: 8.0, y: 2.0, w, h: 36.0 }
+    }
+
+    /// The one run the resting clock is, and the same time one character at a
+    /// time with `fx`.
+    fn plain_and_split(r: &mut Renderer, time: &str, area: Rect, fx: [DigitFx; 5]) -> (Px, Px) {
+        let plain = painted(r, CLOCK_BOX, |r| r.text(time, &r.fonts.clock, area, 1.0));
+        let split = painted(r, CLOCK_BOX, |r| r.clock_per_character(time, area, 1.0, &fx));
+        (plain, split)
+    }
+
+    #[test]
+    fn the_clock_drawn_per_character_is_the_plain_clock_to_the_pixel() {
+        // The risk of the per-character path is a jump the moment it takes
+        // over: if the digits' places differ from the layout's own tracking
+        // and kerning, they hop. Tracked text, a narrow box and a wide one (the
+        // clock is centred in it), both typefaces and the scales a display
+        // has. A digit off by a pixel, or by less, cannot pass: see the drift
+        // checks below, which also fix the tolerance.
+        let mut r = renderer();
+        for ui in [UiFont::Sans, UiFont::Mono] {
+            r.set_ui_font(ui).unwrap();
+            for scale in [1.0, 1.25, 1.5, 2.0] {
+                r.scale = scale;
+                for time in TIMES {
+                    for w in [44.0, 61.0] {
+                        let case = format!("{ui:?} x{scale} {time} in {w}");
+                        let area = clock_area(w);
+                        let (plain, split) = plain_and_split(&mut r, time, area, [DigitFx::IDENTITY; 5]);
+                        assert!(plain.centre().1 > 500.0, "{case}: the plain clock drew nothing");
+                        let (worst, loud) = gap(&plain, &split);
+                        assert!(
+                            worst <= IDENTICAL_WITHIN && loud == 0,
+                            "{case}: the two renderings differ by {worst} (loud pixels {loud})"
+                        );
+                        // Every digit a quarter pixel off, and a whole pixel off,
+                        // is plainly not the same: far above the 2 levels
+                        // allowed, with over fifty loud pixels (a quarter pixel
+                        // measures 100 and more, a whole one 200 and more).
+                        for px in [0.25, 1.0] {
+                            let drift = DigitFx { dx: px / scale, ..DigitFx::IDENTITY };
+                            let (_, drifted) = plain_and_split(&mut r, time, area, [drift; 5]);
+                            let (worst, loud) = gap(&plain, &drifted);
+                            assert!(
+                                worst > 64 && loud > 50,
+                                "{case}: digits {px} px off still pass ({worst}, loud {loud})"
+                            );
+                        }
+                        // And one digit alone, half a pixel off, whichever it is.
+                        for i in 0..5 {
+                            let mut fx = [DigitFx::IDENTITY; 5];
+                            fx[i].dx = 0.5 / scale;
+                            let (_, one) = plain_and_split(&mut r, time, area, fx);
+                            let (worst, loud) = gap(&plain, &one);
+                            assert!(
+                                worst > 64 && loud > 4,
+                                "{case}: digit {i} half a pixel off still passes ({worst}, loud {loud})"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The clock `time` drawn as `paint_clock` draws it on a target big
+    /// enough for the island of `s`.
+    fn island_clock(
+        r: &mut Renderer,
+        style: Style,
+        s: ShapeRect,
+        play: Option<&PlayFrame>,
+        area: Rect,
+    ) -> Px {
+        painted(r, (s.x + s.w + 24.0, s.y + s.h + 24.0), |r| {
+            r.paint_clock(style, s, play, "14:32", area, 1.0)
+        })
+    }
+
+    /// `fx` on character `i` alone, the rest drawn at alpha 0.
+    fn only(r: &mut Renderer, i: usize, fx: DigitFx) -> Px {
+        let mut all = [DigitFx { alpha: 0.0, ..DigitFx::IDENTITY }; 5];
+        all[i] = fx;
+        painted(r, CLOCK_BOX, |r| {
+            r.clock_per_character("14:32", clock_area(44.0), 1.0, &all)
+        })
+    }
+
+    #[test]
+    fn each_digits_effect_lands_on_that_digit_alone() {
+        // The five characters drawn one at a time (the others invisible) add
+        // up to the whole clock, so every one sits at its own place and
+        // takes the effect of its own index.
+        let mut r = renderer();
+        let area = clock_area(44.0);
+        let whole = painted(&mut r, CLOCK_BOX, |r| r.text("14:32", &r.fonts.clock, area, 1.0));
+        let parts: Vec<Px> = (0..5).map(|i| only(&mut r, i, DigitFx::IDENTITY)).collect();
+        let mut sum = Px { w: whole.w, h: whole.h, bgra: vec![0; whole.bgra.len()] };
+        for part in &parts {
+            assert!(part.centre().1 > 100.0, "a character drew nothing");
+            for (t, p) in sum.bgra.iter_mut().zip(&part.bgra) {
+                *t = t.saturating_add(*p);
+            }
+        }
+        let (worst, loud) = gap(&whole, &sum);
+        assert!(
+            worst <= IDENTICAL_WITHIN + 1 && loud == 0,
+            "the five parts are not the whole: {worst}, loud {loud}"
+        );
+        // And they are five different places, left to right.
+        let xs: Vec<f32> = parts.iter().map(|p| p.centre().0.0).collect();
+        assert!(xs.windows(2).all(|w| w[1] > w[0] + 3.0), "not left to right: {xs:?}");
+    }
+
+    #[test]
+    fn a_digit_moves_turns_and_scales_about_its_own_centre() {
+        let mut r = renderer();
+        // The colon is left out of the turn and the scale: its ink sits well off
+        // its cell's centre (the line's middle), so it legitimately travels.
+        for i in [0, 1, 3, 4] {
+            let case = format!("character {i}");
+            let rest = only(&mut r, i, DigitFx::IDENTITY);
+            let ((x0, y0), ink0) = rest.centre();
+            let moved = only(&mut r, i, DigitFx { dx: 3.0, dy: -2.0, ..DigitFx::IDENTITY });
+            let ((x, y), ink) = moved.centre();
+            assert!(
+                (x - x0 - 3.0).abs() < 0.15 && (y - y0 + 2.0).abs() < 0.15,
+                "{case}: moved to ({x}, {y}) from ({x0}, {y0})"
+            );
+            assert!((ink - ink0).abs() < ink0 * 0.02, "{case}: moving changed the ink");
+            // About its own centre the ink stays put (a glyph's ink is off its
+            // cell's centre by a pixel at most); about the origin it would
+            // fly off by tens.
+            let turned = only(&mut r, i, DigitFx { rot_deg: 25.0, ..DigitFx::IDENTITY });
+            let ((x, y), _) = turned.centre();
+            assert!(
+                (x - x0).abs() < 1.0 && (y - y0).abs() < 1.0,
+                "{case}: turned about a point far from itself: ({x}, {y}) from ({x0}, {y0})"
+            );
+            let big = only(&mut r, i, DigitFx { scale: 2.0, ..DigitFx::IDENTITY });
+            let ((x, y), _) = big.centre();
+            assert!(
+                (x - x0).abs() < 2.0 && (y - y0).abs() < 2.0,
+                "{case}: scaled about a point far from itself: ({x}, {y}) from ({x0}, {y0})"
+            );
+            assert!(
+                big.ink_width() as f32 > rest.ink_width() as f32 * 1.5,
+                "{case}: not scaled up ({} px from {})",
+                big.ink_width(),
+                rest.ink_width()
+            );
+            let faint = only(&mut r, i, DigitFx { alpha: 0.5, ..DigitFx::IDENTITY });
+            assert!((faint.centre().1 / ink0 - 0.5).abs() < 0.03, "{case}: not half as strong");
+        }
+    }
+
+    fn at_rest() -> PlayFrame {
+        play_frame(1.0)
+    }
+
+    #[test]
+    fn a_story_prop_is_clipped_to_the_island() {
+        // The stolen digit falls through the lip; like the head, it is cut
+        // off by the island's edge (the mockup's "inside" layer), never
+        // drawn over the desktop below.
+        let mut r = renderer();
+        for style in [Style::Notch, Style::Pill] {
+            let s = shape(style, 190.0, 34.0);
+            let bottom = s.y + s.h;
+            let at = (s.x + s.w / 2.0, bottom + 2.0);
+            let play = |props: Vec<Prop>| PlayFrame { props, ..play_frame(1.0) };
+            let dip = (crate::ui::geometry::WINDOW_W, bottom + 30.0);
+            let draw = |r: &mut Renderer, props: Vec<Prop>| {
+                with_frame_clock(Some(play(props)), Some("14:32".to_owned()), |frame| {
+                    painted(r, dip, |r| r.paint_island(style, s, frame).unwrap())
+                })
+            };
+            let with = draw(&mut r, vec![Prop::Digit { index: 4, at, rot_deg: 0.0, alpha: 1.0 }]);
+            let without = draw(&mut r, Vec::new());
+            let k = r.scale;
+            // Nothing at all from a dip and a half under the lip down.
+            let below = ((bottom + 1.5) * k).ceil() as usize;
+            let ink: f32 = (below..with.h).flat_map(|y| (0..with.w).map(move |x| (x, y))).map(|(x, y)| with.alpha(x, y)).sum();
+            assert_eq!(ink, 0.0, "{style:?}: the prop shows under the island");
+            // And it is drawn: the part inside the island differs.
+            let (_, loud) = gap(&with, &without);
+            assert!(loud > 5, "{style:?}: the prop drew nothing inside the island");
+        }
+    }
+
+    #[test]
+    fn a_digit_prop_lands_where_the_clock_would_move_that_digit() {
+        // The stolen digit hangs from the beak by its cell's centre: drawn as
+        // a prop at a point, it covers what the clock's own character moved
+        // to that point covers (its outline spreads evenly round it).
+        let mut r = renderer();
+        let area = clock_area(44.0);
+        let wide: Vec<u16> = "14:32".encode_utf16().collect();
+        let line = r.layout(&wide, &r.fonts.clock, area.w, area.h).unwrap();
+        let (_, _, c) = r.clock_char(&line, &wide, 4, area).unwrap();
+        for (dx, dy) in [(0.0, 0.0), (-20.0, 6.0)] {
+            let moved = only(&mut r, 4, DigitFx { dx, dy, ..DigitFx::IDENTITY });
+            let prop = painted(&mut r, CLOCK_BOX, |r| {
+                r.paint_digit_prop("14:32", area, 4, (c.0 + dx, c.1 + dy), 0.0, 1.0)
+            });
+            let ((mx, my), _) = moved.centre();
+            let ((px, py), ink) = prop.centre();
+            assert!(ink > 100.0, "the prop drew nothing");
+            // The outline shifts the ink's weighted centre a little (0.4 px
+            // measured); a wrong origin would be off by the cell's margins,
+            // several px.
+            let k = r.scale;
+            assert!((mx - px).abs() < 0.6 * k && (my - py).abs() < 0.6 * k, "({dx}, {dy}): {mx},{my} vs {px},{py}");
+        }
+    }
+
+    fn turned() -> PlayFrame {
+        PlayFrame {
+            deform: Deform {
+                swing_deg: 4.0,
+                tilt_deg: 3.0,
+                shift: (2.0, 3.0),
+                ..Deform::default()
+            },
+            ..at_rest()
+        }
+    }
+
+    fn apply(m: &Matrix3x2, (x, y): (f32, f32)) -> (f32, f32) {
+        (x * m.M11 + y * m.M21 + m.M31, x * m.M12 + y * m.M22 + m.M32)
+    }
+
+    fn clock_area_of(style: Style, w: f32, h: f32, play: &PlayFrame) -> (ShapeRect, Rect) {
+        let s = shape(style, w, h);
+        let l = play_layout(idle_layout_lead(s, true, true, 0.0), s, Some(play));
+        (s, l.clock.unwrap())
+    }
+
+    #[test]
+    fn a_play_with_no_digit_effect_and_no_motion_draws_the_resting_clock_to_the_pixel() {
+        // No play at all is the same call as ever; a play that has done
+        // nothing yet must not change a pixel of the clock either.
+        let mut r = renderer();
+        for style in [Style::Notch, Style::Pill] {
+            for (w, h) in SIZES {
+                let (s, area) = clock_area_of(style, w, h, &at_rest());
+                let plain = painted(&mut r, (s.x + s.w + 24.0, s.y + s.h + 24.0), |r| {
+                    r.text("14:32", &r.fonts.clock, area, 1.0)
+                });
+                for play in [None, Some(at_rest())] {
+                    let drawn = island_clock(&mut r, style, s, play.as_ref(), area);
+                    assert_eq!(
+                        gap(&plain, &drawn),
+                        (0, 0),
+                        "{style:?} {w}x{h} play {}",
+                        play.is_some()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_clock_turns_with_the_island_it_sits_on_even_when_no_digit_moves() {
+        // `Kelelawar` tilts the Pill and moves no digit; the clock must go
+        // with it.
+        let mut r = renderer();
+        for style in [Style::Notch, Style::Pill] {
+            for (w, h) in SIZES {
+                let play = turned();
+                let (s, area) = clock_area_of(style, w, h, &play);
+                let rest = island_clock(&mut r, style, s, None, area);
+                let drawn = island_clock(&mut r, style, s, Some(&play), area);
+                let (c0, c1) = (rest.centre().0, drawn.centre().0);
+                let want = apply(&rigid(style, s, &play.deform), c0);
+                let case = format!("{style:?} {w}x{h}");
+                assert!(
+                    (c1.0 - c0.0).hypot(c1.1 - c0.1) > 2.0,
+                    "{case}: the clock did not move with the island"
+                );
+                // Within a dip: a clock drawn upright sits on a whole pixel
+                // baseline and a turned one does not, which is up to half a
+                // pixel on its own. The exact comparison follows.
+                assert!(
+                    (c1.0 - want.0).abs() < 1.0 && (c1.1 - want.1).abs() < 1.0,
+                    "{case}: the clock is at {c1:?}, the island's motion puts it at {want:?}"
+                );
+                // Exactly: the plain run drawn under the island's own matrix.
+                let by_hand = painted(&mut r, (s.x + s.w + 24.0, s.y + s.h + 24.0), |r| {
+                    let rt = &r.target.as_ref().unwrap().rt;
+                    unsafe { rt.SetTransform(&rigid(style, s, &play.deform)) };
+                    r.text("14:32", &r.fonts.clock, area, 1.0);
+                    unsafe { rt.SetTransform(&Matrix3x2::identity()) };
+                });
+                assert_eq!(gap(&by_hand, &drawn), (0, 0), "{case}: not drawn under the island's matrix");
+            }
+        }
+    }
+
+    #[test]
+    fn the_per_character_clock_goes_with_the_island_too() {
+        // One digit barely faded wakes the per-character path; under the same
+        // island motion it must land where the single run does.
+        let mut r = renderer();
+        for style in [Style::Notch, Style::Pill] {
+            let mut play = turned();
+            let (s, area) = clock_area_of(style, 190.0, 34.0, &play);
+            let run = island_clock(&mut r, style, s, Some(&play), area);
+            play.digits[0].alpha = 0.999;
+            assert!(per_character_wanted(&play.digits), "the premise");
+            let split = island_clock(&mut r, style, s, Some(&play), area);
+            let (worst, loud) = gap(&run, &split);
+            assert!(worst <= IDENTICAL_WITHIN && loud == 0, "{style:?}: {worst}, loud {loud}");
+        }
+    }
+
+    #[test]
+    fn a_digits_own_effect_comes_first_and_the_islands_motion_after_it() {
+        // A digit pushed along the clock's line, on an island turned a lot:
+        // it has moved along the island's own line, not the screen's. The
+        // other way round the digit lands about 2.6 dip off.
+        let mut r = renderer();
+        for style in [Style::Notch, Style::Pill] {
+            let mut play = at_rest();
+            for fx in play.digits.iter_mut() {
+                fx.alpha = 0.0;
+            }
+            play.digits[3] = DigitFx { dx: 10.0, ..DigitFx::IDENTITY };
+            let (s, area) = clock_area_of(style, 190.0, 34.0, &play);
+            let upright = island_clock(&mut r, style, s, Some(&play), area).centre().0;
+            play.deform = Deform { swing_deg: 15.0, ..Deform::default() };
+            let tilted = island_clock(&mut r, style, s, Some(&play), area).centre().0;
+            let want = apply(&rigid(style, s, &play.deform), upright);
+            assert!(
+                (tilted.0 - want.0).abs() < 1.0 && (tilted.1 - want.1).abs() < 1.0,
+                "{style:?}: the digit is at {tilted:?}, the island's motion puts it at {want:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_clock_leaves_the_transform_as_it_found_it() {
+        let mut r = renderer();
+        let mut wakes = turned();
+        wakes.digits[1].dy = -3.0;
+        for play in [None, Some(turned()), Some(wakes)] {
+            let (s, area) = clock_area_of(Style::Pill, 190.0, 34.0, &turned());
+            let mut after = Matrix3x2 { M11: 0.0, M12: 0.0, M21: 0.0, M22: 0.0, M31: 0.0, M32: 0.0 };
+            painted(&mut r, (s.x + s.w + 24.0, s.y + s.h + 24.0), |r| {
+                r.paint_clock(Style::Pill, s, play.as_ref(), "14:32", area, 1.0);
+                unsafe { r.target.as_ref().unwrap().rt.GetTransform(&mut after) };
+            });
+            assert_eq!(after, Matrix3x2::identity(), "play {}", play.is_some());
+        }
     }
 }

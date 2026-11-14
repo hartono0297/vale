@@ -107,7 +107,10 @@ fn the_pill_ends_are_half_circles_and_the_notch_sides_are_straight() {
 }
 ```
 
-A `pub(crate) fn shape(style: Style, w: f32, h: f32) -> ShapeRect` test helper builds the resting island at that size with `corner_radius` applied and `y = 0.0` for the Notch, `y = PILL_TOP` for the Pill. Put it in `src/ui/play/mod.rs`'s `#[cfg(test)]` module: Tasks 2, 5, 10 and 13 all use it.
+Two shared test helpers live in `src/ui/play/mod.rs` in a `#[cfg(test)] pub(crate) mod testing` module, because Tasks 2, 5, 6, 10, 11 and 13 all reach for them across module boundaries:
+
+- `shape(style: Style, w: f32, h: f32) -> ShapeRect` — the resting island at that size, with `corner_radius` applied, `y = 0.0` for the Notch and `y = PILL_TOP` for the Pill. Created here, in Task 1.
+- `ok_env() -> Env` — every gate satisfied, `clock_on: true`. Created in Task 6, when `Env` exists.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -145,7 +148,8 @@ The island's outline as a point list that stories can dent, bulge, squeeze, swin
 - Produces:
 
 ```rust
-pub const OUTLINE_PTS: usize = 90;
+pub const OUTLINE_PTS: usize = 90;   // rim samples, NOT the output length:
+                                      // a swinging Notch returns a few more
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Dent { pub u: f32, pub depth: f32, pub width: f32 }
@@ -160,7 +164,7 @@ pub struct Deform {
 }
 
 pub fn outline(style: Style, s: ShapeRect, d: &Deform) -> Vec<(f32, f32)>;
-pub fn is_rest(d: &Deform) -> bool;
+pub fn is_rest(style: Style, d: &Deform) -> bool;
 ```
 
 A `Dent` pushes the outline outward along its normal by `depth` (negative dents inward) over a bell of half-width `width`, both as fractions of `s.h`. `squeeze` scales the island in x about its centre. `swing_deg` rotates it; `shift` and `tilt_deg` are **Pill only** and are asserted zero for the Notch.
@@ -169,12 +173,14 @@ A `Dent` pushes the outline outward along its normal by `depth` (negative dents 
 
 ```rust
 #[test]
-fn a_rest_deform_gives_the_resting_outline() {
+fn a_rest_deform_is_exactly_the_rim() {
     for style in [Style::Notch, Style::Pill] {
         let s = shape(style, 190.0, 34.0);
-        for (x, y) in outline(style, s, &Deform::default()) {
-            assert!(shape_contains(style, s, x - 0.0_f32.max(0.0), y) || on_edge(style, s, x, y),
-                "{style:?} ({x},{y}) left the resting outline");
+        let pts = outline(style, s, &Deform::default());
+        assert_eq!(pts.len(), OUTLINE_PTS);
+        for (i, (x, y)) in pts.iter().enumerate() {
+            let p = rim(style, s, i as f32 / (OUTLINE_PTS - 1) as f32);
+            assert!((x - p.x).abs() < 0.01 && (y - p.y).abs() < 0.01, "{style:?} point {i}");
         }
     }
 }
@@ -185,22 +191,35 @@ fn a_dent_moves_only_the_outline_near_it() {
     let rest = outline(Style::Notch, s, &Deform::default());
     let d = Deform { dents: vec![Dent { u: 0.5, depth: -0.3, width: 0.08 }], ..Default::default() };
     let bent = outline(Style::Notch, s, &d);
-    let far = rim(Style::Notch, s, 0.1);
-    assert!(bent.iter().any(|p| (p.1 - (s.y + s.h)).abs() > 3.0), "the lip moved");
-    assert!(
-        bent.iter().zip(&rest).filter(|(b, r)| (b.0 - r.0).abs() + (b.1 - r.1).abs() > 0.01)
-            .all(|(b, _)| (b.0 - far.x).abs() > 10.0),
-        "nothing moved far from the dent"
-    );
+    assert_eq!(bent.len(), rest.len());
+    let moved: Vec<usize> = bent.iter().zip(&rest).enumerate()
+        .filter(|(_, (b, r))| (b.0 - r.0).abs() + (b.1 - r.1).abs() > 0.01)
+        .map(|(i, _)| i)
+        .collect();
+    assert!(!moved.is_empty(), "the dent moved nothing");
+    let deepest = bent.iter().zip(&rest).map(|(b, r)| (b.1 - r.1).abs()).fold(0.0_f32, f32::max);
+    assert!(deepest > 3.0, "the dent is only {deepest} deep");
+    let centre = rim(Style::Notch, s, 0.5);
+    for i in moved {
+        let p = rim(Style::Notch, s, i as f32 / (OUTLINE_PTS - 1) as f32);
+        assert!((p.x - centre.x).hypot(p.y - centre.y) < 0.08 * s.h + 0.01,
+            "point {i} moved but lies outside the dent's width");
+    }
 }
 
 #[test]
-fn the_notch_stays_welded_to_the_screen_edge_when_it_swings() {
+fn a_swinging_notch_leaves_no_hole_at_the_screen_edge() {
     let s = shape(Style::Notch, 190.0, 34.0);
-    let d = Deform { swing_deg: 6.0, ..Default::default() };
-    let pts = outline(Style::Notch, s, &d);
-    let top = pts.iter().filter(|p| p.1 <= s.y + 0.5).count();
-    assert!(top >= 2, "both top ends still touch y = {}", s.y);
+    let pts = outline(Style::Notch, s, &Deform { swing_deg: 6.0, ..Default::default() });
+    assert!(pts.iter().any(|p| p.1 < s.y - 0.5), "the top is extended behind the screen edge");
+    // Interpolate where each segment actually crosses the screen edge; taking
+    // the earlier point's x instead would measure the sampling, not the shape.
+    let crossings: Vec<f32> = pts.windows(2)
+        .filter(|w| (w[0].1 - s.y) * (w[1].1 - s.y) <= 0.0 && w[0].1 != w[1].1)
+        .map(|w| w[0].0 + (s.y - w[0].1) / (w[1].1 - w[0].1) * (w[1].0 - w[0].0))
+        .collect();
+    assert!(crossings.iter().any(|&x| x <= s.x), "still covers the left end at the edge");
+    assert!(crossings.iter().any(|&x| x >= s.x + s.w), "and the right end");
 }
 
 #[test]
@@ -212,8 +231,11 @@ fn shift_and_tilt_are_pill_only() {
 
 #[test]
 fn is_rest_is_true_only_for_an_untouched_deform() {
-    assert!(is_rest(&Deform::default()));
-    assert!(!is_rest(&Deform { squeeze: 0.02, ..Default::default() }));
+    assert!(is_rest(Style::Notch, &Deform::default()));
+    assert!(!is_rest(Style::Notch, &Deform { squeeze: 0.02, ..Default::default() }));
+    // shift and tilt do nothing on the Notch, so `is_rest` must agree with `outline`.
+    assert!(is_rest(Style::Notch, &Deform { shift: (0.0, 6.0), tilt_deg: 4.0, ..Default::default() }));
+    assert!(!is_rest(Style::Pill, &Deform { tilt_deg: 4.0, ..Default::default() }));
 }
 ```
 
@@ -526,33 +548,67 @@ pub struct Env {
 }
 
 pub fn may_start(env: &Env, moment: Moment, preset: MascotPlay, since_input: Duration, since_last: Duration) -> bool;
-pub fn must_stop(env: &Env, playing: Story, shape_changed: bool, clock_jumped: bool) -> bool;
+pub fn must_stop(env: &Env, playing: Story, moment: Moment, shape_changed: bool, clock_jumped: bool) -> bool;
 pub fn instant_stop(env: &Env) -> bool;
 ```
 
-`Moment::Manual` skips the presence rule, the cooldown and `idle_view`'s panel clause, but not `mascot_on`, `motion_full`, `fullscreen`, `screen_away` or `recording`.
+The gates split in two, and `Moment::Manual` is the reason:
+
+- **Transient** — `pointer_near`, `shrunk`, `menu_open`, plus the presence rule and the cooldown. A `Manual` play skips all of these, at start **and** while running, because they are artefacts of how the owner invoked it: reaching the island to right-click it is what turns `pointer_near` on and (through the peek) `shrunk` too. A gate that the act of asking switches on would hide the feature exactly when it is wanted.
+- **Permanent** — `mascot_on`, `motion_full`, `energy_saver`, `win_anim`, `fullscreen`, `screen_away`, `recording`, `asleep`, `idle_view` and `panel_open`. These bind every play, `Manual` included. `panel_open` stays binding because the animation's geometry assumes the **closed** island; the menu item handler closes the panel first and then plays (see Task 11), so by the time a `Manual` play starts the panel is already shut.
+
+`must_stop` therefore takes the play's `Moment` and ignores the transient gates for a `Manual` play — otherwise the first tick kills it while the pointer is still on the island. Whether the tray item is **shown** is a different question from whether a play may start, and Task 11 answers it with its own `play_item_shown`.
 
 - [ ] **Step 1: Write the failing tests** in `src/ui/play/gate.rs`
 
 ```rust
-fn ok_env() -> Env { /* every gate satisfied, clock_on: true */ }
-
 #[test]
 fn every_gate_can_stop_an_automatic_play() {
     let base = (ok_env(), Moment::Idle, MascotPlay::Sesekali, Duration::from_secs(60), Duration::from_secs(3600));
     assert!(may_start(&base.0, base.1, base.2, base.3, base.4));
-    for (name, env) in off_by_one_envs() {       // one field flipped per entry
+    // One entry per Env field EXCEPT clock_on, which changes which story is
+    // picked (Task 4's `pool`) and never the permission to start.
+    for (name, env) in off_by_one_envs() {
         assert!(!may_start(&env, base.1, base.2, base.3, base.4), "{name} did not stop it");
     }
 }
 
 #[test]
+fn the_clock_being_off_does_not_stop_a_play_from_starting() {
+    let mut env = ok_env();
+    env.clock_on = false;
+    assert!(may_start(&env, Moment::Idle, MascotPlay::Sesekali, Duration::from_secs(60), Duration::from_secs(3600)));
+}
+
+#[test]
 fn manual_ignores_presence_cooldown_and_an_open_panel() {
     let mut env = ok_env();
-    env.panel_open = true;
+    // The gates the act of right-clicking the island switches on.
+    env.pointer_near = true;
+    env.shrunk = true;
+    env.menu_open = true;
     assert!(may_start(&env, Moment::Manual, MascotPlay::Mati, Duration::ZERO, Duration::ZERO));
-    env.fullscreen = true;
-    assert!(!may_start(&env, Moment::Manual, MascotPlay::Mati, Duration::ZERO, Duration::ZERO));
+    // The permanent ones still bind, panel_open included: the handler closes
+    // the panel first, because the animation's geometry assumes a closed island.
+    let mut full = env.clone();
+    full.fullscreen = true;
+    assert!(!may_start(&full, Moment::Manual, MascotPlay::Mati, Duration::ZERO, Duration::ZERO));
+    let mut panel = env.clone();
+    panel.panel_open = true;
+    assert!(!may_start(&panel, Moment::Manual, MascotPlay::Mati, Duration::ZERO, Duration::ZERO));
+}
+
+#[test]
+fn an_env_that_may_start_a_manual_play_does_not_stop_it_on_the_first_check() {
+    let mut env = ok_env();
+    env.pointer_near = true;
+    env.shrunk = true;
+    env.menu_open = true;
+    assert!(may_start(&env, Moment::Manual, MascotPlay::Mati, Duration::ZERO, Duration::ZERO));
+    assert!(!must_stop(&env, Story::MalingAngka, Moment::Manual, false, false),
+        "may_start and must_stop disagree about the same env");
+    // The same env stops an automatic play, so the exemption is Manual's alone.
+    assert!(must_stop(&env, Story::MalingAngka, Moment::Idle, false, false));
 }
 
 #[test]
@@ -573,13 +629,13 @@ fn sapaan_allows_only_the_greeting_and_the_hour() {
 fn a_running_play_stops_on_use_a_shape_change_or_a_clock_jump() {
     let mut env = ok_env();
     env.pointer_near = true;
-    assert!(must_stop(&env, Story::MalingAngka, false, false), "the pointer entered the hover zone");
-    assert!(must_stop(&ok_env(), Story::MalingAngka, true, false), "the size or style changed");
-    assert!(must_stop(&ok_env(), Story::MalingAngka, false, true), "the clock jumped");
+    assert!(must_stop(&env, Story::MalingAngka, Moment::Idle, false, false), "the pointer entered the hover zone");
+    assert!(must_stop(&ok_env(), Story::MalingAngka, Moment::Idle, true, false), "the size or style changed");
+    assert!(must_stop(&ok_env(), Story::MalingAngka, Moment::Idle, false, true), "the clock jumped");
     let mut no_clock = ok_env();
     no_clock.clock_on = false;
-    assert!(must_stop(&no_clock, Story::MalingAngka, false, false), "a clock story with the clock off");
-    assert!(!must_stop(&no_clock, Story::Kelelawar, false, false), "a story that needs no clock carries on");
+    assert!(must_stop(&no_clock, Story::MalingAngka, Moment::Idle, false, false), "a clock story with the clock off");
+    assert!(!must_stop(&no_clock, Story::Kelelawar, Moment::Idle, false, false), "a story that needs no clock carries on");
 }
 
 #[test]
@@ -767,12 +823,20 @@ git commit -m "feat(play): arm the play from the island's own gates"
 ### Task 10: Clicks pass through the animation
 
 **Files:**
-- Modify: `src/app.rs` (the island window's hit handling)
+- Modify: `src/app.rs` (the play's per-frame step), `src/ui/window.rs` (a click-through toggle on the island window), `src/ui/play/mod.rs`
 
 **Interfaces:**
-- Produces: `pub fn swallows(style: Style, s: ShapeRect, playing: bool, x: f32, y: f32) -> bool` in `src/ui/play/mod.rs`.
+- Produces: `pub fn swallows(style: Style, s: ShapeRect, playing: bool, x: f32, y: f32) -> bool` in `src/ui/play/mod.rs` (true when the island should take a click at that point: inside its own shape), and `pub fn click_through(playing: bool, inside: bool) -> bool` (`playing && !inside`).
 
-While a play runs, a point outside the island's own shape is transparent to the mouse, so the click reaches whatever is underneath; the play then winds down.
+While a play runs, the animation's pixels must not swallow a click meant for whatever is underneath, and a click anywhere ends the play.
+
+**Why not `HTTRANSPARENT` (ruling R36).** The island is a per-pixel-alpha layered window (`UpdateLayeredWindow` with `ULW_ALPHA`; `WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE`, no `WM_NCHITTEST` handler). Windows already passes clicks through its alpha-0 pixels and gives every alpha > 0 pixel the click — so the tail, tentacles and wings **will** take clicks. `HTTRANSPARENT` cannot fix that: it forwards only to windows of the **same thread**, never to another application's window below a topmost island. The codebase already knows this — `docs/memory/arrange.md`, "Alpha-0 click-through gotcha" — and its hover outline is made click-through with `WS_EX_TRANSPARENT`. This task does the same, but dynamically.
+
+**The mechanism.**
+- While a play runs, set `WS_EX_TRANSPARENT` on the island window when the cursor is **outside** the island's own shape, and clear it when the cursor is **inside**. The cursor is already read once per frame during a play (Task 9's `play_env`), so this adds no polling. Call `SetWindowLongPtrW(GWL_EXSTYLE)` only when the desired state **changes**, never every frame.
+- **Whenever a play ends — on every path — clear `WS_EX_TRANSPARENT`.** A window left click-through after a play would make the island itself unclickable until the next play. This is the property that must not fail.
+- A mouse button down anywhere during a play ends it (`play.end(now)`): read `GetAsyncKeyState` for `VK_LBUTTON`, `VK_RBUTTON` and `VK_MBUTTON` in the same per-frame step. Check all three, so swapped buttons (`SM_SWAPBUTTON`) do not matter. With `WS_EX_TRANSPARENT` set the island never sees the click itself, which is why it is read here.
+- "Inside the island's own shape" uses the **resting** shape (`geometry::shape_contains`), which is pure and already exists. During a play the island is at most a few dip off its resting shape, and the resting shape is the conservative choice (it never makes the island harder to click).
 
 - [ ] **Step 1: Write the failing test** in `src/ui/play/mod.rs`
 
@@ -784,14 +848,26 @@ fn a_play_never_swallows_a_click_outside_the_island() {
     assert!(!swallows(Style::Notch, s, true, s.x + s.w / 2.0, s.y + s.h + 40.0), "a click under the island passes through");
     assert!(!swallows(Style::Notch, s, false, s.x - 60.0, s.y + 10.0));
 }
+
+#[test]
+fn the_window_is_click_through_only_during_a_play_with_the_cursor_outside() {
+    assert!(click_through(true, false), "a play, cursor on an animation pixel: pass clicks through");
+    assert!(!click_through(true, true), "a play, cursor on the island: the island takes the click");
+    assert!(!click_through(false, false), "no play: never click-through, the alpha rule governs");
+    assert!(!click_through(false, true));
+}
 ```
+
+In `src/app.rs`'s test module, pin the two properties that matter at the app level, through whatever pure step function the per-frame code calls:
+- **Ending a play always leaves the window not click-through**, for every way a play ends (`done`, `finish_now`, a config change, a click). Write it so a version that forgets to clear the flag on one path fails.
+- **A mouse button down during a play ends it**, and a button down with no play does nothing.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `cargo test --locked ui::play`
 Expected: FAIL, `swallows` not found.
 
-- [ ] **Step 3: Implement `swallows` and return `HTTRANSPARENT` from the island's hit test for those points; wind the play down on a click**
+- [ ] **Step 3: Implement `swallows`, `click_through`, the window toggle and the per-frame step, as the mechanism above describes**
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -801,7 +877,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/app.rs src/ui/play/mod.rs
+git add src/app.rs src/ui/window.rs src/ui/play/mod.rs
 git commit -m "fix(play): clicks on an animation reach what is underneath"
 ```
 
@@ -917,8 +993,8 @@ fn the_story_starts_and_ends_at_rest_in_both_styles() {
         for (w, h) in [(160.0, 28.0), (190.0, 34.0), (300.0, 44.0)] {
             let s = shape(style, w, h);
             for t in [0.0, Story::MalingAngka.secs()] {
-                let shot = shot(style, s, Beat { spread: 0.0, alpha: 0.0, t });
-                assert!(is_rest(&shot.deform), "{style:?} {w}x{h} t={t}");
+                let shot = shot(style, s, Beat { spread: 1.0, alpha: 1.0, t });
+                assert!(is_rest(style, &shot.deform), "{style:?} {w}x{h} t={t}");
                 assert!(shot.digits.iter().all(|d| *d == DigitFx::IDENTITY), "{style:?} {w}x{h} t={t}");
             }
         }
@@ -930,7 +1006,7 @@ fn alpha_zero_means_no_deformation_at_any_moment() {
     let s = shape(Style::Pill, 190.0, 34.0);
     for i in 0..=78 {
         let beat = Beat { spread: 1.0, alpha: 0.0, t: i as f32 / 10.0 };
-        assert!(is_rest(&shot(Style::Pill, s, beat).deform), "t={}", beat.t);
+        assert!(is_rest(Style::Pill, &shot(Style::Pill, s, beat).deform), "t={}", beat.t);
     }
 }
 
