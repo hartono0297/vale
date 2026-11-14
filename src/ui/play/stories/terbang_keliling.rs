@@ -10,12 +10,10 @@
 use std::f32::consts::TAU;
 
 use super::{Draw, Ease, HEAD_PIVOT, Layer, MascotShot, Part, Shot, Slot, Stage, blinks, bump, kept, kf, lerp, ring};
-use crate::config::Style;
 use crate::ui::geometry::{Rect, ShapeRect};
 use crate::ui::mascot::CrestPose;
 use crate::ui::play::art::falk::{BirdPose, WingPose, bird_at, bird_parts, falk_coat, plume};
 use crate::ui::play::art::tube::{along, catmull_rom, measure};
-use crate::ui::play::shape::{Deform, outline};
 use crate::ui::play::state::spread_offsets;
 use crate::ui::play::trigger::Story;
 use crate::ui::robot::{Expr, GRID, Seg};
@@ -327,30 +325,18 @@ fn feather(t: f32, from: f32, p0: Pt, rgb: u32, rim: u32) -> Option<(Draw, f32)>
     Some((draw, clamp01((2.4 - d) / 0.6) * clamp01(d / 0.1)))
 }
 
-/// The island's outline as one figure, window dip.
-fn island_path(style: Style, s: ShapeRect) -> Vec<Seg> {
-    let pts = outline(style, s, &Deform::default());
-    let mut path: Vec<Seg> = pts.iter().map(|&(x, y)| Seg::Line(x, y)).collect();
-    if let Some(&(x, y)) = pts.first() {
-        path[0] = Seg::Move(x, y);
-    }
-    path.push(Seg::Close);
-    path
-}
-
 /// One moment of the story on `stage`, the falk in the coat of its look.
 /// The slot head plays the start and the end; between `OUT` and `HOME` the
 /// slot is empty and the bird flies, its body behind the island (clipped to
-/// outside it, so it unfolds from and folds back under the lip), its head
-/// behind it too and, while the bird is on the island's left half, again in
-/// front clipped to the island, so the head shows whole over the slot
-/// without ever switching layers.
+/// outside it, so it unfolds from and folds back under the lip), its head in
+/// front of the island while the bird is on the island's left half and
+/// behind it otherwise.
 ///
 /// `beat.alpha` eases it home, paced by the wind-down's time (`kept`). Cut
 /// short, the story holds where the cut found it: the bird (and a feather or
 /// a chirp) fades out where it is over the wind-down's first 0.6 while,
 /// from 0.4, the slot head fades in at rest in its slot (one already in the
-/// slot eases home instead). The flight is laid against the settled slot,
+/// slot eases home from 0.6 instead). The flight is laid against the settled slot,
 /// so the spread closing does not drag the fading bird along. Exactly at
 /// rest at 0 s, at the end and with `alpha` 0.
 pub fn shot(stage: &Stage) -> Shot {
@@ -366,7 +352,9 @@ pub fn shot(stage: &Stage) -> Shot {
     };
     let k = slot.w / GRID;
     let pivot = (slot.x + HEAD_PIVOT.0 * k, slot.y + HEAD_PIVOT.1 * k);
-    let (fly, settle) = (kept(a, 0.0, 0.6), kept(a, 0.4, 1.0));
+    // The bird fades over the wind-down's first 0.6; an empty slot fades its
+    // head back in from 0.4; a slot head already showing goes home from 0.6.
+    let (fly, back, stay) = (kept(a, 0.0, 0.6), kept(a, 0.4, 1.0), kept(a, 0.6, 1.0));
     let coat = falk_coat(look.falk);
     let fl = Flight::new(s, home);
     let mut front = Vec::new();
@@ -396,9 +384,12 @@ pub fn shot(stage: &Stage) -> Shot {
         }
         _ => None,
     };
+    // Cut inside a hand-over window the slot head (whole) and the fading bird
+    // add up past one head: accepted, as they are the same head in the same
+    // place, and the slot head only goes home once the bird has gone.
     out.slot = match played {
-        Some(m) => Slot::Story(homeward(m, settle)),
-        None if settle < 1.0 => Slot::Story(MascotShot { alpha: 1.0 - settle, ..MascotShot::REST }),
+        Some(m) => Slot::Story(homeward(m, stay)),
+        None if back < 1.0 => Slot::Story(MascotShot { alpha: 1.0 - back, ..MascotShot::REST }),
         None => Slot::Empty,
     };
     let shown = show * fly;
@@ -419,11 +410,16 @@ pub fn shot(stage: &Stage) -> Shot {
         // under it on the way in.
         let folded = Draw::Group { at: (0.0, -17.0), rot_deg: 0.0, scale: (lerp(0.75, 1.0, b.g), b.g), pivot: (0.0, -17.0), items: body };
         out.parts.push(Part { layer: Layer::Back, draw: bird_at(b.org, b.rot, 1.0, 1.0, vec![folded]), alpha: shown });
+        // One head: in front while the bird is on the island's left half (it
+        // leaves and enters its slot there), behind the island otherwise (so
+        // it is gone behind the right end). The centre crosses the middle
+        // only well under the lip, where neither layer cuts any of the head.
         let head = bird_at(b.org, b.rot, 1.0, 1.0, vec![parts.head]);
         if b.centre.0 < s.x + s.w / 2.0 {
-            front.push(Part { layer: Layer::Front, draw: Draw::Clipped { clip: island_path(style, s), items: vec![head.clone()] }, alpha: shown });
+            front.push(Part { layer: Layer::Front, draw: head, alpha: shown });
+        } else {
+            out.parts.push(Part { layer: Layer::Back, draw: head, alpha: shown });
         }
-        out.parts.push(Part { layer: Layer::Back, draw: head, alpha: shown });
         if b.chirp > 0.2 {
             out.parts.push(Part { layer: Layer::Back, draw: chirp_marks(b.head()), alpha: clamp01(b.chirp) * shown });
         }
@@ -439,6 +435,7 @@ mod tests {
     use crate::theme::Mascot;
     use crate::ui::cat_style::CatLook;
     use crate::ui::geometry::ROBOT_COMPACT;
+    use crate::ui::play::shape::{Deform, outline};
     use crate::ui::play::state::Beat;
     use crate::ui::play::stories::{CONTRACT_SIZES, wind_down_frames};
     use crate::ui::play::testing::shape;
@@ -482,19 +479,157 @@ mod tests {
         }
     }
 
-    /// The bird's head as the back layer paints it: its pivot (window dip),
-    /// its turn, its face and its alpha.
+    /// The bird's head as the shot paints it: its pivot (window dip), its
+    /// turn, its face and its alpha.
     fn bird_head(shot: &Shot) -> Option<(Pt, f32, MascotShot, f32)> {
-        shot.parts.iter().filter(|p| p.layer == Layer::Back).find_map(|p| match &p.draw {
+        bird_head_in(shot).map(|(_, p, r, f, a)| (p, r, f, a))
+    }
+
+    /// `bird_head` with the layer it is in.
+    fn bird_head_in(shot: &Shot) -> Option<(Layer, Pt, f32, MascotShot, f32)> {
+        shot.parts.iter().find_map(|p| match &p.draw {
             Draw::Group { at, rot_deg, items, .. } => match items.as_slice() {
                 [Draw::Group { at: head_at, items: inner, .. }] => match inner.as_slice() {
-                    [Draw::Head { shot, .. }] => Some((add(*at, turn(*rot_deg, *head_at)), *rot_deg, *shot, p.alpha)),
+                    [Draw::Head { shot, .. }] => Some((p.layer, add(*at, turn(*rot_deg, *head_at)), *rot_deg, *shot, p.alpha)),
                     _ => None,
                 },
                 _ => None,
             },
             _ => None,
         })
+    }
+
+    /// The falk's own ink round its head pivot, as a quad in window dip, for
+    /// the bird's head at `pivot` turned `rot` with `face`: the egg and the
+    /// crest as its pose has them (`falk_outline`), every accessory's box
+    /// (each with the glance's slide where it takes it) and 3 grid units for
+    /// strokes and pixels. Tighter than `HEAD_INK`, which holds every
+    /// mascot's head with the startled crest.
+    fn falk_ink(pivot: Pt, rot: f32, face: &MascotShot) -> [Pt; 4] {
+        use crate::theme::CatAccessory;
+        use crate::ui::cat_style::accessory_corners;
+        use crate::ui::mascot::falk_outline;
+        use crate::ui::robot::{Ears, Pose};
+        let mut pts = falk_outline(face.expr, &Pose { crest: Some(face.crest), ..Pose::default() });
+        for &acc in CatAccessory::ALL {
+            for ((x, y), slides) in accessory_corners(Mascot::Falk, acc, Ears::default()) {
+                let (gx, gy) = if slides { face.glance } else { (0.0, 0.0) };
+                pts.push((x + gx, y + gy));
+            }
+        }
+        let fold = |f: fn(f32, f32) -> f32, i: usize, from: f32| pts.iter().map(|p| if i == 0 { p.0 } else { p.1 }).fold(from, f);
+        let (x0, y0, x1, y1) = (fold(f32::min, 0, f32::MAX) - 3.0, fold(f32::min, 1, f32::MAX) - 3.0, fold(f32::max, 0, f32::MIN) + 3.0, fold(f32::max, 1, f32::MIN) + 3.0);
+        let unit = ROBOT_COMPACT / GRID;
+        [(x0, y0), (x1, y0), (x1, y1), (x0, y1)].map(|(x, y)| {
+            add(pivot, turn(rot, ((x - HEAD_PIVOT.0) * face.sx * unit, (y - HEAD_PIVOT.1) * face.sy * unit)))
+        })
+    }
+
+    #[test]
+    fn the_head_changes_layer_only_clear_of_the_island() {
+        // One head, in front of the island near the slot and behind it
+        // round the right end; it changes layer only well under the lip,
+        // where neither layer would cut any of it.
+        for style in [Style::Notch, Style::Pill] {
+            for (w, h) in CONTRACT_SIZES {
+                for clock in [true, false] {
+                    let case = format!("{style:?} {w}x{h} clock={clock}");
+                    let bottom = shape(style, w, h).y + h;
+                    let (mut last, mut switches) = (None, 0);
+                    let mut t = OUT + HAND;
+                    while t < HOME - HAND {
+                        let shot = shot(&stage(style, w, h, playing(t), clock));
+                        assert_eq!(shot.parts.iter().filter(|p| has_head(&p.draw)).count(), 1, "{case} t={t}: one head");
+                        let (layer, pivot, rot, face, _) = bird_head_in(&shot).unwrap_or_else(|| panic!("{case} t={t}: no head"));
+                        assert!(matches!(layer, Layer::Front | Layer::Back), "{case} t={t}: {layer:?}");
+                        if let Some((was, quad)) = last {
+                            if was != layer {
+                                switches += 1;
+                                // The island lies above its bottom edge: a head
+                                // wholly under it touches none of it.
+                                for q in [quad, falk_ink(pivot, rot, &face)] {
+                                    let top = q.iter().map(|p: &Pt| p.1).fold(f32::MAX, f32::min);
+                                    assert!(top > bottom, "{case} t={t}: {was:?} to {layer:?} with the head's ink {} under the lip", top - bottom);
+                                }
+                            }
+                        }
+                        last = Some((layer, falk_ink(pivot, rot, &face)));
+                        t += 0.002;
+                    }
+                    assert!(switches >= 2, "{case}: {switches} switches");
+                    // In front while it leaves and comes home, behind round the end.
+                    assert_eq!(bird_head_in(&at(style, w, h, 1.3)).unwrap().0, Layer::Front, "{case}");
+                    assert_eq!(bird_head_in(&at(style, w, h, 6.6)).unwrap().0, Layer::Front, "{case}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_wind_down_shows_one_head_but_at_a_hand_over() {
+        // In full flight the slot head and the bird never add up past one
+        // head. Cut inside a hand-over window they do (both whole at the
+        // cut): accepted, as the two are the same head in the same place
+        // until the bird has faded, and only then does the slot head go home.
+        let alphas = |shot: &Shot| {
+            let slot = match shot.slot {
+                Slot::Story(m) => m.alpha,
+                _ => 0.0,
+            };
+            (slot, bird_head(shot).map_or(0.0, |b| b.3))
+        };
+        for style in [Style::Notch, Style::Pill] {
+            for (w, h) in CONTRACT_SIZES {
+                for clock in [true, false] {
+                    for cut in [2.9, 4.6, 6.6] {
+                        for (ms, beat, shot) in wind_down_frames(cut, 0.0, |beat| shot(&stage(style, w, h, beat, clock))) {
+                            let (s, b) = alphas(&shot);
+                            assert!(s + b <= 1.0 + 1e-4, "{style:?} {w}x{h} clock={clock} cut {cut} +{ms:.1} ms (alpha {}): {s} + {b}", beat.alpha);
+                        }
+                    }
+                    for cut in [1.2, 7.05] {
+                        let case = format!("{style:?} {w}x{h} clock={clock} cut {cut}");
+                        let frames = wind_down_frames(cut, 0.0, |beat| shot(&stage(style, w, h, beat, clock)));
+                        let (s, b) = alphas(&frames[0].2);
+                        assert!(s + b > 1.0, "{case}: the documented exception, {s} + {b}");
+                        for (ms, beat, shot) in &frames {
+                            if let Some((q, rb, f, a)) = bird_head(shot).filter(|b| b.3 > 0.0) {
+                                let st = stage(style, w, h, *beat, clock);
+                                let (p, k, r, _) = slot_head(&st, shot).unwrap();
+                                let unit = ROBOT_COMPACT / GRID;
+                                assert!(dist(p, q) < 1e-3 && (k.1 - unit * f.sy).abs() < 1e-4 && turned(r, rb).abs() < 1e-2,
+                                    "{case} +{ms:.1} ms: the slot head at {p:?} while the bird's ({a}) is at {q:?}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_wind_down_in_the_slot_eases_the_head_home_and_fades_the_chirp() {
+        use crate::ui::play::stories::fades_by_frames;
+        for style in [Style::Notch, Style::Pill] {
+            for (w, h) in CONTRACT_SIZES {
+                for clock in [true, false] {
+                    for cut in [0.55, 7.5] {
+                        let case = format!("{style:?} {w}x{h} clock={clock} cut {cut}");
+                        let frames = wind_down_frames(cut, 0.0, |beat| shot(&stage(style, w, h, beat, clock)));
+                        assert!(frames[0].2.parts.iter().any(|p| matches!(p.draw, Draw::Stroke { .. })), "{case}: chirping at the cut");
+                        if let Err(why) = fades_by_frames(&frames) {
+                            panic!("{case}: {why}");
+                        }
+                        for (ms, _, shot) in &frames {
+                            assert!(matches!(shot.slot, Slot::App) || matches!(shot.slot, Slot::Story(m) if m.alpha == 1.0), "{case} +{ms:.1} ms: {:?}", shot.slot);
+                            assert!(bird_head(shot).is_none(), "{case} +{ms:.1} ms");
+                        }
+                        let (_, _, end) = frames.last().unwrap();
+                        assert_eq!(*end, Shot::rest(style, shape(style, w, h)), "{case}");
+                    }
+                }
+            }
+        }
     }
 
     /// The slot head as the renderer places it: its pivot, its dip per grid
@@ -556,6 +691,15 @@ mod tests {
                         t += 0.01;
                     }
                     assert!(hidden > 3, "{case}: behind the end for {hidden} steps");
+                    // Where it is deepest in, the head's pivot is inside too.
+                    let deep = (s.x + s.w - 4.0, s.y + s.h / 2.0 + 5.0);
+                    let (mut best, mut t) = ((f32::MAX, 0.0), 3.0);
+                    while t < 6.5 {
+                        best = if dist(fl.at(t), deep) < best.0 { (dist(fl.at(t), deep), t) } else { best };
+                        t += 0.005;
+                    }
+                    let head = bird_head(&shot(&stage(style, w, h, playing(best.1), clock))).unwrap().0;
+                    assert!(inside(&island, head), "{case} t={}: the head at {head:?}", best.1);
                 }
             }
         }
@@ -633,10 +777,9 @@ mod tests {
                         }
                     }
                     // The slot is empty while the bird has the head, and the
-                    // head shows over the island near its slot.
+                    // head shows over the island near its slot, unclipped.
                     assert_eq!(at(style, w, h, 4.0).slot, Slot::Empty, "{case}");
-                    let near = at(style, w, h, 1.3);
-                    assert!(near.parts.iter().any(|p| p.layer == Layer::Front && matches!(p.draw, Draw::Clipped { .. }) && has_head(&p.draw)), "{case}");
+                    assert_eq!(bird_head_in(&at(style, w, h, 1.3)).unwrap().0, Layer::Front, "{case}");
                 }
             }
         }
