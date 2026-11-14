@@ -2224,6 +2224,12 @@ impl Brain {
         self.last_activity = fold_input(self.last_activity, now, input_idle);
     }
 
+    /// How long since the island was last used or input was seen on the PC
+    /// (`input_seen`): the owner's presence for a mascot story.
+    pub fn since_activity(&self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.last_activity)
+    }
+
     /// The face last drawn (see `observe`).
     pub fn shown(&self) -> Option<Expr> {
         self.shown
@@ -4327,6 +4333,19 @@ mod tests {
         let now = Instant::now();
         assert_eq!(fold_input(now, now, Duration::from_secs(u64::MAX / 4)), now);
         assert_eq!(fold_input(now, now, Duration::MAX), now);
+    }
+
+    #[test]
+    fn the_time_since_activity_follows_pc_input() {
+        let base = Instant::now();
+        let mut brain = Brain::new(base);
+        let now = base + Duration::from_secs(600);
+        assert_eq!(brain.since_activity(now), Duration::from_secs(600));
+        brain.input_seen(now, Duration::from_secs(40));
+        assert_eq!(brain.since_activity(now), Duration::from_secs(40));
+        // Input folded in from the past never moves it backwards.
+        brain.input_seen(now, Duration::from_secs(300));
+        assert_eq!(brain.since_activity(now), Duration::from_secs(40));
     }
 
     #[test]

@@ -99,7 +99,7 @@ use crate::state::{IslandState, ShownPanel, ToastForm, is_media_hit, is_real_toa
 use crate::system::{
     CpuHistory, SampleKind, Sampler, SysEase, SystemSample, WarnMonitor, alert_notice,
 };
-use crate::theme::{self, Theme};
+use crate::theme::{self, Mascot, MascotPlay, Theme};
 use crate::tiles::ShortcutTiles;
 use crate::ui::app_icon;
 use crate::ui::cat_style::CatLook;
@@ -126,9 +126,13 @@ use crate::ui::panel_layout::{CliHead, STRIP_H, cli_layout};
 use crate::ui::panel_tips::{self, TipCtx};
 use crate::ui::tooltip;
 use crate::ui::render::{
-    CleanerView, CliView, DevicesView, FolderMenuView, Frame, MoleView, NoticeCloseView, Progress,
-    RecFrame, RecordView, Renderer, RobotFrame, SearchView, SystemView,
+    CleanerView, CliView, DevicesView, DigitFx, FolderMenuView, Frame, MoleView, NoticeCloseView,
+    PlayFrame, Progress, RecFrame, RecordView, Renderer, RobotFrame, SearchView, SystemView,
 };
+use crate::ui::play::gate::{Env, instant_stop, may_start, must_stop};
+use crate::ui::play::shape::Deform;
+use crate::ui::play::state::Play;
+use crate::ui::play::trigger::{Moment, PRESENCE_MIN, Story, cooldown, pick, wait_for};
 use crate::ui::settings_layout::{CardId, MonitorRow};
 use crate::ui::robot::{
     self, Brain, Expr, EyesBlink, EyesPose, GreetSettings, Motion, Rng, Spot, TypingPaws,
@@ -293,6 +297,13 @@ const TIMER_BLINK: usize = 14;
 /// One-shot to the next moment Bata's face changes by itself (falling
 /// asleep, a Claude session going quiet, a CLI face ending).
 const TIMER_ROBOT: usize = 15;
+/// One-shot, a random `wait_for(mascot_play)` away (8 to 90 minutes): the
+/// mascot may play a short story. Armed only while one could start
+/// (`mascot_timer_wanted`), killed the moment a gate stops holding, and
+/// never repeating: a fire re-checks every gate, then the next sync arms a
+/// fresh wait. While a story runs the frame clock draws it, not this timer.
+/// 19 is the id left free between 18 and 20.
+const TIMER_MASCOT_PLAY: usize = 19;
 /// One-shot: a lyric line too long for the notch starts scrolling
 /// (`LYRIC_HOLD_MS` after it showed); the frame clock then runs until its end.
 const TIMER_LYRIC_SCROLL: usize = 16;
@@ -598,6 +609,13 @@ pub fn run(media_log_flag: bool, start: Start) {
             eq_timer: false,
             draw_gen: 0,
             eq_key: None,
+            play: None,
+            last_story: None,
+            last_play_at: None,
+            mascot_timer: false,
+            greeting_up: false,
+            clock_hour: Local::now().hour(),
+            play_clock_jumped: false,
             eq_capture: None,
             eq_capture_on: false,
             dance_anchor: Instant::now(),
@@ -1093,6 +1111,20 @@ struct App {
     /// What the frame on screen drew (`ui::dirty::EqKey`); `None` after a
     /// draw that failed.
     eq_key: Option<EqKey>,
+    /// The mascot's story that runs now, and how it started.
+    play: Option<ActivePlay>,
+    /// The last story played and when it ended: `pick` never repeats it and
+    /// the cooldown counts from the time.
+    last_story: Option<Story>,
+    last_play_at: Option<Instant>,
+    /// `TIMER_MASCOT_PLAY` is set.
+    mascot_timer: bool,
+    /// A greeting notice was on screen at the last refresh.
+    greeting_up: bool,
+    /// The hour the idle clock last showed (`TIMER_CLOCK`), to see it roll.
+    clock_hour: u32,
+    /// The wall clock jumped under a running story (`on_clock_jump`).
+    play_clock_jumped: bool,
     /// The loopback capture behind the equalizer bars (`eq_audio`), created
     /// the first time it is wanted; `eq_capture_on` is the last
     /// `set_running` sent to it.
@@ -2176,6 +2208,7 @@ impl App {
         }
         self.bata.change_timer = next.is_some();
         self.sync_typing_timer(now);
+        self.sync_mascot_timer(now);
     }
 
     /// `TIMER_BLINK`: shut the eyes for `BLINK_MS`, then open them and wait
@@ -2311,6 +2344,166 @@ impl App {
         }
         if !self.animating_at(now) {
             self.draw(now);
+        }
+    }
+
+    /// What the play gates read now. With `read_pointer`, the pointer is read
+    /// (one `GetCursorPos`) unless the pointer poll runs and already holds it:
+    /// with both pointer features off `pointer_near` is never refreshed.
+    fn play_env(&self, now: Instant, read_pointer: bool) -> Env {
+        let view = self.state.view();
+        let asleep = self
+            .robot_frame(&view, now)
+            .is_some_and(|r| r.expr == Expr::Sleep);
+        Env {
+            mascot_on: self.config.robot,
+            motion_full: self.config.robot_animation == Motion::Full,
+            energy_saver: self.bata.energy_saver,
+            win_anim: self.animations,
+            idle_view: view == View::Idle,
+            panel_open: matches!(view, View::Panel(_)),
+            menu_open: MENU_OPEN.with(Cell::get),
+            fullscreen: self.fullscreen,
+            screen_away: self.screen_away(),
+            shrunk: self.eyes,
+            pointer_near: read_pointer && self.pointer_near_now(),
+            asleep,
+            recording: hotkeys::any_recording(self.rec.active(), self.screen.recording()),
+            clock_on: self.config.idle_clock,
+        }
+    }
+
+    /// The pointer is near the island's top edge. Unknown counts as near.
+    fn pointer_near_now(&self) -> bool {
+        if self.pointer_ms != 0 {
+            return self.pointer_near;
+        }
+        let mut pt = POINT::default();
+        match (self.win.as_ref(), self.notch_span()) {
+            (Some(win), Some(span)) if unsafe { GetCursorPos(&mut pt) }.is_ok() => {
+                pointer_watch::near_top(pt.x, pt.y - win.screen_origin().1, span, win.scale())
+            }
+            _ => true,
+        }
+    }
+
+    /// Arms or kills `TIMER_MASCOT_PLAY`: a one-shot while a story could
+    /// start, killed the moment that stops holding. The pointer is not read
+    /// here (`pointer_near` may be stale with the pointer poll off) and, like
+    /// the presence rule and the cooldown, is judged when it fires.
+    fn sync_mascot_timer(&mut self, now: Instant) {
+        let env = self.play_env(now, false);
+        let preset = self.config.mascot_play;
+        let wanted = mascot_timer_wanted(&env, preset, self.play.is_some());
+        let Some(arm) = timer_change(self.mascot_timer, wanted) else {
+            return;
+        };
+        self.mascot_timer = arm;
+        unsafe {
+            let wait = wait_for(preset, self.bata.rng.next_u32());
+            match wait {
+                Some(wait) if arm => {
+                    let ms = wait.as_millis().min(u128::from(u32::MAX)) as u32;
+                    SetTimer(Some(self.hwnd), TIMER_MASCOT_PLAY, ms, None);
+                }
+                _ => {
+                    let _ = KillTimer(Some(self.hwnd), TIMER_MASCOT_PLAY);
+                    self.mascot_timer = false;
+                }
+            }
+        }
+    }
+
+    /// `TIMER_MASCOT_PLAY` fired: gone unless re-armed. Every gate is checked
+    /// again; a story starts only if all still hold, and the next sync arms
+    /// a new wait only if one could start.
+    fn on_mascot_play_timer(&mut self) {
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), TIMER_MASCOT_PLAY);
+        }
+        self.mascot_timer = false;
+        let now = Instant::now();
+        self.try_play(Moment::Idle, now);
+        self.sync_mascot_timer(now);
+    }
+
+    /// Starts a story for `moment` if every gate allows it right now.
+    fn try_play(&mut self, moment: Moment, now: Instant) {
+        if self.play.is_some() {
+            return;
+        }
+        // One `GetLastInputInfo`, on the rare moments a story is considered.
+        self.fold_pc_input(now);
+        let env = self.play_env(now, true);
+        let idle = self.bata.brain.since_activity(now);
+        if may_start(
+            &env,
+            moment,
+            self.config.mascot_play,
+            presence_for(moment, idle),
+            since_last_play(self.last_play_at, now),
+        ) {
+            self.start_play(moment, now);
+        }
+    }
+
+    /// Picks a story and starts it: the frame clock runs until it is done.
+    fn start_play(&mut self, moment: Moment, now: Instant) {
+        let story = pick(
+            self.config.mascot,
+            self.config.idle_clock,
+            self.last_story,
+            moment,
+            self.bata.rng.next_u32(),
+        );
+        self.play = Some(ActivePlay {
+            play: Play::start(story, now),
+            moment,
+            shape: play_shape_of(self.config.style, self.notch_size(), self.config.mascot),
+        });
+        self.play_clock_jumped = false;
+        self.ensure_clock();
+        // The timer that may have started it is spent.
+        self.sync_mascot_timer(now);
+    }
+
+    /// One frame of a running story, before it is drawn: ends it (at once, or
+    /// easing home) when a gate stops holding, and drops it when it is done.
+    fn advance_play(&mut self, now: Instant) {
+        if self.play.is_none() {
+            return;
+        }
+        let env = self.play_env(now, true);
+        let shape = play_shape_of(self.config.style, self.notch_size(), self.config.mascot);
+        let jumped = std::mem::take(&mut self.play_clock_jumped);
+        let Some(active) = self.play.as_mut() else {
+            return;
+        };
+        let changed = active.shape != shape;
+        if step_play(&env, &mut active.play, active.moment, changed, jumped, now) {
+            self.last_story = Some(active.play.story());
+            self.last_play_at = Some(now);
+            self.play = None;
+        }
+    }
+
+    /// What the renderer gets for the running story. Until the stories
+    /// exist, the island at rest with the mascot and the clock pushed to its
+    /// ends by the beat.
+    fn play_frame(&self, now: Instant) -> Option<PlayFrame> {
+        self.play.as_ref().map(|active| PlayFrame {
+            deform: Deform::default(),
+            beat: active.play.beat(now),
+            digits: [DigitFx::IDENTITY; 5],
+        })
+    }
+
+    /// The hour changed since the idle clock last showed: the hour moment.
+    fn check_hour(&mut self, now: Instant) {
+        let hour = Local::now().hour();
+        if hour_rolled(self.clock_hour, hour) {
+            self.clock_hour = hour;
+            self.try_play(Moment::Hour, now);
         }
     }
 
@@ -4122,6 +4315,10 @@ impl App {
         }
         self.arm_deadline(now);
         self.sync_timers(now);
+        // The greeting notice just ended: the greeting moment.
+        if greeting_ended(&mut self.greeting_up, &self.state.view()) {
+            self.try_play(Moment::Greeting, now);
+        }
         self.sync_lyrics_card(now);
         // The caption card's colours, font and language; nothing while
         // captions are off, and nothing sent when nothing changed.
@@ -4200,6 +4397,7 @@ impl App {
             || self.shelf.motion.running(now)
             || self.dock.moving()
             || self.widgets_moving(now)
+            || self.play.is_some()
     }
 
     /// The window is `TALL_WINDOW_H` tall while the enlarged CLI panel shows
@@ -4472,6 +4670,7 @@ impl App {
         if clock != self.clock_timer {
             self.clock_timer = clock;
             if clock {
+                self.clock_hour = Local::now().hour();
                 self.arm_clock();
             } else {
                 unsafe {
@@ -4642,6 +4841,7 @@ impl App {
         self.sync_eq();
         // A lock or a display change stops the paws and starts them again.
         self.sync_typing_timer(Instant::now());
+        self.sync_mascot_timer(Instant::now());
         // The REC clock and meters stop too, and come back on unlock.
         self.sync_rec_timers(Instant::now());
         self.follow_pointer_settings(Instant::now());
@@ -4686,6 +4886,7 @@ impl App {
             }
             // The paws follow the same settings (the cat, its motion).
             self.sync_typing_timer(now);
+            self.sync_mascot_timer(now);
             self.sync_pointer_watch(now);
         }
     }
@@ -5458,6 +5659,9 @@ impl App {
         // The sticky notes' reminders too: the missed ones fire, and the
         // one-shot is armed for the new time.
         self.sticky_remind_fire();
+        // A running story ends; a jump over an hour is not the hour moment.
+        self.play_clock_jumped = self.play.is_some();
+        self.clock_hour = Local::now().hour();
         if !self.clock_timer {
             return;
         }
@@ -5595,6 +5799,7 @@ impl App {
                 self.sync_lyric_scroll(Instant::now());
             }
             TIMER_CLOCK => {
+                self.check_hour(Instant::now());
                 if !self.animating() {
                     self.draw(Instant::now());
                 }
@@ -5635,6 +5840,7 @@ impl App {
             TIMER_BEHIND => self.on_behind_timer(),
             TIMER_POINTER => self.on_pointer_timer(),
             TIMER_TYPING => self.on_typing_timer(),
+            TIMER_MASCOT_PLAY => self.on_mascot_play_timer(),
             TIMER_HALO => self.on_halo_poll(),
             TIMER_BLINK => self.on_blink(),
             TIMER_ROBOT => {
@@ -5674,6 +5880,7 @@ impl App {
         self.advance_eyes_look(now);
         self.dock_step(now);
         self.widgets_step(now);
+        self.advance_play(now);
         let shape_done = self.anim.progress(now) >= 1.0;
         let slide_done = self.slide.is_none_or(|s| s.progress(now) >= 1.0);
         let reveal_done = self.reveal.is_none_or(|r| r.done(now));
@@ -7400,7 +7607,7 @@ impl App {
             notice_close: self.notice_close_view(now),
             transit,
             full_redraw,
-            play: None,
+            play: self.play_frame(now),
         };
         let key = eq_key(self.draw_gen, &frame, shape, opacity);
         if eq_tick && !dirty::eq_draw_needed(self.eq_key.as_ref(), &key) {
@@ -7463,7 +7670,12 @@ fn eq_key(draw_gen: u64, frame: &Frame, shape: ShapeRect, opacity: f32) -> EqKey
     let playing = frame.media.is_some_and(|m| m.playing);
     // The renderer draws the sine (the clock's) for compact media playing
     // without live bars.
-    let time_based = compact && playing && frame.eq_heights.is_none();
+    let time_based = eq_time_based(
+        compact,
+        playing,
+        frame.eq_heights.is_some(),
+        frame.play.is_some(),
+    );
     EqKey {
         draw_gen,
         shape: [shape.x, shape.y, shape.w, shape.h, shape.radius].map(f32::to_bits),
@@ -8451,6 +8663,97 @@ fn eq_capture_wanted(timer_on: bool, setting_on: bool) -> bool {
 }
 
 /// The idle clock's minute timer runs only while the idle island shows it.
+/// What a story was started for, and how the island looked then: a style,
+/// size or mascot that differs later ends it.
+struct ActivePlay {
+    play: Play,
+    moment: Moment,
+    shape: PlayShape,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PlayShape {
+    style: Style,
+    size: NotchSize,
+    mascot: Mascot,
+}
+
+fn play_shape_of(style: Style, size: NotchSize, mascot: Mascot) -> PlayShape {
+    PlayShape { style, size, mascot }
+}
+
+/// `TIMER_MASCOT_PLAY` should be set: an idle story could start, apart from
+/// the pointer (read when it fires), the presence rule and the cooldown, and
+/// none runs. Only the timed presets have a wait.
+fn mascot_timer_wanted(env: &Env, preset: MascotPlay, playing: bool) -> bool {
+    let env = Env {
+        pointer_near: false,
+        ..*env
+    };
+    !playing
+        && wait_for(preset, 0).is_some()
+        && may_start(&env, Moment::Idle, preset, PRESENCE_MIN, cooldown(preset))
+}
+
+/// The one-shot to arm (`Some(true)`) or kill (`Some(false)`) so it matches
+/// `wanted`; `None` leaves it as it is, so a set timer is never set again.
+fn timer_change(armed: bool, wanted: bool) -> Option<bool> {
+    (armed != wanted).then_some(wanted)
+}
+
+/// One frame of a story. Where the motion itself is unwanted it lands at rest
+/// at once; where a gate stops holding it eases home. True when it is done.
+fn step_play(
+    env: &Env,
+    play: &mut Play,
+    moment: Moment,
+    shape_changed: bool,
+    clock_jumped: bool,
+    now: Instant,
+) -> bool {
+    if instant_stop(env) {
+        play.finish_now();
+    } else if must_stop(env, play.story(), moment, shape_changed, clock_jumped) {
+        play.end(now);
+    }
+    play.done(now)
+}
+
+/// A greeting plays right after the owner touched the PC, so the presence
+/// rule is waived for it: the time since input it is judged by.
+fn presence_for(moment: Moment, since_input: Duration) -> Duration {
+    if moment == Moment::Greeting {
+        PRESENCE_MIN
+    } else {
+        since_input
+    }
+}
+
+/// The time since the last story ended; a first story has no cooldown.
+fn since_last_play(last: Option<Instant>, now: Instant) -> Duration {
+    last.map_or(Duration::MAX, |at| now.saturating_duration_since(at))
+}
+
+/// The clock moved on to another hour.
+fn hour_rolled(shown: u32, now: u32) -> bool {
+    shown != now
+}
+
+/// A greeting notice was on screen at the last call and is not now.
+fn greeting_ended(was_up: &mut bool, view: &View) -> bool {
+    let up = matches!(
+        view,
+        View::Notice(n) if matches!(n.kind, NoticeKind::Greeting { .. })
+    );
+    std::mem::replace(was_up, up) && !up
+}
+
+/// The frame changes between two equalizer ticks without the equalizer: the
+/// sine of compact media playing with no live bars, and a story.
+fn eq_time_based(compact: bool, playing: bool, live_bars: bool, play: bool) -> bool {
+    (compact && playing && !live_bars) || play
+}
+
 fn clock_timer_wanted(view: &View, idle_clock: bool) -> bool {
     idle_clock && *view == View::Idle
 }
@@ -11192,6 +11495,7 @@ mod tests {
             TIMER_STICKY_REMIND,
             crate::widgets::list_win::TIMER_LIST_UNDO,
             clip::TIMER_CLIP_DRAG,
+            TIMER_MASCOT_PLAY,
         ];
         assert_eq!(clip::TIMER_CLIP_DRAG, 55);
         assert_eq!(TIMER_PHONE, 48);
@@ -11209,6 +11513,279 @@ mod tests {
         for (i, a) in ids.iter().enumerate() {
             assert!(!ids[i + 1..].contains(a), "timer id {a} used twice");
         }
+    }
+
+    #[test]
+    fn the_mascot_play_timer_has_its_own_id() {
+        assert_eq!(TIMER_MASCOT_PLAY, 19);
+    }
+
+    /// An `Env` from 14 bits, one per field, in declaration order.
+    fn env_from_bits(bits: u32) -> crate::ui::play::gate::Env {
+        let b = |i: u32| bits & (1 << i) != 0;
+        crate::ui::play::gate::Env {
+            mascot_on: b(0),
+            motion_full: b(1),
+            energy_saver: b(2),
+            win_anim: b(3),
+            idle_view: b(4),
+            panel_open: b(5),
+            menu_open: b(6),
+            fullscreen: b(7),
+            screen_away: b(8),
+            shrunk: b(9),
+            pointer_near: b(10),
+            asleep: b(11),
+            recording: b(12),
+            clock_on: b(13),
+        }
+    }
+
+    #[test]
+    fn the_play_timer_runs_only_when_a_play_could_start() {
+        use crate::theme::MascotPlay::{Jarang, Mati, Sapaan, Sering, Sesekali};
+        use crate::ui::play::gate::may_start;
+        use crate::ui::play::trigger::Moment;
+        let (since_input, since_last) = (Duration::from_secs(60), Duration::from_secs(3600));
+        let mut armed = 0u32;
+        for preset in [Sesekali, Sering, Jarang, Sapaan, Mati] {
+            for bits in 0..(1u32 << 14) {
+                let env = env_from_bits(bits);
+                for playing in [false, true] {
+                    // Written out, not read from the gates: the timer's own rule.
+                    let timed = matches!(preset, Sesekali | Sering | Jarang);
+                    let expected = timed
+                        && !playing
+                        && env.mascot_on
+                        && env.motion_full
+                        && !env.energy_saver
+                        && env.win_anim
+                        && env.idle_view
+                        && !env.panel_open
+                        && !env.menu_open
+                        && !env.fullscreen
+                        && !env.screen_away
+                        && !env.shrunk
+                        && !env.asleep
+                        && !env.recording;
+                    let got = mascot_timer_wanted(&env, preset, playing);
+                    assert_eq!(got, expected, "{preset:?} playing={playing} env={env:?}");
+                    // It also agrees with the gate the fire re-checks, with the
+                    // pointer's stale reading and the presence and cooldown (both
+                    // decided when it fires) taken out.
+                    let calm = crate::ui::play::gate::Env { pointer_near: false, ..env };
+                    assert_eq!(
+                        got,
+                        !playing && may_start(&calm, Moment::Idle, preset, since_input, since_last),
+                        "{preset:?} playing={playing} env={env:?}"
+                    );
+                    armed += u32::from(got);
+                }
+            }
+        }
+        assert!(armed > 0, "no combination arms it: the test checks nothing");
+    }
+
+    #[test]
+    fn the_play_timer_is_armed_once_and_killed_when_a_gate_flips() {
+        use crate::theme::MascotPlay::Sesekali;
+        use crate::ui::play::testing::ok_env;
+        let mut armed = false;
+        let mut ops = Vec::new();
+        let sync = |env: &crate::ui::play::gate::Env,
+                    playing: bool,
+                    armed: &mut bool,
+                    ops: &mut Vec<bool>| {
+            if let Some(op) = timer_change(*armed, mascot_timer_wanted(env, Sesekali, playing)) {
+                *armed = op;
+                ops.push(op);
+            }
+        };
+        let ok = ok_env();
+        for _ in 0..3 {
+            sync(&ok, false, &mut armed, &mut ops);
+        }
+        assert_eq!(ops, [true], "armed once, never re-armed while it holds");
+        let fullscreen = crate::ui::play::gate::Env { fullscreen: true, ..ok };
+        for _ in 0..2 {
+            sync(&fullscreen, false, &mut armed, &mut ops);
+        }
+        assert_eq!(ops, [true, false], "killed when a gate stops holding");
+        sync(&ok, false, &mut armed, &mut ops);
+        // A play starts: the timer that started it is gone and stays gone.
+        for _ in 0..2 {
+            sync(&ok, true, &mut armed, &mut ops);
+        }
+        assert_eq!(ops, [true, false, true, false]);
+        assert!(!armed);
+    }
+
+    #[test]
+    fn a_play_that_must_stop_instantly_lands_at_rest_in_one_step() {
+        use crate::ui::play::state::Play;
+        use crate::ui::play::testing::ok_env;
+        use crate::ui::play::trigger::{Moment, Story};
+        for (name, env) in [
+            ("energy saver", crate::ui::play::gate::Env { energy_saver: true, ..ok_env() }),
+            ("windows animations", crate::ui::play::gate::Env { win_anim: false, ..ok_env() }),
+            ("motion", crate::ui::play::gate::Env { motion_full: false, ..ok_env() }),
+        ] {
+            let t0 = Instant::now();
+            let mut play = Play::start(Story::Kelelawar, t0);
+            let at = t0 + Duration::from_secs(1);
+            assert!(step_play(&env, &mut play, Moment::Idle, false, false, at), "{name}");
+            let b = play.beat(at);
+            assert_eq!((b.spread, b.alpha), (0.0, 0.0), "{name}: not at rest");
+        }
+    }
+
+    #[test]
+    fn a_manual_play_is_not_killed_by_the_pointer_on_its_first_tick() {
+        use crate::ui::play::state::Play;
+        use crate::ui::play::testing::ok_env;
+        use crate::ui::play::trigger::{Moment, Story};
+        let near = crate::ui::play::gate::Env { pointer_near: true, menu_open: true, ..ok_env() };
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        let mut manual = Play::start(Story::Kelelawar, t0);
+        assert!(!step_play(&near, &mut manual, Moment::Manual, false, false, t0 + ms(100)));
+        // Had it been ended at 100 ms it would be fully wound down by 300 ms.
+        assert_eq!(manual.beat(t0 + ms(300)).alpha, 1.0, "the manual play was ended");
+        assert!(manual.beat(t0 + ms(300)).spread > 0.9);
+        // The same env ends an automatic play, and it eases home over 200 ms.
+        let mut auto = Play::start(Story::Kelelawar, t0);
+        assert!(!step_play(&near, &mut auto, Moment::Idle, false, false, t0 + ms(100)));
+        assert!(auto.beat(t0 + ms(300)).alpha < 1.0, "the automatic play was not ended");
+        assert!(step_play(&near, &mut auto, Moment::Idle, false, false, t0 + ms(300)));
+    }
+
+    #[test]
+    fn a_changed_island_or_a_jumped_clock_ends_a_running_play() {
+        use crate::ui::play::state::Play;
+        use crate::ui::play::testing::ok_env;
+        use crate::ui::play::trigger::{Moment, Story};
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        for (shape, jump) in [(true, false), (false, true)] {
+            let mut p = Play::start(Story::Kelelawar, t0);
+            assert!(!step_play(&ok_env(), &mut p, Moment::Idle, shape, jump, t0 + ms(100)));
+            assert!(p.beat(t0 + ms(300)).alpha < 1.0);
+        }
+        let mut p = Play::start(Story::Kelelawar, t0);
+        assert!(!step_play(&ok_env(), &mut p, Moment::Idle, false, false, t0 + ms(100)));
+        assert_eq!(p.beat(t0 + ms(300)).alpha, 1.0, "nothing wrong: it plays on");
+    }
+
+    #[test]
+    fn the_island_changing_its_look_is_a_changed_shape() {
+        use crate::theme::Mascot;
+        let size = NotchSize::from_config(&Config::default());
+        let base = play_shape_of(Style::Notch, size, Mascot::Cat);
+        assert_eq!(base, play_shape_of(Style::Notch, size, Mascot::Cat));
+        let bigger = NotchSize { w: size.w + 10.0, ..size };
+        let taller = NotchSize { h: size.h + 10.0, ..size };
+        for (name, other) in [
+            ("style", play_shape_of(Style::Pill, size, Mascot::Cat)),
+            ("width", play_shape_of(Style::Notch, bigger, Mascot::Cat)),
+            ("height", play_shape_of(Style::Notch, taller, Mascot::Cat)),
+            ("mascot", play_shape_of(Style::Notch, size, Mascot::Falk)),
+        ] {
+            assert_ne!(base, other, "{name} did not count as a change");
+        }
+    }
+
+    fn greeting_view() -> View {
+        View::Notice(Notice {
+            key: "bata-greeting".into(),
+            source: "Vale".into(),
+            title: String::new(),
+            body: String::new(),
+            kind: NoticeKind::Greeting { period: DayPeriod::Morning },
+        })
+    }
+
+    #[test]
+    fn the_greeting_moment_fires_once_when_the_greeting_notice_ends() {
+        let mut up = false;
+        let mut fired = Vec::new();
+        for (i, view) in [
+            View::Idle,
+            greeting_view(),
+            greeting_view(),
+            View::Idle,
+            View::Idle,
+            greeting_view(),
+            View::Notice(island_notice("t", "title", "body")),
+        ]
+        .iter()
+        .enumerate()
+        {
+            if greeting_ended(&mut up, view) {
+                fired.push(i);
+            }
+        }
+        // Ends at steps 3 (back to idle) and 6 (another notice took over).
+        assert_eq!(fired, [3, 6]);
+        let mut up = false;
+        assert!(!greeting_ended(&mut up, &View::Notice(island_notice("t", "a", "b"))));
+        assert!(!greeting_ended(&mut up, &View::Idle));
+    }
+
+    #[test]
+    fn a_greeting_play_waives_presence_and_is_blocked_by_a_notice_that_took_over() {
+        use crate::theme::MascotPlay::Sesekali;
+        use crate::ui::play::gate::may_start;
+        use crate::ui::play::testing::ok_env;
+        use crate::ui::play::trigger::Moment;
+        let (just_touched, long_ago) = (Duration::from_secs(2), Duration::from_secs(3600));
+        // The owner touched the PC a moment ago: an idle play would wait, the
+        // greeting's does not.
+        assert!(!may_start(&ok_env(), Moment::Idle, Sesekali, presence_for(Moment::Idle, just_touched), long_ago));
+        assert!(may_start(&ok_env(), Moment::Greeting, Sesekali, presence_for(Moment::Greeting, just_touched), long_ago));
+        assert_eq!(presence_for(Moment::Hour, just_touched), just_touched);
+        // Every other gate still binds it, a notice that replaced the greeting included.
+        let notice_up = crate::ui::play::gate::Env { idle_view: false, ..ok_env() };
+        assert!(!may_start(&notice_up, Moment::Greeting, Sesekali, presence_for(Moment::Greeting, just_touched), long_ago));
+        // And the cooldown still binds it.
+        assert!(!may_start(&ok_env(), Moment::Greeting, Sesekali, presence_for(Moment::Greeting, just_touched), Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn the_hour_moment_fires_when_the_hour_rolls_over_and_not_within_it() {
+        assert!(hour_rolled(9, 10));
+        assert!(hour_rolled(23, 0));
+        assert!(!hour_rolled(10, 10));
+        assert!(!hour_rolled(0, 0));
+    }
+
+    #[test]
+    fn the_cooldown_counts_from_the_last_play_and_a_first_play_has_none() {
+        use crate::theme::MascotPlay::Sesekali;
+        use crate::ui::play::gate::may_start;
+        use crate::ui::play::testing::ok_env;
+        use crate::ui::play::trigger::Moment;
+        let now = Instant::now();
+        let ok = Duration::from_secs(60);
+        let try_at = |last: Option<Instant>| {
+            may_start(&ok_env(), Moment::Idle, Sesekali, ok, since_last_play(last, now))
+        };
+        assert!(try_at(None), "no play yet: no cooldown");
+        assert!(!try_at(Some(now - Duration::from_secs(60))));
+        assert!(try_at(Some(now - Duration::from_secs(13 * 60))));
+    }
+
+    #[test]
+    fn a_play_frame_is_never_skipped_as_unchanged_on_an_equalizer_tick() {
+        // Compact media playing with live bars: nothing time-based, so a tick
+        // with the same key is skipped...
+        assert!(!eq_time_based(true, true, true, false));
+        // ...unless a play is on that frame.
+        assert!(eq_time_based(true, true, true, true));
+        assert!(eq_time_based(false, false, false, true));
+        // The sine (no live bars) stays time-based as before, and idle stays not.
+        assert!(eq_time_based(true, true, false, false));
+        assert!(!eq_time_based(true, false, false, false));
+        assert!(!eq_time_based(false, true, false, false));
     }
 
     #[test]
