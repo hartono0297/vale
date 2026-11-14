@@ -2981,9 +2981,9 @@ impl Renderer {
                     self.paint_robot_at(area, robot, alpha)
                 });
             }
-            Draw::Digit { index, at: to, rot_deg } => {
+            Draw::Digit { index, at: to, rot_deg, home } => {
                 if let Some((area, time)) = at.clock {
-                    let place = |c: (f32, f32)| turn_about(*rot_deg, c, (to.0 - c.0, to.1 - c.1));
+                    let place = |c: (f32, f32)| turn_about(*rot_deg, c, (to.0 - home.0, to.1 - home.1));
                     self.paint_digit_prop(time, area, *index, None, place, alpha);
                 }
             }
@@ -6729,6 +6729,67 @@ mod tests {
     }
 
     #[test]
+    fn the_stories_digit_table_is_within_its_slack_of_the_clock() {
+        use crate::ui::play::stories::{DIGIT_X, NEAR_SLACK};
+        // A story aims at a clock character by `DIGIT_X` from the clock box's
+        // centre; DirectWrite places it. Both typefaces, every time and both
+        // box widths: the table is no further off than the bounds allow
+        // (`NEAR_SLACK`). It cannot be within a pixel of both: DM Sans puts
+        // the characters at -15.6, -6.4, 0, 6.4, 15.6 and JetBrains Mono at
+        // -17.4, -8.7, 0, 8.7, 17.4, so a carried digit is placed from its
+        // home (`Draw::Digit`'s `home`), not from the table.
+        let mut r = renderer();
+        for ui in [UiFont::Sans, UiFont::Mono] {
+            r.set_ui_font(ui).unwrap();
+            for scale in [1.0, 1.5, 2.0] {
+                r.scale = scale;
+                for time in TIMES {
+                    for w in [44.0, 61.0] {
+                        let area = clock_area(w);
+                        let wide: Vec<u16> = time.encode_utf16().collect();
+                        let line = r.layout(&wide, &r.fonts.clock, area.w, area.h).unwrap();
+                        for (i, want) in DIGIT_X.iter().enumerate() {
+                            let (_, _, c) = r.clock_char(&line, &wide, i, area, None).unwrap();
+                            let (dx, dy) = (c.0 - (area.x + area.w / 2.0) - want, c.1 - (area.y + area.h / 2.0));
+                            assert!(dx.abs() <= NEAR_SLACK && dy.abs() <= NEAR_SLACK, "{ui:?} x{scale} {time} in {w}, character {i}: off by ({dx}, {dy})");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_carried_digit_starts_where_the_clock_draws_it() {
+        use crate::ui::play::stories::DIGIT_X;
+        // A story reckons a character's home by `DIGIT_X`, off DirectWrite's
+        // by up to 1.8 dip; a digit it carries is placed from where the clock
+        // really draws it, so at its reckoned home it covers the clock's own
+        // character exactly, in either typeface, at any scale.
+        let mut r = renderer();
+        let area = clock_area(44.0);
+        let placing = Placing { clock: Some((area, "14:32")), pose: None };
+        for ui in [UiFont::Sans, UiFont::Mono] {
+            r.set_ui_font(ui).unwrap();
+            for scale in [1.0, 1.5, 2.0] {
+                r.scale = scale;
+                for (i, x) in DIGIT_X.iter().enumerate() {
+                    let home = (area.x + area.w / 2.0 + x, area.y + area.h / 2.0);
+                    for (dx, dy) in [(0.0, 0.0), (-6.0, 6.0)] {
+                        let own = only(&mut r, i, DigitFx { dx, dy, ..DigitFx::IDENTITY });
+                        let part = Draw::Digit { index: i, at: (home.0 + dx, home.1 + dy), rot_deg: 0.0, home };
+                        let prop = painted(&mut r, CLOCK_BOX, |r| r.paint_draw(&part, 1.0, 1.0, &placing));
+                        let (((ox, oy), _), ((px, py), ink)) = (own.centre(), prop.centre());
+                        assert!(ink > 50.0, "{ui:?} x{scale} {i}: the prop drew nothing");
+                        let k = r.scale;
+                        assert!((ox - px).abs() < 0.6 * k && (oy - py).abs() < 0.6 * k, "{ui:?} x{scale} {i} ({dx}, {dy}): {ox},{oy} vs {px},{py}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_digit_prop_lands_where_the_clock_would_move_that_digit() {
         // The stolen digit hangs from the beak by its cell's centre: drawn as
         // a prop at a point, it covers what the clock's own character moved
@@ -6741,7 +6802,7 @@ mod tests {
         let placing = Placing { clock: Some((area, "14:32")), pose: None };
         for (dx, dy) in [(0.0, 0.0), (-20.0, 6.0)] {
             let moved = only(&mut r, 4, DigitFx { dx, dy, ..DigitFx::IDENTITY });
-            let part = Draw::Digit { index: 4, at: (c.0 + dx, c.1 + dy), rot_deg: 0.0 };
+            let part = Draw::Digit { index: 4, at: (c.0 + dx, c.1 + dy), rot_deg: 0.0, home: c };
             let prop = painted(&mut r, CLOCK_BOX, |r| r.paint_draw(&part, 1.0, 1.0, &placing));
             let ((mx, my), _) = moved.centre();
             let ((px, py), ink) = prop.centre();

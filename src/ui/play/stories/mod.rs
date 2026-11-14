@@ -233,10 +233,14 @@ pub enum Draw {
     /// `shot.rot_deg`, with its pivot (`HEAD_PIVOT`) at `at`. `shot.dx`,
     /// `shot.dy` are ignored here: they move the slot head from its slot.
     Head { at: (f32, f32), shot: MascotShot },
-    /// The clock's character `index`, its cell centred on `at`, turned by
-    /// `rot_deg`, outlined in the island's colour so it reads over the
-    /// mascot and off the island.
-    Digit { index: usize, at: (f32, f32), rot_deg: f32 },
+    /// The clock's character `index`, moved from where the clock draws it
+    /// by `at - home` and turned by `rot_deg` about its cell's centre,
+    /// outlined in the island's colour so it reads over the mascot and off
+    /// the island. `home` is where the story reckons that centre to be
+    /// (`DIGIT_X`) and `at` where it carries the character, so a digit
+    /// taken up at `home` starts exactly on the clock's own, whatever the
+    /// typeface; the bounds take `at` within `NEAR_SLACK`.
+    Digit { index: usize, at: (f32, f32), rot_deg: f32, home: (f32, f32) },
     /// The clock's character `index` in its own cell, where the clock lays it
     /// out on the island at rest, under `fx` as the clock's per-character
     /// path draws it (about its cell's centre, `fx.ch` in its place),
@@ -312,12 +316,15 @@ impl Draw {
                 };
                 moved(&head_matrix(*at, shot), ink)
             }
-            Draw::Digit { at, .. } => Rect {
-                x: at.0 - DIGIT_REACH,
-                y: at.1 - DIGIT_REACH,
-                w: 2.0 * DIGIT_REACH,
-                h: 2.0 * DIGIT_REACH,
-            },
+            Draw::Digit { at, .. } => {
+                let reach = DIGIT_REACH + NEAR_SLACK;
+                Rect {
+                    x: at.0 - reach,
+                    y: at.1 - reach,
+                    w: 2.0 * reach,
+                    h: 2.0 * reach,
+                }
+            }
             // Scaled up to its widest, moved, and the reckoned centre
             // `NEAR_SLACK` off DirectWrite's either way.
             Draw::ClockChar { fx, near, .. } => {
@@ -529,14 +536,18 @@ impl MascotShot {
 pub const DIGIT_REACH: f32 = 13.0;
 
 /// How far a story's reckoning of a clock character's centre (`DIGIT_X`)
-/// may be from where DirectWrite puts it, either way (dip).
+/// may be from where DirectWrite puts it, either way (dip): 1.6 for DM
+/// Sans, 1.1 for JetBrains Mono (`the_stories_digit_table_is_within_its_slack_of_the_clock`).
 #[cfg_attr(not(test), allow(dead_code))]
-const NEAR_SLACK: f32 = 2.0;
+pub(crate) const NEAR_SLACK: f32 = 2.0;
 
 /// The clock's character centres from the clock box's centre (DM Sans at
-/// 16, `%H:%M`), as the mockup measures them. Only where a story aims at a
-/// character; the clock's own characters are placed by DirectWrite.
-const DIGIT_X: [f32; 5] = [-17.2, -7.6, 0.0, 7.6, 17.2];
+/// 16, `%H:%M`), as the mockup measures them: where a story aims at a
+/// character (an arm's reach, a tail's tap, a seat beside it). The clock's
+/// own characters are placed by DirectWrite, within `NEAR_SLACK` of these;
+/// a carried digit is placed from its own (`Draw::Digit`'s `home`). The one
+/// table every story uses.
+pub(crate) const DIGIT_X: [f32; 5] = [-17.2, -7.6, 0.0, 7.6, 17.2];
 
 /// The three whistle arcs of a `Draw::Whistle` at `at`: each runs from its
 /// start straight down by its chord, bowing right on a circle of its radius,

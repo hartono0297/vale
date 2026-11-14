@@ -11,7 +11,7 @@
 
 use std::f32::consts::TAU;
 
-use super::{Draw, Ease, Layer, MascotShot, Part, Shot, Slot, Stage, blinks, bump, island_box, kept, kf, lerp, mix_hop, ring, toward_rest};
+use super::{DIGIT_X, Draw, Ease, Layer, MascotShot, Part, Shot, Slot, Stage, blinks, bump, island_box, kept, kf, lerp, mix_hop, ring, toward_rest};
 use crate::config::Style;
 use crate::ui::geometry::{ShapeRect, corner_radius};
 use crate::ui::play::art::cat::{CatPose, Paw, cat_at, slim_tail, tail};
@@ -23,10 +23,6 @@ use crate::ui::robot::{CREAM, Expr, Seg};
 
 use Ease::{I, Io, Lin, O, Sb, Sio};
 
-/// The clock's character centres from the clock box's centre (DM Sans at
-/// 16, `%H:%M`), as the mockup measures them: where the tail taps and the
-/// lip lights. The characters themselves are placed by DirectWrite.
-const DIGIT_X: [f32; 5] = [-17.2, -7.6, 0.0, 7.6, 17.2];
 /// The notes the tail plays: when, and on which character.
 const NOTES: [(f32, usize); 8] = [(2.05, 0), (2.35, 1), (2.65, 3), (2.95, 4), (3.4, 3), (3.7, 1), (4.0, 0), (4.3, 1)];
 /// The tail's sweep from left to right: its start and end.
@@ -332,9 +328,6 @@ mod tests {
     crate::ui::play::stories::story_contract_tests!(Story::PianoEkor, shot);
 
     const SIZES: [(f32, f32); 3] = crate::ui::play::stories::CONTRACT_SIZES;
-    /// The clock's character centres from its box's centre, as the mockup
-    /// measures them.
-    const CHARS: [f32; 5] = [-17.2, -7.6, 0.0, 7.6, 17.2];
     /// The glow's colour, the mockup's `#F6D04A`.
     const LIGHT: u32 = 0xF6D04A;
 
@@ -352,7 +345,7 @@ mod tests {
     /// The clock's character centres (x) where the renderer puts them.
     fn chars(style: Style, w: f32, h: f32) -> [f32; 5] {
         let c = stage(style, w, h, Beat { spread: 1.0, alpha: 1.0, t: 3.0, cut_at: None }).room().clock.unwrap();
-        std::array::from_fn(|i| c.x + c.w / 2.0 + CHARS[i])
+        std::array::from_fn(|i| c.x + c.w / 2.0 + DIGIT_X[i])
     }
 
     /// The cat: its part, and the head it carries.

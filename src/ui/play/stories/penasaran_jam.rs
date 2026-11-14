@@ -10,7 +10,7 @@
 use std::f32::consts::TAU;
 
 use super::{
-    Draw, Ease, Layer, MascotShot, Part, Shot, Slot, Stage, blinks, circle_segs, kept, kf, lerp, rim_pt, ring,
+    DIGIT_X, Draw, Ease, Layer, MascotShot, Part, Shot, Slot, Stage, blinks, circle_segs, kept, kf, lerp, rim_pt, ring,
     toward_rest,
 };
 use crate::config::Style;
@@ -25,11 +25,6 @@ use Ease::{I, Io, Lin, O, Ob, Sio};
 
 type Pt = (f32, f32);
 
-/// The clock's character centres from the clock box's centre (DM Sans at
-/// 16, `%H:%M`), as the mockup measures them (`DIG`). Only where the arm
-/// reaches and where the pulled digit is drawn; the clock's own characters
-/// are placed by DirectWrite.
-const DIGIT_X: [f32; 5] = [-17.2, -7.6, 0.0, 7.6, 17.2];
 /// The digit the arm pulls: the minute's last.
 const PULLED: usize = 4;
 /// The two eye glints in the dark (the mockup's `glints`).
@@ -183,7 +178,7 @@ pub fn shot(stage: &Stage) -> Shot {
     // was held and the clock's own comes back at home.
     let pull = pull(t);
     if (4.3..4.85).contains(&t) {
-        let draw = Draw::Digit { index: PULLED, at: (d4, mid + 4.5 * pull), rot_deg: 8.0 * pull };
+        let draw = Draw::Digit { index: PULLED, at: (d4, mid + 4.5 * pull), rot_deg: 8.0 * pull, home: (d4, mid) };
         out.parts.push(Part { layer: Layer::Inside, draw, alpha: play });
         out.digits[PULLED] = if play < 1.0 {
             DigitFx { scale: 1.0 - play, alpha: 1.0 - play, ..DigitFx::IDENTITY }
@@ -281,7 +276,7 @@ mod tests {
     fn home(style: Style, w: f32, h: f32) -> Pt {
         let st = stage(style, w, h, Beat { spread: 1.0, alpha: 1.0, t: 0.0, cut_at: None }, OctopusColor::default());
         let c = st.room().clock.unwrap();
-        (c.x + c.w / 2.0 + 17.2, st.shape.y + st.shape.h / 2.0)
+        (c.x + c.w / 2.0 + DIGIT_X[PULLED], st.shape.y + st.shape.h / 2.0)
     }
 
     /// The digit props of a shot: index, centre, turn, alpha, layer.
@@ -289,7 +284,7 @@ mod tests {
         shot.parts
             .iter()
             .filter_map(|p| match p.draw {
-                Draw::Digit { index, at, rot_deg } => Some((index, at, rot_deg, p.alpha, p.layer)),
+                Draw::Digit { index, at, rot_deg, .. } => Some((index, at, rot_deg, p.alpha, p.layer)),
                 _ => None,
             })
             .collect()
@@ -328,6 +323,18 @@ mod tests {
                 let (_, c, turn, alpha, layer) = pulled[0];
                 assert_eq!((layer, alpha), (Layer::Inside, 1.0), "{case}");
                 assert!((c.0 - x).abs() < 1e-3 && c.1 > y + 2.0 && c.1 < y + 4.6 && turn > 3.0, "{case}: {c:?} {turn}");
+                // Taken up from its home, where the renderer places it from
+                // the clock's own character: no jump as the arm takes it.
+                for t in [4.301, 4.7] {
+                    let shot = at(style, w, h, t, 1.0);
+                    let Some(Draw::Digit { home: from, at: now, .. }) = shot.parts.iter().map(|p| &p.draw).find(|d| matches!(d, Draw::Digit { .. })) else {
+                        panic!("{case} t={t}: no prop");
+                    };
+                    assert!((from.0 - x).abs() < 1e-3 && (from.1 - y).abs() < 1e-3, "{case} t={t}: {from:?}");
+                    if t < 4.31 {
+                        assert!((now.0 - x).abs() < 1e-3 && (now.1 - y).abs() < 0.01, "{case} t={t}: {now:?}");
+                    }
+                }
                 // Not before the pull or after the plop; then it wobbles home
                 // in the clock.
                 for t in [4.2, 4.9, 5.2] {
@@ -349,7 +356,7 @@ mod tests {
                     assert!((shown(shot) - 1.0).abs() < 1e-4, "{case}: shows {}", shown(shot));
                     let c = stage(style, 190.0, 34.0, *beat, OctopusColor::default()).room().clock.unwrap();
                     for p in props(shot) {
-                        let x = c.x + c.w / 2.0 + 17.2;
+                        let x = c.x + c.w / 2.0 + DIGIT_X[PULLED];
                         assert!((p.1.0 - x).abs() < 1e-3 && p.1.1 == held.1, "{case}: the prop at {:?}, the digit's place {x}", p.1);
                     }
                     let d = shot.digits[4];

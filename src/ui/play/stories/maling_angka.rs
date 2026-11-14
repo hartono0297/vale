@@ -217,6 +217,7 @@ pub fn shot(stage: &Stage) -> Shot {
                     index: STOLEN,
                     at,
                     rot_deg: turn,
+                    home,
                 },
                 alpha: fade * a,
             });
