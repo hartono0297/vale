@@ -49,9 +49,10 @@ fn asleep_k(t: f32) -> f32 {
 /// One moment of the story on `stage`, the cat in the coat of its look and
 /// the swap showing the clock's real next minute (`stage.minute`).
 /// `beat.alpha` eases it home, paced by the wind-down's time (`kept`): over
-/// its first 0.58 the cat, the pillow and the z's fade and the lip settles,
-/// the clock taking its minute back as the pillow goes; from 0.3 the slot
-/// head comes back out of the dark and rises home. Cut short, the story
+/// its first 0.58 the cat and the z's fade and the lip settles; the pillow
+/// goes straight into its cell over the first 0.3 and fades over 0.3 to 0.88
+/// over the clock's own minute; from 0.3 the slot head comes back out of the
+/// dark and rises home. Cut short, the story
 /// holds where the cut found it. Exactly at rest at 0 s, at the end and
 /// with `alpha` 0.
 pub fn shot(stage: &Stage) -> Shot {
@@ -163,14 +164,16 @@ pub fn shot(stage: &Stage) -> Shot {
     }
 
     // The pillow: the clock's minute, drawn over the cat in its stead from
-    // before the cat comes out until after it has gone, squashed and tipped
-    // under its cheek. At the swap the real next minute crosses in over it
-    // and pops up with a ring; straightened once the cat has gone, it hands
-    // the clock its own minute back.
-    let held = kf(t, &[(0.6, 0.0, Lin), (0.9, 1.0, Lin), (8.15, 1.0, Lin), (8.45, 0.0, Lin)]) * play;
-    out.digits[PILLOW] = DigitFx { alpha: 1.0 - held, ..DigitFx::IDENTITY };
+    // before the cat comes out, squashed and tipped under its cheek. At the
+    // swap the real next minute crosses in over it and pops up with a ring;
+    // straightened as the cat hops back into the dark, it hands the clock its
+    // own minute back meanwhile. Two fading layers would thin the minute
+    // (1 - (1 - a)(1 - b)), so the clock's own stays whole under a pillow
+    // that is less than whole, which is then always straight in its cell.
+    let held = kf(t, &[(0.6, 0.0, Lin), (0.9, 1.0, Lin), (7.95, 1.0, Lin), (8.3, 0.0, Lin)]) * kept(a, 0.3, 0.88);
+    out.digits[PILLOW] = DigitFx { alpha: if held < 1.0 { 1.0 } else { 0.0 }, ..DigitFx::IDENTITY };
     if held > 0.0 {
-        let leave = kf(t, &[(7.8, 1.0, Lin), (8.1, 0.0, Sio)]);
+        let leave = kf(t, &[(7.75, 1.0, Lin), (7.95, 0.0, Sio)]);
         let squash = lean * leave;
         let pop = bump(t, 6.36, 0.22);
         let fx = toward_rest(
@@ -182,9 +185,11 @@ pub fn shot(stage: &Stage) -> Shot {
                 scale_x: 1.0 - 0.18 * squash,
                 ..DigitFx::IDENTITY
             },
-            play,
+            kept(a, 0.0, 0.3),
         );
-        let next = minute.and_then(|m| m.to_digit(10)).and_then(|d| char::from_digit((d + 1) % 10, 10));
+        // At :x9 the next minute changes more than the pillow (14:09 would
+        // read 14:00): no swap then, only the pop.
+        let next = minute.and_then(|m| m.to_digit(10)).filter(|d| *d < 9).and_then(|d| char::from_digit(d + 1, 10));
         let swap = if next.is_some() { kf(t, &[(6.3, 0.0, Lin), (6.42, 1.0, Lin)]) } else { 0.0 };
         let near = (pillow_x, mid);
         for (ch, k) in [(None, 1.0 - swap), (next, swap)] {
@@ -347,9 +352,20 @@ mod tests {
         assert!(after[0].0.scale > 1.3 && after[0].0.dy < -2.0, "{:?}", after[0].0);
         let turn: Vec<f32> = [6.45, 6.55, 6.65, 6.75].iter().map(|&t| pillows(&now(t))[0].0.rot_deg).collect();
         assert!(turn.iter().any(|r| *r < -5.0) && turn.iter().any(|r| *r > 3.0), "no ring: {turn:?}");
-        // The real next minute, whatever the clock shows: 9 rolls over to 0.
-        let nine = Stage { minute: Some('9'), ..stage(Style::Pill, 190.0, 34.0, Beat { spread: 1.0, alpha: 1.0, t: 6.6, cut_at: None }) };
-        assert_eq!(pillows(&shot(&nine))[0].0.ch, Some('0'));
+        // The real next minute: 14:08 turns to 14:09.
+        let at_clock = |clock: &str, t: f32| Stage { minute: clock.chars().last(), ..stage(Style::Pill, 190.0, 34.0, Beat { spread: 1.0, alpha: 1.0, t, cut_at: None }) };
+        assert_eq!(pillows(&shot(&at_clock("14:08", 6.6)))[0].0.ch, Some('9'));
+        // At 14:09 or 14:59 the next minute changes more than the pillow: a
+        // swap would read 14:00 or 14:50, the minute going back. No swap; it
+        // still pops and rings.
+        for clock in ["14:09", "14:59"] {
+            for t in [6.36, 6.6, 7.5, 8.1] {
+                assert!(pillows(&shot(&at_clock(clock, t))).iter().all(|(fx, _)| fx.ch.is_none()), "{clock} t={t}");
+            }
+            let popped = pillows(&shot(&at_clock(clock, 6.47)))[0].0;
+            assert!(popped.scale > 1.3 && popped.dy < -2.0, "{clock}: {popped:?}");
+            assert!(pillows(&shot(&at_clock(clock, 6.45)))[0].0.rot_deg < -5.0, "{clock}: no ring");
+        }
         // Without a minute to read, no swap.
         let blind = |t: f32| Stage { minute: None, ..stage(Style::Notch, 190.0, 34.0, Beat { spread: 1.0, alpha: 1.0, t, cut_at: None }) };
         for t in [6.36, 6.6, 7.5] {
@@ -359,12 +375,27 @@ mod tests {
 
     #[test]
     fn the_pillow_stands_in_for_the_clocks_minute_with_no_gap() {
-        // The clock's own minute and the pillow add up to one whole digit at
-        // every moment, playing or wound down; at rest the clock has it back.
+        // The minute never shows thinner than one whole digit, playing or
+        // wound down: two layers fade as 1 - (1 - a)(1 - b), so whenever the
+        // pillow is partly clear the clock's own minute stays whole under it,
+        // and the pillow is then straight in its cell (only its character
+        // may differ); the clock's own goes only under a whole pillow. At
+        // rest the clock has it back.
         let check = |shot: &Shot, case: &str| {
-            let pillow: f32 = pillows(shot).iter().map(|(_, a)| a).sum();
+            let parts = pillows(shot);
+            let pillow: f32 = parts.iter().map(|(_, a)| a).sum();
             let own = shot.digits[4];
-            assert!((own.alpha + pillow - 1.0).abs() < 1e-4, "{case}: {} + {pillow}", own.alpha);
+            assert!(own.alpha == 0.0 || own.alpha == 1.0, "{case}: {}", own.alpha);
+            assert!(pillow <= 1.0 + 1e-5, "{case}: pillow {pillow}");
+            if own.alpha == 0.0 {
+                assert!(pillow > 1.0 - 1e-5, "{case}: the minute thinned to {pillow}");
+            }
+            if pillow < 1.0 - 1e-5 {
+                assert_eq!(own.alpha, 1.0, "{case}: pillow {pillow}");
+                for (fx, _) in &parts {
+                    assert_eq!(DigitFx { ch: None, ..*fx }, DigitFx::IDENTITY, "{case}: a clear pillow off its cell");
+                }
+            }
             assert_eq!(DigitFx { alpha: 1.0, ..own }, DigitFx::IDENTITY, "{case}");
             for (i, d) in shot.digits.iter().enumerate().filter(|(i, _)| *i != 4) {
                 assert_eq!(*d, DigitFx::IDENTITY, "{case}: digit {i}");
@@ -377,12 +408,16 @@ mod tests {
         }
         // Over the cat from before it comes out until after it has gone.
         assert_eq!(pillows(&now(0.95)).iter().map(|p| p.1).sum::<f32>(), 1.0);
-        assert_eq!(pillows(&now(8.12)).iter().map(|p| p.1).sum::<f32>(), 1.0);
-        assert!(pillows(&now(8.5)).is_empty() && pillows(&now(0.5)).is_empty());
-        // Straight and in its own place again before it hands back.
-        let back = pillows(&now(8.14))[0].0;
+        assert_eq!(pillows(&now(7.9)).iter().map(|p| p.1).sum::<f32>(), 1.0);
+        assert!(pillows(&now(8.31)).is_empty() && pillows(&now(0.5)).is_empty());
+        // Straight and in its own place again before it hands back, which
+        // it does while the cat hops back into the dark.
+        let back = pillows(&now(7.95))[0].0;
         assert_eq!(DigitFx { ch: None, ..back }, DigitFx::IDENTITY, "{back:?}");
-        for cut in [3.0, 5.9, 6.37, 7.0] {
+        let handing: f32 = pillows(&now(8.1)).iter().map(|p| p.1).sum();
+        assert!(handing > 0.0 && handing < 1.0, "{handing}");
+        assert!(now(8.1).parts.iter().any(|p| matches!(p.draw, Draw::Group { .. }) && p.alpha > 0.0), "the cat has gone");
+        for cut in [3.0, 5.9, 6.37, 7.0, 8.0] {
             for (ms, beat, shot) in wind_down_frames(Story::BantalAngka, cut, 0.0, |beat| shot(&stage(Style::Pill, 190.0, 34.0, beat))) {
                 check(&shot, &format!("cut {cut} +{ms:.1} ms (alpha {})", beat.alpha));
             }

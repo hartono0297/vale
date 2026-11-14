@@ -223,7 +223,8 @@ pub enum Draw {
     /// out on the island at rest, under `fx` as the clock's per-character
     /// path draws it (about its cell's centre, `fx.ch` in its place),
     /// outlined as a `Digit` is. `near` is where the story reckons that
-    /// centre to be (`DIGIT_X`); only the bounds use it.
+    /// centre to be (`DIGIT_X`); only the bounds use it. It does not dim
+    /// with the clock beside a sleeping Bata (a play never starts asleep).
     ClockChar { index: usize, fx: DigitFx, near: (f32, f32) },
     /// Three small whistle arcs, the first starting near `at`.
     Whistle { at: (f32, f32) },
