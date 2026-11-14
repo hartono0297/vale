@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use crate::theme::{Mascot, MascotPlay};
+use crate::ui::play::stories::ready;
 
 /// An automatic story only plays once the owner has been idle this long: any
 /// sooner they are mid-keystroke.
@@ -94,15 +95,24 @@ pub fn presence_ok(since_input: Duration) -> bool {
     (PRESENCE_MIN..=PRESENCE_MAX).contains(&since_input)
 }
 
-/// The mascot's stories, without the clock ones when the clock is off.
-pub fn pool(mascot: Mascot, clock_on: bool) -> Vec<Story> {
+/// Every story the mascot owns, ready or not, without the clock ones when
+/// the clock is off.
+fn owned(mascot: Mascot, clock_on: bool) -> Vec<Story> {
     ALL.into_iter()
         .filter(|s| s.mascot() == mascot && (clock_on || !s.needs_clock()))
         .collect()
 }
 
-/// Never returns `last`. `roll` is a random number from the caller, so the
-/// choice is deterministic in it.
+/// The stories the mascot can play: the ones it owns that are ready
+/// (`stories::ready`). Empty when none is, and then it never plays
+/// (`gate::Env::has_story`).
+pub fn pool(mascot: Mascot, clock_on: bool) -> Vec<Story> {
+    owned(mascot, clock_on).into_iter().filter(|s| ready(*s)).collect()
+}
+
+/// Never returns `last`, unless it is the pool's only story. `roll` is a
+/// random number from the caller, so the choice is deterministic in it. The
+/// pool is not empty: the gates keep a mascot without one from starting.
 pub fn pick(
     mascot: Mascot,
     clock_on: bool,
@@ -110,10 +120,16 @@ pub fn pick(
     moment: Moment,
     roll: u32,
 ) -> Story {
-    let fresh: Vec<Story> = pool(mascot, clock_on)
-        .into_iter()
-        .filter(|s| Some(*s) != last)
-        .collect();
+    pick_from(&pool(mascot, clock_on), mascot, last, moment, roll)
+}
+
+/// `pick` from `pool`, the stories of `mascot`.
+fn pick_from(pool: &[Story], mascot: Mascot, last: Option<Story>, moment: Moment, roll: u32) -> Story {
+    let mut fresh: Vec<Story> = pool.iter().copied().filter(|s| Some(*s) != last).collect();
+    // A one-story pool plays it again rather than nothing.
+    if fresh.is_empty() {
+        fresh = pool.to_vec();
+    }
     if moment == Moment::Greeting {
         let warm = Story::warm(mascot);
         if fresh.contains(&warm) {
@@ -167,11 +183,37 @@ mod tests {
     }
 
     #[test]
-    fn every_mascot_keeps_at_least_two_stories_without_the_clock() {
+    fn every_mascot_owns_at_least_two_stories_without_the_clock() {
+        // By design, once every story is ready (Part 2).
         for m in [Mascot::Cat, Mascot::Falk, Mascot::Octopus] {
-            assert!(pool(m, true).len() >= 3, "{m:?}");
-            assert!(pool(m, false).len() >= 2, "{m:?} without the clock");
-            assert!(pool(m, false).iter().all(|s| !s.needs_clock()), "{m:?}");
+            assert!(owned(m, true).len() >= 3, "{m:?}");
+            assert!(owned(m, false).len() >= 2, "{m:?} without the clock");
+            assert!(owned(m, false).iter().all(|s| !s.needs_clock()), "{m:?}");
+        }
+    }
+
+    #[test]
+    fn only_ready_stories_are_in_the_pool() {
+        for m in [Mascot::Cat, Mascot::Falk, Mascot::Octopus] {
+            for clock_on in [true, false] {
+                let want: Vec<Story> = owned(m, clock_on).into_iter().filter(|s| ready(*s)).collect();
+                assert_eq!(pool(m, clock_on), want, "{m:?} clock_on={clock_on}");
+            }
+        }
+        // Part 1 ships the falk's Maling angka alone.
+        assert_eq!(pool(Mascot::Falk, true), vec![Story::MalingAngka]);
+        assert!(pool(Mascot::Falk, false).is_empty(), "Maling angka needs the clock");
+        assert!(pool(Mascot::Cat, true).is_empty(), "no cat story yet");
+        assert!(pool(Mascot::Octopus, true).is_empty(), "no octopus story yet");
+    }
+
+    #[test]
+    fn a_one_story_pool_plays_its_story_again() {
+        for moment in [Moment::Idle, Moment::Hour, Moment::Greeting, Moment::Manual] {
+            for roll in 0..20 {
+                let s = pick(Mascot::Falk, true, Some(Story::MalingAngka), moment, roll);
+                assert_eq!(s, Story::MalingAngka, "{moment:?} roll={roll}");
+            }
         }
     }
 
@@ -205,11 +247,12 @@ mod tests {
     fn a_pick_never_repeats_the_last_story() {
         for m in [Mascot::Cat, Mascot::Falk, Mascot::Octopus] {
             for clock_on in [true, false] {
-                for last in pool(m, clock_on) {
+                let p = owned(m, clock_on);
+                for &last in &p {
                     for moment in [Moment::Idle, Moment::Hour, Moment::Greeting, Moment::Manual] {
                         for roll in 0..50 {
                             assert_ne!(
-                                pick(m, clock_on, Some(last), moment, roll),
+                                pick_from(&p, m, Some(last), moment, roll),
                                 last,
                                 "{m:?} {moment:?} roll={roll}"
                             );
@@ -223,10 +266,10 @@ mod tests {
     #[test]
     fn a_pick_reaches_every_other_story_in_the_pool() {
         for m in [Mascot::Cat, Mascot::Falk, Mascot::Octopus] {
-            let p = pool(m, true);
+            let p = owned(m, true);
             let last = Some(p[0]);
             let seen: std::collections::HashSet<Story> = (0..50)
-                .map(|r| pick(m, true, last, Moment::Idle, r))
+                .map(|r| pick_from(&p, m, last, Moment::Idle, r))
                 .collect();
             assert_eq!(seen.len(), p.len() - 1, "{m:?}");
         }
@@ -234,6 +277,9 @@ mod tests {
 
     #[test]
     fn the_hour_prefers_a_clock_story_and_the_greeting_a_warm_one() {
+        let pick = |m: Mascot, clock_on: bool, last: Option<Story>, moment: Moment, roll: u32| {
+            pick_from(&owned(m, clock_on), m, last, moment, roll)
+        };
         for roll in 0..20 {
             assert!(pick(Mascot::Cat, true, None, Moment::Hour, roll).needs_clock());
             assert_eq!(
@@ -259,9 +305,9 @@ mod tests {
     fn the_hour_still_avoids_a_repeat_when_one_clock_story_is_left() {
         // The octopus has one clock story: it was just played, so the hour
         // falls back to the ordinary pick instead of repeating it.
-        let s = pick(
+        let s = pick_from(
+            &owned(Mascot::Octopus, true),
             Mascot::Octopus,
-            true,
             Some(Story::PenasaranJam),
             Moment::Hour,
             0,
@@ -321,7 +367,7 @@ mod tests {
     #[test]
     fn each_mascot_owns_exactly_its_stories() {
         assert_eq!(
-            pool(Mascot::Cat, true),
+            owned(Mascot::Cat, true),
             vec![
                 Story::PetakUmpet,
                 Story::BantalAngka,
@@ -330,11 +376,11 @@ mod tests {
             ]
         );
         assert_eq!(
-            pool(Mascot::Octopus, true),
+            owned(Mascot::Octopus, true),
             vec![Story::PenasaranJam, Story::PelukPulau, Story::Bungee]
         );
         assert_eq!(
-            pool(Mascot::Falk, true),
+            owned(Mascot::Falk, true),
             vec![Story::Kelelawar, Story::MalingAngka, Story::TerbangKeliling]
         );
     }

@@ -9,6 +9,7 @@ pub mod rim;
 pub mod shape;
 #[cfg_attr(not(test), allow(dead_code))]
 pub mod state;
+pub mod stories;
 #[cfg_attr(not(test), allow(dead_code))]
 pub mod trigger;
 
@@ -51,6 +52,7 @@ pub(crate) mod testing {
             asleep: false,
             recording: false,
             clock_on: true,
+            has_story: true,
         }
     }
 

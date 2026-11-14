@@ -1471,6 +1471,7 @@ mod tests {
             |e: &mut Env| e.screen_away = true,
             |e: &mut Env| e.asleep = true,
             |e: &mut Env| e.recording = true,
+            |e: &mut Env| e.has_story = false,
         ] {
             let mut env = ok_env();
             flip(&mut env);

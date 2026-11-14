@@ -7,8 +7,8 @@ use crate::ui::play::trigger::{Moment, Story, cooldown, presence_ok};
 
 /// What the app sees right now. A flag is named for the thing that blocks, so
 /// `fullscreen: true` means a window is fullscreen, except `mascot_on`,
-/// `motion_full`, `win_anim`, `idle_view` and `clock_on`, where true is the
-/// permitting side.
+/// `motion_full`, `win_anim`, `idle_view`, `clock_on` and `has_story`, where
+/// true is the permitting side.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Env {
     pub mascot_on: bool,
@@ -25,6 +25,8 @@ pub struct Env {
     pub asleep: bool,
     pub recording: bool,
     pub clock_on: bool,
+    /// The mascot has a ready story to play (`trigger::pool` is not empty).
+    pub has_story: bool,
 }
 
 /// The gates that bind every play, a `Manual` one included.
@@ -39,6 +41,7 @@ fn permanent_ok(env: &Env) -> bool {
         && !env.screen_away
         && !env.asleep
         && !env.recording
+        && env.has_story
 }
 
 /// The gates that asking for a play by hand switches on (reaching the island to
@@ -112,7 +115,7 @@ mod tests {
         }
         flips!(
             mascot_on, motion_full, energy_saver, win_anim, idle_view, panel_open, menu_open,
-            fullscreen, screen_away, shrunk, pointer_near, asleep, recording, clock_on,
+            fullscreen, screen_away, shrunk, pointer_near, asleep, recording, clock_on, has_story,
         )
         .into_iter()
         .filter(|(name, _)| *name != "clock_on")
@@ -121,7 +124,18 @@ mod tests {
 
     #[test]
     fn the_flips_cover_every_gate_but_the_clock() {
-        assert_eq!(off_by_one_envs().len(), 13);
+        assert_eq!(off_by_one_envs().len(), 14);
+    }
+
+    #[test]
+    fn a_mascot_without_a_ready_story_never_starts() {
+        let mut env = ok_env();
+        env.has_story = false;
+        for moment in [Moment::Idle, Moment::Hour, Moment::Greeting, Moment::Manual] {
+            for p in [MascotPlay::Sering, MascotPlay::Sesekali, MascotPlay::Jarang, MascotPlay::Sapaan, MascotPlay::Mati] {
+                assert!(!may_start(&env, moment, p, Duration::from_secs(60), Duration::from_secs(3600)), "{moment:?} {p:?}");
+            }
+        }
     }
 
     #[test]

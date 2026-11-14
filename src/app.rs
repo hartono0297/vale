@@ -133,7 +133,7 @@ use crate::ui::play::{click_through, swallows};
 use crate::ui::play::gate::{Env, instant_stop, may_start, must_stop};
 use crate::ui::play::shape::Deform;
 use crate::ui::play::state::Play;
-use crate::ui::play::trigger::{Moment, PRESENCE_MIN, Story, cooldown, pick, wait_for};
+use crate::ui::play::trigger::{Moment, PRESENCE_MIN, Story, cooldown, pick, pool, wait_for};
 use crate::ui::settings_layout::{CardId, MonitorRow};
 use crate::ui::robot::{
     self, Brain, Expr, EyesBlink, EyesPose, GreetSettings, Motion, Rng, Spot, TypingPaws,
@@ -2375,6 +2375,7 @@ impl App {
             asleep,
             recording: hotkeys::any_recording(self.rec.active(), self.screen.recording()),
             clock_on: self.config.idle_clock,
+            has_story: !pool(self.config.mascot, self.config.idle_clock).is_empty(),
         }
     }
 
@@ -11684,7 +11685,7 @@ mod tests {
         assert_eq!(TIMER_MASCOT_PLAY, 19);
     }
 
-    /// An `Env` from 14 bits, one per field, in declaration order.
+    /// An `Env` from 15 bits, one per field, in declaration order.
     fn env_from_bits(bits: u32) -> crate::ui::play::gate::Env {
         let b = |i: u32| bits & (1 << i) != 0;
         crate::ui::play::gate::Env {
@@ -11702,6 +11703,7 @@ mod tests {
             asleep: b(11),
             recording: b(12),
             clock_on: b(13),
+            has_story: b(14),
         }
     }
 
@@ -11713,7 +11715,7 @@ mod tests {
         let (since_input, since_last) = (Duration::from_secs(60), Duration::from_secs(3600));
         let mut armed = 0u32;
         for preset in [Sesekali, Sering, Jarang, Sapaan, Mati] {
-            for bits in 0..(1u32 << 14) {
+            for bits in 0..(1u32 << 15) {
                 let env = env_from_bits(bits);
                 for playing in [false, true] {
                     // Written out, not read from the gates: the timer's own rule.
@@ -11731,7 +11733,8 @@ mod tests {
                         && !env.screen_away
                         && !env.shrunk
                         && !env.asleep
-                        && !env.recording;
+                        && !env.recording
+                        && env.has_story;
                     let got = mascot_timer_wanted(&env, preset, playing);
                     assert_eq!(got, expected, "{preset:?} playing={playing} env={env:?}");
                     // It also agrees with the gate the fire re-checks, with the
