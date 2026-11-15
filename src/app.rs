@@ -8908,7 +8908,7 @@ fn step_play(
 ) -> bool {
     if instant_stop(env) {
         play.finish_now();
-    } else if must_stop(env, play.story(), moment, shape_changed, clock_jumped) {
+    } else if must_stop(env, play.story(), shape_changed, clock_jumped) {
         play.end(now);
     }
     play.done(now)
