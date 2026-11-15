@@ -67,7 +67,7 @@ use crate::clean::{self, CleanCat, CleanEvent, Cleaner, ScanResult};
 use crate::cli::{self, Builtin, CliEvent, History, HistoryCursor, RunHandle, Session};
 use crate::cli_folders::{self, FolderList, ListKind};
 use crate::cli_panel::{self, Echoes, MAX_SUGGESTIONS, RunClock};
-use crate::config::{self, Config, NotchMonitor, OnDisk, Repair, Style};
+use crate::config::{self, Config, NotchMonitor, OnDisk, OpenMode, Repair, Style};
 use crate::data_dir;
 use crate::eq_audio::EqCapture;
 use crate::gestures;
@@ -620,7 +620,6 @@ pub fn run(media_log_flag: bool, start: Start) {
             pending: None,
             clock_hour: Local::now().hour(),
             play_clock_jumped: false,
-            play_input: None,
             eq_capture: None,
             eq_capture_on: false,
             dance_anchor: Instant::now(),
@@ -1134,9 +1133,6 @@ struct App {
     clock_hour: u32,
     /// The wall clock jumped under a running story (`on_clock_jump`).
     play_clock_jumped: bool,
-    /// The last-input tick and the pointer at the running story's previous
-    /// frame (`input_ends_play`); `None` before its first frame.
-    play_input: Option<(u32, Option<(i32, i32)>)>,
     /// The loopback capture behind the equalizer bars (`eq_audio`), created
     /// the first time it is wanted; `eq_capture_on` is the last
     /// `set_running` sent to it.
@@ -2536,12 +2532,9 @@ impl App {
         );
         self.play = Some(ActivePlay {
             play: Play::start(story, now),
-            moment,
             shape: play_shape_of(self.config.style, self.notch_size(), self.config.mascot),
-            started: now,
         });
         self.play_clock_jumped = false;
-        self.play_input = None;
         self.ensure_clock();
         // The timer that may have started it is spent.
         self.sync_mascot_timer(now);
@@ -2553,18 +2546,9 @@ impl App {
         if self.play.is_none() {
             return;
         }
-        // Input tick first, cursor second. A key or wheel that lands between
-        // the two reads leaves this frame's tick old, so it is judged next
-        // frame, as a key. A mouse move that lands between them shows as a
-        // moved pointer; its own tick may still be missing from the first
-        // read, so on a moved frame the tick is read again before it is kept
-        // (`tick_to_keep`) and never surfaces later as a key. A key pressed in
-        // the same frame as a mouse move is seen as the move, and the next
-        // key ends the play. A failed read counts as no new input; the first
-        // frame only records.
-        let tick_now = last_input_tick();
-        // The one pointer reading of this frame feeds the presence gate and
-        // the click-through test.
+        // The one pointer reading of this frame feeds the click-through test
+        // and, without the pointer poll, `near`. Neither ends the play: only
+        // a press on the island does (`end_play_on_press`), or a gate.
         let mut pt = POINT::default();
         let cursor = unsafe { GetCursorPos(&mut pt) }.is_ok().then_some(pt);
         let near = if self.pointer_ms != 0 {
@@ -2581,18 +2565,7 @@ impl App {
         // Off the idle view (a panel or a notice came up) the island is not
         // the idle shape any more: it keeps every click.
         let inside = !env.idle_view || self.cursor_on_island(cursor, now);
-        let buttons = [VK_LBUTTON, VK_RBUTTON, VK_MBUTTON]
-            .into_iter()
-            .any(|vk| (unsafe { GetAsyncKeyState(i32::from(vk.0)) }) as u16 & 0x8000 != 0);
-        let seen = cursor.map(|p| (p.x, p.y));
-        let prev = self.play_input;
-        let tick = tick_now.or(prev.map(|p| p.0)).unwrap_or(0);
-        let (tick0, seen0) = prev.unwrap_or((tick, seen));
-        let kept = tick_to_keep(tick, prev.is_some() && seen0 != seen, last_input_tick);
-        self.play_input = Some((kept, seen));
-        let age = self.play.as_ref().map_or(Duration::ZERO, |a| now.saturating_duration_since(a.started));
-        let ends = input_ends_play((tick0, tick), (seen0, seen), buttons, age);
-        let out = advance_slot(&mut self.play, &env, shape, jumped, ends, inside, now);
+        let out = advance_slot(&mut self.play, &env, shape, jumped, inside, now);
         if let Some(story) = out.finished {
             self.last_story = Some(story);
             self.last_play_at = Some(now);
@@ -5260,6 +5233,8 @@ impl App {
             && pointer_watch::peek_view(&self.state.view())
             // The logo of a busy toast has to stay on screen.
             && self.state.toast_slot().is_none()
+            // A story plays round the whole island: it never shrinks under it.
+            && self.play.is_none()
     }
 
     /// Ends a peek that may not go on (the notch is whole again at once).
@@ -6439,6 +6414,13 @@ impl App {
     }
 
     fn on_mouse_hover(&mut self, lparam: LPARAM) {
+        // A story runs: the dwell opens nothing. Disarmed, not spent, so the
+        // next move arms it again and a dwell after the story opens the
+        // panel as usual.
+        if hover_held(self.play.is_some()) {
+            self.hover.disarm();
+            return;
+        }
         // The eyes open no panel.
         if self.peek.is_shrunk() {
             self.hover.disarm();
@@ -6550,9 +6532,32 @@ impl App {
         matches!(self.under_at(lparam), Under::Island(_))
     }
 
+    /// A mouse press on the island window during a story: it ends the story
+    /// when it is on the island (`play_press`).
+    fn end_play_on_press(&mut self, lparam: LPARAM, left: bool) -> PlayPress {
+        let press = play_press(self.play.is_some(), self.on_island(lparam), left, self.config.open_mode);
+        if press != PlayPress::Ignore
+            && let Some(active) = self.play.as_mut()
+        {
+            active.play.end(Instant::now());
+        }
+        press
+    }
+
     /// `WM_LBUTTONDOWN`: remembers what the press is on.
     fn on_press(&mut self, lparam: LPARAM) {
         self.outside_edge.press_inside();
+        // The press that ends a story opens the panel in the Hover modes, as
+        // the hover it held back would have, and is spent: its release must
+        // not land as a click on the panel opening under it.
+        if self.end_play_on_press(lparam, true) == PlayPress::EndAndHover {
+            self.swipe.cancel();
+            self.click.clear();
+            if let Some(event) = self.hover.on_hover() {
+                self.apply_now(event);
+            }
+            return;
+        }
         let hit = self.hit_at(lparam);
         // The eyes take the press, for the release to restore the notch.
         if self.peek.is_shrunk() {
@@ -6637,15 +6642,18 @@ impl App {
     }
 
     /// `WM_RBUTTONDOWN`: the island took the press, so a kept panel's poll
-    /// does not count it as a click outside.
-    fn on_right_press(&mut self) {
+    /// does not count it as a click outside. It ends a story; the menu opens
+    /// on the release as always.
+    fn on_right_press(&mut self, lparam: LPARAM) {
         self.outside_edge.press_inside();
+        self.end_play_on_press(lparam, false);
     }
 
     /// `WM_MBUTTONDOWN`: a middle press on the island, paired with its
     /// release below.
     fn on_middle_press(&mut self, lparam: LPARAM) {
         self.outside_edge.press_inside();
+        self.end_play_on_press(lparam, false);
         self.middle_down = self.gestures_active() && self.on_island(lparam);
     }
 
@@ -8856,14 +8864,11 @@ fn eq_capture_wanted(timer_on: bool, setting_on: bool) -> bool {
     timer_on && setting_on
 }
 
-/// What a story was started for, and how the island looked then: a style,
+/// A running story and how the island looked when it started: a style,
 /// size or mascot that differs later ends it.
 struct ActivePlay {
     play: Play,
-    moment: Moment,
     shape: PlayShape,
-    /// When it started: a key in its first `KEY_GRACE` does not end it.
-    started: Instant,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -8898,14 +8903,7 @@ fn timer_change(armed: bool, wanted: bool) -> Option<bool> {
 
 /// One frame of a story. Where the motion itself is unwanted it lands at rest
 /// at once; where a gate stops holding it eases home. True when it is done.
-fn step_play(
-    env: &Env,
-    play: &mut Play,
-    moment: Moment,
-    shape_changed: bool,
-    clock_jumped: bool,
-    now: Instant,
-) -> bool {
+fn step_play(env: &Env, play: &mut Play, shape_changed: bool, clock_jumped: bool, now: Instant) -> bool {
     if instant_stop(env) {
         play.finish_now();
     } else if must_stop(env, play.story(), shape_changed, clock_jumped) {
@@ -8914,30 +8912,38 @@ fn step_play(
     play.done(now)
 }
 
-/// The input tick to remember after a frame. When the pointer moved this
-/// frame, the move's own tick may have landed after the first read, so it is
-/// read again (`again`) and kept, or the next frame would see that tick next
-/// to a pointer that now holds still and call it a key.
-fn tick_to_keep(first: u32, pointer_moved: bool, again: impl FnOnce() -> Option<u32>) -> u32 {
-    if pointer_moved { again().unwrap_or(first) } else { first }
+/// What a mouse press on the island window does to a running story.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PlayPress {
+    /// No story runs, or the press is not on the island: the press goes on
+    /// as usual.
+    Ignore,
+    /// The story eases home and the press goes on as usual (Click mode's
+    /// left press opens the panel through the normal click; a right press
+    /// opens the menu).
+    End,
+    /// The story eases home and the press opens the panel by delivering the
+    /// hover the story held back (`hover_held`); the press itself is spent.
+    EndAndHover,
 }
 
-/// A key in the first moments of a play does not end it: the Enter that picks
-/// "Mainkan maskot" from the menu is still going up when the play starts.
-const KEY_GRACE: Duration = Duration::from_millis(250);
+/// A press on the island is the one input that ends a running story. A left
+/// press in the Hover modes opens the panel, as hovering would have; in Click
+/// mode the click itself does that.
+fn play_press(playing: bool, on_island: bool, left: bool, mode: OpenMode) -> PlayPress {
+    if !playing || !on_island {
+        PlayPress::Ignore
+    } else if left && mode != OpenMode::Click {
+        PlayPress::EndAndHover
+    } else {
+        PlayPress::End
+    }
+}
 
-/// Between two frames of a story, the owner did something that ends it: a
-/// mouse button is down, or input arrived (the last-input tick moved) while
-/// the pointer stayed where it was, which is a key, a hotkey or the wheel.
-/// Moving the mouse alone does not end it, and neither does a key within
-/// `KEY_GRACE` of the start (`age`); a button always does.
-fn input_ends_play(
-    tick: (u32, u32),
-    cursor: (Option<(i32, i32)>, Option<(i32, i32)>),
-    buttons: bool,
-    age: Duration,
-) -> bool {
-    buttons || (age >= KEY_GRACE && tick.0 != tick.1 && cursor.0 == cursor.1)
+/// While a story runs, a hover dwell on the island opens nothing: only a
+/// press ends the story.
+fn hover_held(playing: bool) -> bool {
+    playing
 }
 
 /// What one frame of a running story leaves behind.
@@ -8948,9 +8954,8 @@ struct Advance {
     click_through: bool,
 }
 
-/// One frame of the story in `slot`: `clicked` (a button or a key,
-/// `input_ends_play`) ends it, `step_play`
-/// runs, and a finished story is dropped. The click-through state is derived
+/// One frame of the story in `slot`: `step_play` runs, and a finished story
+/// is dropped. The click-through state is derived
 /// from the slot after all that, so the frame that drops a story, by any path,
 /// is the frame that clears it.
 fn advance_slot(
@@ -8958,17 +8963,13 @@ fn advance_slot(
     env: &Env,
     shape: PlayShape,
     clock_jumped: bool,
-    clicked: bool,
     inside: bool,
     now: Instant,
 ) -> Advance {
     let mut finished = None;
     if let Some(active) = slot.as_mut() {
-        if clicked {
-            active.play.end(now);
-        }
         let changed = active.shape != shape;
-        if step_play(env, &mut active.play, active.moment, changed, clock_jumped, now) {
+        if step_play(env, &mut active.play, changed, clock_jumped, now) {
             finished = Some(active.play.story());
             *slot = None;
         }
@@ -10289,7 +10290,7 @@ unsafe extern "system" fn wnd_proc(
         }
         WM_RBUTTONDOWN => {
             island_pressed(hwnd, lparam);
-            with_app(App::on_right_press);
+            with_app(|app| app.on_right_press(lparam));
             LRESULT(0)
         }
         // The side buttons do nothing on the island but still count as a press.
@@ -11992,7 +11993,7 @@ mod tests {
     fn a_play_that_must_stop_instantly_lands_at_rest_in_one_step() {
         use crate::ui::play::state::Play;
         use crate::ui::play::testing::ok_env;
-        use crate::ui::play::trigger::{Moment, Story};
+        use crate::ui::play::trigger::Story;
         for (name, env) in [
             ("energy saver", crate::ui::play::gate::Env { energy_saver: true, ..ok_env() }),
             ("windows animations", crate::ui::play::gate::Env { win_anim: false, ..ok_env() }),
@@ -12002,46 +12003,47 @@ mod tests {
             let t0 = Instant::now();
             let mut play = Play::start(Story::Kelelawar, t0);
             let at = t0 + Duration::from_secs(1);
-            assert!(step_play(&env, &mut play, Moment::Idle, false, false, at), "{name}");
+            assert!(step_play(&env, &mut play, false, false, at), "{name}");
             let b = play.beat(at);
             assert_eq!((b.spread, b.alpha), (0.0, 0.0), "{name}: not at rest");
         }
     }
 
     #[test]
-    fn a_manual_play_is_not_killed_by_the_pointer_on_its_first_tick() {
+    fn the_pointer_never_ends_a_play() {
         use crate::ui::play::state::Play;
         use crate::ui::play::testing::ok_env;
-        use crate::ui::play::trigger::{Moment, Story};
-        let near = crate::ui::play::gate::Env { pointer_near: true, menu_open: true, ..ok_env() };
+        use crate::ui::play::trigger::Story;
+        // The pointer anywhere in the top band, the menu just closing, the
+        // eyes: none of it ends a running story, automatic or picked.
+        let near = crate::ui::play::gate::Env { pointer_near: true, menu_open: true, shrunk: true, ..ok_env() };
         let t0 = Instant::now();
         let ms = Duration::from_millis;
-        let mut manual = Play::start(Story::Kelelawar, t0);
-        assert!(!step_play(&near, &mut manual, Moment::Manual, false, false, t0 + ms(100)));
-        // Had it been ended at 100 ms it would be fully wound down by 300 ms.
-        assert_eq!(manual.beat(t0 + ms(300)).alpha, 1.0, "the manual play was ended");
-        assert!(manual.beat(t0 + ms(300)).spread > 0.9);
-        // The same env ends an automatic play, and it eases home over 200 ms.
-        let mut auto = Play::start(Story::Kelelawar, t0);
-        assert!(!step_play(&near, &mut auto, Moment::Idle, false, false, t0 + ms(100)));
-        assert!(auto.beat(t0 + ms(300)).alpha < 1.0, "the automatic play was not ended");
-        assert!(step_play(&near, &mut auto, Moment::Idle, false, false, t0 + ms(300)));
+        for _ in 0..2 {
+            let mut play = Play::start(Story::Kelelawar, t0);
+            for t in [100, 200, 300] {
+                assert!(!step_play(&near, &mut play, false, false, t0 + ms(t)));
+            }
+            // Had it been ended at 100 ms it would be fully wound down by 300 ms.
+            assert_eq!(play.beat(t0 + ms(300)).alpha, 1.0, "the play was ended");
+            assert!(play.beat(t0 + ms(300)).spread > 0.9);
+        }
     }
 
     #[test]
     fn a_changed_island_or_a_jumped_clock_ends_a_running_play() {
         use crate::ui::play::state::Play;
         use crate::ui::play::testing::ok_env;
-        use crate::ui::play::trigger::{Moment, Story};
+        use crate::ui::play::trigger::Story;
         let t0 = Instant::now();
         let ms = Duration::from_millis;
         for (shape, jump) in [(true, false), (false, true)] {
             let mut p = Play::start(Story::Kelelawar, t0);
-            assert!(!step_play(&ok_env(), &mut p, Moment::Idle, shape, jump, t0 + ms(100)));
+            assert!(!step_play(&ok_env(), &mut p, shape, jump, t0 + ms(100)));
             assert!(p.beat(t0 + ms(300)).alpha < 1.0);
         }
         let mut p = Play::start(Story::Kelelawar, t0);
-        assert!(!step_play(&ok_env(), &mut p, Moment::Idle, false, false, t0 + ms(100)));
+        assert!(!step_play(&ok_env(), &mut p, false, false, t0 + ms(100)));
         assert_eq!(p.beat(t0 + ms(300)).alpha, 1.0, "nothing wrong: it plays on");
     }
 
@@ -12053,7 +12055,7 @@ mod tests {
         let size = NotchSize::from_config(&Config::default());
         let shape = play_shape_of(Style::Notch, size, Mascot::Cat);
         let play = Play::start(Story::Kelelawar, t0);
-        (Some(ActivePlay { play, moment: Moment::Idle, shape, started: t0 }), shape)
+        (Some(ActivePlay { play, shape }), shape)
     }
 
     #[test]
@@ -12076,8 +12078,12 @@ mod tests {
         for (name, env, changed, jumped, clicked) in paths {
             let (mut slot, shape) = slot_at(t0);
             let frame_shape = if changed { other } else { shape };
+            // A press on the island ends the play where it lands (`App`).
+            if clicked {
+                slot.as_mut().unwrap().play.end(t0 + ms(100));
+            }
             // With a cursor outside the island: the flag is up while it plays.
-            let first = advance_slot(&mut slot, &env, frame_shape, jumped, clicked, false, t0 + ms(100));
+            let first = advance_slot(&mut slot, &env, frame_shape, jumped, false, t0 + ms(100));
             if slot.is_some() {
                 assert!(first.click_through, "{name}: a running play, cursor outside, must pass clicks");
             }
@@ -12086,7 +12092,7 @@ mod tests {
             while !dropped {
                 t += 100;
                 assert!(t < 60_000, "{name}: the play never ended");
-                let out = advance_slot(&mut slot, &env, frame_shape, false, false, false, t0 + ms(t));
+                let out = advance_slot(&mut slot, &env, frame_shape, false, false, t0 + ms(t));
                 dropped = slot.is_none();
                 assert_eq!(out.finished.is_some(), dropped, "{name}");
                 assert_eq!(
@@ -12096,7 +12102,7 @@ mod tests {
                 );
             }
             // With no play left, nothing ever sets it again.
-            let after = advance_slot(&mut slot, &ok_env(), frame_shape, false, false, false, t0 + ms(70_000));
+            let after = advance_slot(&mut slot, &ok_env(), frame_shape, false, false, t0 + ms(70_000));
             assert!(!after.click_through && after.finished.is_none(), "{name}");
         }
     }
@@ -12106,73 +12112,37 @@ mod tests {
         use crate::ui::play::testing::ok_env;
         let t0 = Instant::now();
         let (mut slot, shape) = slot_at(t0);
-        let out = advance_slot(&mut slot, &ok_env(), shape, false, false, true, t0 + Duration::from_millis(100));
+        let out = advance_slot(&mut slot, &ok_env(), shape, false, true, t0 + Duration::from_millis(100));
         assert!(slot.is_some() && !out.click_through);
-        let out = advance_slot(&mut slot, &ok_env(), shape, false, false, false, t0 + Duration::from_millis(200));
+        let out = advance_slot(&mut slot, &ok_env(), shape, false, false, t0 + Duration::from_millis(200));
         assert!(out.click_through, "back outside it: click-through again");
     }
 
     #[test]
-    fn a_button_down_ends_a_running_play_and_does_nothing_without_one() {
-        use crate::ui::play::testing::ok_env;
-        let t0 = Instant::now();
-        let ms = Duration::from_millis;
-        let (mut clicked, shape) = slot_at(t0);
-        advance_slot(&mut clicked, &ok_env(), shape, false, false, false, t0 + ms(100));
-        advance_slot(&mut clicked, &ok_env(), shape, false, true, false, t0 + ms(150));
-        let beat = |slot: &Option<ActivePlay>, at| slot.as_ref().unwrap().play.beat(t0 + at);
-        assert!(beat(&clicked, ms(300)).alpha < 1.0, "the click began the wind-down");
-        let (mut calm, shape) = slot_at(t0);
-        advance_slot(&mut calm, &ok_env(), shape, false, false, false, t0 + ms(150));
-        assert_eq!(beat(&calm, ms(300)).alpha, 1.0, "no click: it plays on");
-        let mut none = None;
-        let out = advance_slot(&mut none, &ok_env(), shape, false, true, false, t0);
-        assert!(none.is_none() && out.finished.is_none() && !out.click_through);
-    }
-
-    #[test]
-    fn a_key_or_a_button_ends_a_play_and_moving_the_mouse_does_not() {
-        let (at, moved) = (Some((10, 20)), Some((11, 20)));
-        // (tick before, tick now, cursor before, cursor now, buttons) -> ends
+    fn only_a_press_on_the_island_ends_a_play() {
+        use PlayPress::{End, EndAndHover, Ignore};
+        // (playing, on the island, left button, mode) -> what the press does
         let cases = [
-            ((5, 5), (at, at), false, false, "nothing happened"),
-            ((5, 9), (at, at), false, true, "input with a still pointer: a key or the wheel"),
-            ((5, 9), (at, moved), false, false, "the mouse moved"),
-            ((5, 5), (at, moved), false, false, "the pointer moved, no newer input"),
-            ((5, 5), (at, at), true, true, "a button is down"),
-            ((5, 9), (at, moved), true, true, "a button is down while the mouse moves"),
-            ((u32::MAX, 2), (at, at), false, true, "the tick count wrapped"),
-            ((5, 9), (None, None), false, true, "no pointer to read either time"),
+            (true, true, true, OpenMode::Hover, EndAndHover),
+            (true, true, true, OpenMode::HoverStay, EndAndHover),
+            (true, true, true, OpenMode::Click, End),
+            (true, true, false, OpenMode::Hover, End),
+            (true, true, false, OpenMode::HoverStay, End),
+            (true, true, false, OpenMode::Click, End),
+            (true, false, true, OpenMode::Hover, Ignore),
+            (true, false, false, OpenMode::Click, Ignore),
+            (false, true, true, OpenMode::Hover, Ignore),
+            (false, true, false, OpenMode::Click, Ignore),
         ];
-        for (tick, cursor, buttons, ends, name) in cases {
-            assert_eq!(input_ends_play(tick, cursor, buttons, Duration::from_secs(5)), ends, "{name}");
+        for (playing, on_island, left, mode, want) in cases {
+            assert_eq!(play_press(playing, on_island, left, mode), want, "{playing} {on_island} {left} {mode:?}");
         }
     }
 
     #[test]
-    fn a_mouse_moves_own_tick_never_shows_up_later_as_a_key() {
-        let (c0, c1) = (Some((10, 20)), Some((11, 20)));
-        let ms = Duration::from_secs(5);
-        // Frame N: tick T0 read, the mouse moves (tick T1), cursor read moved.
-        let (t0, t1) = (5, 9);
-        let kept = tick_to_keep(t0, true, || Some(t1));
-        assert!(!input_ends_play((t0, t0), (c0, c1), false, ms), "frame N: a move");
-        // Frame N+1: the mouse stopped, the tick is still T1.
-        assert!(!input_ends_play((kept, t1), (c1, c1), false, ms), "frame N+1: no key");
-        // A real key afterwards still ends it.
-        assert!(input_ends_play((kept, 12), (c1, c1), false, ms), "a later key ends it");
-        assert_eq!(tick_to_keep(t0, false, || unreachable!()), t0, "no move: no second read");
-        assert_eq!(tick_to_keep(t0, true, || None), t0, "a failed second read keeps the first");
-    }
-
-    #[test]
-    fn a_key_in_the_first_quarter_second_does_not_end_a_play() {
-        let (at, moved) = (Some((10, 20)), Some((11, 20)));
-        let ms = Duration::from_millis;
-        assert!(!input_ends_play((5, 9), (at, at), false, ms(100)), "the menu's Enter key-up");
-        assert!(input_ends_play((5, 9), (at, at), false, ms(300)), "a key later ends it");
-        assert!(input_ends_play((5, 5), (at, moved), true, ms(100)), "a mouse button ends it at once");
-        assert!(input_ends_play((5, 5), (at, at), true, ms(0)), "a button at the very start too");
+    fn the_hover_waits_while_a_play_runs() {
+        assert!(hover_held(true));
+        assert!(!hover_held(false));
     }
 
     #[test]
