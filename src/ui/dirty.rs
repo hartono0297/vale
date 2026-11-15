@@ -168,6 +168,8 @@ pub struct Drawn {
     pub origin: (i32, i32),
     pub opacity: f32,
     pub fill_alpha: f32,
+    /// How far the fill has turned into the mascot's face colour (0..=1).
+    pub peek_mix: f32,
     pub legibility: f32,
     pub palette: Palette,
     pub ui_font: UiFont,
@@ -214,6 +216,7 @@ pub fn plan(prev: Option<&Drawn>, cur: &Drawn) -> Plan {
         && prev.origin == cur.origin
         && prev.opacity == cur.opacity
         && prev.fill_alpha == cur.fill_alpha
+        && prev.peek_mix == cur.peek_mix
         && prev.legibility == cur.legibility
         && prev.palette == cur.palette
         && prev.ui_font == cur.ui_font
@@ -300,6 +303,7 @@ mod tests {
             origin: (100, 0),
             opacity: 1.0,
             fill_alpha: 1.0,
+            peek_mix: 0.0,
             legibility: 0.0,
             palette: crate::theme::island(
                 crate::theme::Accent::default(),
@@ -480,10 +484,12 @@ mod tests {
             Box::new(|d| d.origin = (101, 0)),
             Box::new(|d| d.opacity = 0.5),
             Box::new(|d| d.fill_alpha = 0.4),
+            Box::new(|d| d.peek_mix = 0.5),
             Box::new(|d| d.legibility = 0.3),
             Box::new(|d| d.palette.surface ^= 0x010101),
             Box::new(|d| d.ui_font = UiFont::Mono),
             Box::new(|d| d.cat.color = crate::theme::CatColor::Black),
+            Box::new(|d| d.cat.mascot = crate::theme::Mascot::Falk),
             Box::new(|d| d.style = Style::Pill),
             Box::new(|d| d.halo = true),
         ];

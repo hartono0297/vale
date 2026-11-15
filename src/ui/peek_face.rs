@@ -48,6 +48,50 @@ const fn dot(cx: f32, cy: f32, r: f32, rgb: u32) -> PeekMark {
     PeekMark::Dot { cx, cy, r, rgb }
 }
 
+/// The island's fill while the notch shrinks to the face and back: the
+/// surface colour at `mix` 0, the face colour at 1 (per channel), and the
+/// alpha from the see-through `fill_alpha` up to opaque. `mix` is clamped.
+pub fn peek_fill(surface: u32, fill_alpha: f32, face_fill: u32, mix: f32) -> (u32, f32) {
+    let m = mix.clamp(0.0, 1.0);
+    let channel = |shift: u32| {
+        let a = ((surface >> shift) & 0xFF) as f32;
+        let b = ((face_fill >> shift) & 0xFF) as f32;
+        (a + (b - a) * m).round() as u32
+    };
+    let rgb = (channel(16) << 16) | (channel(8) << 8) | channel(0);
+    (rgb, fill_alpha + (1.0 - fill_alpha) * m)
+}
+
+/// Where the face mix (0 = notch surface, 1 = face) starts and heads for in
+/// the current morph; the app eases it with the morph's own curve, as it
+/// does the see-through fill.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PeekMix {
+    pub from: f32,
+    pub to: f32,
+}
+
+impl PeekMix {
+    pub const fn at_rest(mix: f32) -> Self {
+        Self { from: mix, to: mix }
+    }
+
+    /// The mix at the morph's eased progress `t` (0..=1).
+    pub fn at(&self, t: f32) -> f32 {
+        self.from + (self.to - self.from) * t
+    }
+
+    /// A new morph toward `to`, starting from the mix `reached` now.
+    pub fn retarget(&mut self, to: f32, reached: f32) {
+        *self = Self { from: reached, to };
+    }
+
+    /// No morph: both ends are the target.
+    pub fn settle(&mut self) {
+        self.from = self.to;
+    }
+}
+
 /// The face for `look`. `surface` is the island's surface colour, the edge
 /// line of the pale coats (it keeps them from melting into a white title bar).
 pub fn peek_face(look: CatLook, surface: u32) -> PeekFace {
@@ -128,6 +172,36 @@ pub fn mark_boxes(marks: &[PeekMark]) -> Vec<(f32, f32, f32, f32)> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn peek_fill_runs_from_the_surface_to_the_face() {
+        assert_eq!(peek_fill(0x17120F, 1.0, 0xF6D04A, 0.0), (0x17120F, 1.0));
+        assert_eq!(peek_fill(0x17120F, 1.0, 0xF6D04A, 1.0), (0xF6D04A, 1.0));
+        assert_eq!(peek_fill(0x17120F, 0.4, 0xF6D04A, 1.0).1, 1.0);
+        assert_eq!(peek_fill(0x17120F, 0.4, 0xF6D04A, 0.0).1, 0.4);
+        // 0x00 .. 0xFF at the half: 127.5 rounds up.
+        assert_eq!(peek_fill(0x000000, 1.0, 0xFFFFFF, 0.5).0, 0x808080);
+        assert_eq!(peek_fill(0x17120F, 0.4, 0xF6D04A, -1.0), (0x17120F, 0.4));
+        assert_eq!(peek_fill(0x17120F, 0.4, 0xF6D04A, 2.0), (0xF6D04A, 1.0));
+    }
+
+    #[test]
+    fn the_face_mix_follows_the_morph_and_carries_on_when_cut() {
+        let mut mix = PeekMix::at_rest(0.0);
+        mix.retarget(1.0, 0.0);
+        assert_eq!(mix.at(0.0), 0.0);
+        let mid = mix.at(0.5);
+        assert!(mid > 0.0 && mid < 1.0);
+        assert_eq!(mix.at(1.0), 1.0);
+        // Restored half way: the new morph starts where this one was.
+        mix.retarget(0.0, mid);
+        assert!((mix.at(0.0) - mid).abs() < 1e-6);
+        assert_eq!(mix.at(1.0), 0.0);
+        // No motion: both ends are the target at once.
+        mix.retarget(1.0, 0.0);
+        mix.settle();
+        assert_eq!(mix.at(0.0), 1.0);
+    }
     use super::*;
     use crate::theme::{CatAccessory, OctopusColor};
     use windows::Win32::Graphics::Direct2D::{ID2D1RenderTarget, ID2D1SolidColorBrush};

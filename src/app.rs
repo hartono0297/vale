@@ -125,6 +125,7 @@ use crate::ui::motion::{
 use crate::ui::notch_fill;
 use crate::ui::panel_layout::{CliHead, STRIP_H, cli_layout};
 use crate::ui::panel_tips::{self, TipCtx};
+use crate::ui::peek_face::PeekMix;
 use crate::ui::tooltip;
 use crate::ui::render::{
     CleanerView, CliView, DevicesView, FolderMenuView, Frame, MoleView, NoticeCloseView,
@@ -595,6 +596,7 @@ pub fn run(media_log_flag: bool, start: Start) {
             closed_panel: None,
             fade_floor_h: notch.h,
             fill: (rest_fill, rest_fill),
+            peek_mix: PeekMix::at_rest(0.0),
             animations: client_animations_on(),
             clock: None,
             frame_log: FrameLog::from_env(),
@@ -1079,6 +1081,9 @@ struct App {
     /// (`ui::notch_fill`): 1 for the panel and a solid island, the see-through
     /// alpha for the closed island. At rest both are the same.
     fill: (f32, f32),
+    /// How far the fill has turned into the mascot's face colour, the same
+    /// way: 1 while shrunk to the eyes, 0 otherwise (`PeekMix`).
+    peek_mix: PeekMix,
     /// Windows' "Animation effects" (`SPI_GETCLIENTAREAANIMATION`) is on.
     /// Off: no slides, no reveals, and the morph eases without overshoot.
     animations: bool,
@@ -4350,6 +4355,8 @@ impl App {
                 fill_to
             };
             self.fill = (fill_from, fill_to);
+            self.peek_mix
+                .retarget(if self.eyes { 1.0 } else { 0.0 }, self.peek_mix_at(now));
             // Hidden keeps the shape where it is and only fades it out.
             let (to, to_opacity) = target.map_or((shape, 0.0), |s| (s, 1.0));
             // The eyes alone (the view unchanged) morph slower and in and out;
@@ -4411,6 +4418,7 @@ impl App {
                 let (to, opacity) = (self.anim.to, self.anim.to_opacity);
                 self.anim = Anim::settled(to, opacity);
                 self.fill.0 = self.fill.1;
+                self.peek_mix.settle();
                 self.eyes_morph = false;
                 self.draw(now);
             } else {
@@ -4642,6 +4650,15 @@ impl App {
         notch_fill::morph_fill(self.fill.0, self.fill.1, t)
     }
 
+    /// The face mix at `now`, eased like `fill_at`.
+    fn peek_mix_at(&self, now: Instant) -> f32 {
+        if !self.anim.running {
+            return self.peek_mix.to;
+        }
+        self.peek_mix
+            .at(self.anim.curve.ease(self.anim.progress(now)))
+    }
+
     /// Re-reads where the fill is heading after the setting changed: at rest
     /// it is there at once, during a morph it carries on toward it.
     fn sync_fill(&mut self) {
@@ -4675,6 +4692,7 @@ impl App {
                 let (to, opacity) = (self.anim.to, self.anim.to_opacity);
                 self.anim = Anim::settled(to, opacity);
                 self.fill.0 = self.fill.1;
+                self.peek_mix.settle();
                 self.draw(now);
             }
         } else {
@@ -7764,6 +7782,7 @@ impl App {
             progress: track_progress(state, now),
             robot,
             eyes: self.eyes,
+            peek_mix: self.peek_mix_at(now),
             eyes_pose: self.eyes_pose(),
             eq_heights: self.eq_heights(),
             robot_fades: self.eyes_morph,

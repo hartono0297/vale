@@ -3521,6 +3521,7 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                     },
                 }),
                 eyes: scene.kind == ShapeKind::Eyes,
+                peek_mix: if scene.kind == ShapeKind::Eyes { 1.0 } else { 0.0 },
                 eyes_pose: {
                     let (dx_dip, dy_dip) =
                         crate::pointer_watch::eyes_offset_dip(scene.eyes_look.0, scene.eyes_look.1);

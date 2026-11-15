@@ -70,7 +70,7 @@ use super::geometry::{
 use super::icons::{Icon, IconSet};
 use super::motion::{StripFrame, Transit};
 use super::panel_layout::Region;
-use super::peek_face::peek_face;
+use super::peek_face::{peek_face, peek_fill};
 use super::play::shape::{Deform, outline, rigid, top_corners, turn_about};
 use super::play::state::{Beat, spread_offsets};
 use super::play::stories::{
@@ -273,6 +273,9 @@ pub struct Frame<'a> {
     /// The closed island is shrunk to the eyes (`ShapeKind::Eyes`): the pill
     /// holds only the cat's two open eyes, whatever the view or `robot`.
     pub eyes: bool,
+    /// How far the island's fill has turned into the mascot's face colour
+    /// (0 = the notch surface, 1 = the face); eased with the shrink morph.
+    pub peek_mix: f32,
     /// Where the shrunk notch's eyes look and whether they are shut; only
     /// read with `eyes`. The default is centred and open.
     pub eyes_pose: EyesPose,
@@ -1443,6 +1446,7 @@ impl Renderer {
             origin: (origin.x, origin.y),
             opacity,
             fill_alpha: frame.fill_alpha,
+            peek_mix: frame.peek_mix,
             legibility: frame.legibility,
             palette: frame.palette,
             ui_font: self.ui_font,
@@ -2480,10 +2484,18 @@ impl Renderer {
         }
         unsafe {
             // 1.0 (the same call as ever) unless the closed island is see-through.
-            target.brush.SetColor(&color(
-                self.palette.surface,
-                frame.fill_alpha.clamp(0.0, 1.0),
-            ));
+            let (rgb, alpha) = if frame.peek_mix > 0.0 {
+                let face = peek_face(frame.cat, self.palette.surface);
+                peek_fill(
+                    self.palette.surface,
+                    frame.fill_alpha.clamp(0.0, 1.0),
+                    face.fill,
+                    frame.peek_mix,
+                )
+            } else {
+                (self.palette.surface, frame.fill_alpha.clamp(0.0, 1.0))
+            };
+            target.brush.SetColor(&color(rgb, alpha));
             // The fill goes down first and the content over it, play or not.
             // Nothing a story draws leans on this fill being opaque, since it
             // can be see-through: behind is clipped to `outside_island`,
@@ -5678,6 +5690,7 @@ mod tests {
             progress: None,
             robot,
             eyes: false,
+            peek_mix: 0.0,
             eyes_pose: Default::default(),
             eq_heights: None,
             robot_fades: false,
