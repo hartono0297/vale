@@ -4159,7 +4159,7 @@ impl Renderer {
                     ..l.net
                 };
                 self.icon_colored(Icon::Globe, icon, 13.0, p.secondary, 1.0, None);
-                let (x, w) = (l.net.x + 32.0, l.net.w - 40.0);
+                let text_box = crate::ui::panel_layout::phone_net_text(l);
                 let trust = if c.public { Trust::Public } else { Trust::Private };
                 // On the tailnet the line says just that: the private or
                 // public word belongs to a Wi-Fi.
@@ -4169,10 +4169,9 @@ impl Renderer {
                     i18n::phone_network(lang, c.network, trust)
                 };
                 let line1 = Rect {
-                    x,
                     y: l.net.y + 5.0,
-                    w,
                     h: 14.0,
+                    ..text_box
                 };
                 self.text_colored(&name, &self.fonts.eleven, line1, p.text, 1.0);
                 let line2 = Rect {
@@ -4180,6 +4179,16 @@ impl Renderer {
                     ..line1
                 };
                 self.text_colored(c.addr, &self.fonts.mono_small, line2, p.secondary, 1.0);
+                // The copy icon ends the card; a check in the accent once the
+                // link is on the clipboard (as the list's done mark).
+                if let (Some(copy), Some(_)) = (l.copy, c.remaining) {
+                    let (icon, ink) = if c.copied {
+                        (Icon::Check, p.accent)
+                    } else {
+                        (Icon::Copy, p.secondary)
+                    };
+                    self.icon_colored(icon, copy, 14.0, ink, 1.0, None);
+                }
             }
             QrView::Starting | QrView::Warning(..) => {
                 self.stroke_dashed(l.qr, 16.0, p.track, 1.5);
@@ -7070,7 +7079,8 @@ mod tests {
         use crate::ui::fonts;
         use crate::phone::net::Trust;
         use crate::ui::panel_layout::{
-            phone_chip_text, phone_qr_layout, phone_recv_layout, phone_warn_layout,
+            phone_chip_text, phone_net_text, phone_qr_layout, phone_recv_layout,
+            phone_warn_layout,
         };
         use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
 
@@ -7109,6 +7119,7 @@ mod tests {
                                 "button" => &f.button_center,
                                 "eleven_center" => &f.eleven_center,
                                 "eleven" => &f.eleven,
+                                "mono_small" => &f.mono_small,
                                 "secondary" => &f.secondary,
                                 "title" => &f.title,
                                 "micro_center" => &f.micro_center,
@@ -7165,31 +7176,20 @@ mod tests {
                             add(text(lang, Key::PhoneNetWifi), "small_center", *item);
                             add(text(lang, Key::PhoneNetTailscale), "small_center", *item);
                         }
-                        add(
-                            text(lang, Key::PhoneNetTailscale),
-                            "eleven",
-                            Rect {
-                                x: qr.net.x + 32.0,
-                                w: qr.net.w - 40.0,
-                                h: 14.0,
-                                ..qr.net
-                            },
-                        );
+                        // The network card's two lines, in the box the copy icon
+                        // leaves them (the live code's layout).
+                        let live = phone_qr_layout(s, strip, false);
+                        let net_text = phone_net_text(&live);
+                        let line1 = Rect { y: live.net.y + 5.0, h: 14.0, ..net_text };
+                        let line2 = Rect { y: live.net.y + 20.0, h: 14.0, ..net_text };
+                        add(text(lang, Key::PhoneNetTailscale), "eleven", line1);
                         for (name, trust) in [
                             ("Rumah-5G", Trust::Private),
                             ("Kenzie_5G", Trust::Public),
                         ] {
-                            add(
-                                &i18n::phone_network(lang, name, trust),
-                                "eleven",
-                                Rect {
-                                    x: qr.net.x + 32.0,
-                                    w: qr.net.w - 40.0,
-                                    h: 14.0,
-                                    ..qr.net
-                                },
-                            );
+                            add(&i18n::phone_network(lang, name, trust), "eleven", line1);
                         }
+                        add("192.168.100.200:47390", "mono_small", line2);
                         // The warning card.
                         for key in [
                             Key::PhoneWarnNoLan,

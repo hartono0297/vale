@@ -305,6 +305,7 @@ impl App {
                 public: r.public,
                 tailnet: r.net == PhoneNet::Tailscale,
                 joined: &st.connected,
+                copied: false,
             }),
             (None, None) => QrView::Starting,
         };
@@ -462,6 +463,9 @@ impl App {
         }
         Some(Event::PhoneStage(Some(self.phone.resume_stage())))
     }
+
+    /// The copy icon on the QR view. Not wired yet.
+    pub(super) fn phone_copy_link(&mut self, _now: Instant) {}
 
     /// "Buat QR baru" (and "Coba lagi" on a warning): a fresh token for a
     /// listening server, else a new start.

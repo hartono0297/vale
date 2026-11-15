@@ -3260,8 +3260,20 @@ pub struct PhoneQrLayout {
     /// The network line: its box (the icon and two text lines are laid out
     /// inside by the painter from `net`).
     pub net: Rect,
+    /// The copy icon at the right end of `net`; none on a dead code.
+    pub copy: Option<Rect>,
     pub hint: Rect,
     pub foot: Rect,
+}
+
+/// The room the network card's two text lines have: from after the globe to
+/// before the copy icon (kept free also while the icon is not shown).
+pub fn phone_net_text(l: &PhoneQrLayout) -> Rect {
+    Rect {
+        x: l.net.x + 32.0,
+        w: l.net.w - 72.0,
+        ..l.net
+    }
 }
 
 /// A numbered step: the disc, its title and its sub line.
@@ -3337,6 +3349,7 @@ pub fn phone_qr_layout(s: ShapeRect, strip: bool, expired: bool) -> PhoneQrLayou
         renew,
         steps: [step(0.0), step(1.0)],
         net,
+        copy: (!expired).then(|| rect(net.right() - 38.0, net.y, 38.0, 38.0)),
         hint,
         foot,
     }
@@ -4931,6 +4944,9 @@ pub fn regions(s: ShapeRect, layout: &PageLayout, strip: impl Into<StripKind>) -
             add(l.seg_items[1], Hit::PhoneNet(PhoneNet::Tailscale));
             if let Some(renew) = l.renew {
                 add(renew, Hit::PhoneNewQr);
+            }
+            if let Some(copy) = l.copy {
+                add(copy, Hit::PhoneCopyLink);
             }
         }
         PageLayout::PhoneWarn(l) => {
@@ -7568,6 +7584,12 @@ mod tests {
                 let top = content_top(s, strip);
                 let q = phone_qr_layout(s, strip, false);
                 assert!(q.renew.is_none());
+                let copy = q.copy.expect("the copy icon shows on a live code");
+                assert!(copy.x >= q.net.x && copy.right() <= q.net.right());
+                assert!(copy.y >= q.net.y && copy.bottom() <= q.net.bottom());
+                assert_eq!(copy.h, q.net.h);
+                assert!(phone_net_text(&q).right() <= copy.x);
+                assert!(phone_qr_layout(s, strip, true).copy.is_none());
                 assert_eq!(q.chip.right(), header_right(s));
                 assert_eq!(q.qr.w, PHONE_QR);
                 assert!(q.qr.y >= top + PHONE_HEAD_H && q.qr.bottom() <= q.foot.y);
@@ -7619,7 +7641,8 @@ mod tests {
                     [
                         Hit::PhoneBack,
                         Hit::PhoneNet(PhoneNet::Wifi),
-                        Hit::PhoneNet(PhoneNet::Tailscale)
+                        Hit::PhoneNet(PhoneNet::Tailscale),
+                        Hit::PhoneCopyLink
                     ]
                 );
                 assert_eq!(

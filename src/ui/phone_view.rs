@@ -37,6 +37,8 @@ pub struct CodeView<'a> {
     /// The session listens on the Tailscale address: the network line names
     /// the tailnet and the hint says the phone needs Tailscale too.
     pub tailnet: bool,
+    /// The link was just copied: the copy icon shows a check.
+    pub copied: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -151,6 +153,7 @@ mod tests {
                 public: false,
                 joined: "",
                 tailnet: false,
+                copied: false,
             }),
             recv: RecvView {
                 rows: &[],

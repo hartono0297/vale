@@ -551,8 +551,7 @@ keys! {
     ShelfPreviewLoading => "Memuat\u{2026}", "Loading\u{2026}";
     PhoneStarting => "Mencari jaringan\u{2026}", "Finding the network\u{2026}";
     PhoneStep1 => "Scan pakai kamera HP", "Scan with the phone's camera";
-    PhoneStep1Sub => "iPhone: Kamera \u{b7} Android: Kamera / Google Lens",
-        "iPhone: Camera \u{b7} Android: Camera / Google Lens";
+    PhoneStep1Sub => "Atau salin link-nya ke laptop", "Or copy the link to a laptop";
     PhoneStep2 => "Kirim atau ambil berkas di HP", "Send or take files on the phone";
     PhoneStep2Sub => "Semua berkas di rak ikut tampil", "Every shelf file shows there";
     PhoneNetPrivate => "pribadi", "private";
@@ -3454,6 +3453,12 @@ pub fn duration_label(lang: Lang, minutes: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn step_one_offers_the_copied_link() {
+        assert_eq!(text(Lang::Id, Key::PhoneStep1Sub), "Atau salin link-nya ke laptop");
+        assert_eq!(text(Lang::En, Key::PhoneStep1Sub), "Or copy the link to a laptop");
+    }
 
     #[test]
     fn the_sticky_list_labels_count_and_badge() {
