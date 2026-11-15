@@ -16,6 +16,19 @@ pub struct Entry {
 /// Newest first. Add the entry for a version before bumping it.
 pub static ENTRIES: &[Entry] = &[
     Entry {
+        version: "5.5.2",
+        id: &[
+            "Shelf: salin link HP dari tampilan QR, lalu buka di browser laptop lain.",
+            "Di halaman itu, file bisa langsung ditarik dan dilepas untuk dikirim.",
+            "Laptop yang tersambung kini disebut Laptop, bukan HP.",
+        ],
+        en: &[
+            "Shelf: copy the phone link from the QR view and open it in another laptop's browser.",
+            "On that page you can drag and drop files to send them.",
+            "A connected laptop is now called Laptop, not phone.",
+        ],
+    },
+    Entry {
         version: "5.5.1",
         id: &[
             "Cerita maskot tidak berhenti lagi saat mouse digeser, hanya saat notch diklik.",
