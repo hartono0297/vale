@@ -36,9 +36,10 @@ use windows::Win32::Graphics::Direct2D::{
 use windows::core::Result as WinResult;
 use windows_numerics::{Matrix3x2, Vector2};
 
-use super::cat_style::{CatLook, Placed, RIM_WIDTH, anchors};
-use super::mascot::MascotShape;
+use super::cat_style::{CatLook, Placed, RIM_WIDTH, anchors, solid};
 use super::geometry::{EYES_H, Rect, ShapeRect, shape_contains};
+use super::mascot::MascotShape;
+use super::peek_face::{BEAK_PATH, PeekFace, PeekMark, mark_boxes};
 use crate::config::Style;
 use crate::greeting::{self, DayPeriod, GreetMark};
 use crate::i18n::Key;
@@ -676,13 +677,14 @@ fn eyes_grid_boxes(blink: bool) -> Vec<(f32, f32, f32, f32)> {
     boxes
 }
 
-/// The boxes of both eyes in dip, as `paint_eyes` draws them when centred on
-/// `centre` and slid by `(dx, dy)`.
+/// The boxes of both eyes and of the face `marks` in dip, as `paint_eyes`
+/// draws them when centred on `centre` and slid by `(dx, dy)`.
 pub fn eyes_boxes_at(
     centre: (f32, f32),
     dx: f32,
     dy: f32,
     blink: bool,
+    marks: &[PeekMark],
 ) -> Vec<(f32, f32, f32, f32)> {
     let at = |x: f32, y: f32| {
         (
@@ -692,6 +694,7 @@ pub fn eyes_boxes_at(
     };
     eyes_grid_boxes(blink)
         .into_iter()
+        .chain(mark_boxes(marks))
         .map(|(l, t, r, b)| {
             let (left, top) = at(l, t);
             let (right, bottom) = at(r, b);
@@ -712,17 +715,35 @@ pub fn eyes_centre(shape: ShapeRect) -> (f32, f32) {
 /// (the Notch's shoulders are outside it, so this is the stricter side). At the
 /// final pill the look's own extremes fit, so this is a guard that the morph
 /// and odd sizes never trip over, not a visible limit.
-pub fn eyes_offset_in(style: Style, shape: ShapeRect, dx: f32, dy: f32) -> (f32, f32) {
+pub fn eyes_offset_in(
+    style: Style,
+    shape: ShapeRect,
+    dx: f32,
+    dy: f32,
+    marks: &[PeekMark],
+) -> (f32, f32) {
     let centre = eyes_centre(shape);
     let fits = |ox: f32, oy: f32| {
         [false, true].into_iter().all(|blink| {
-            eyes_boxes_at(centre, ox, oy, blink)
-                .into_iter()
-                .all(|(l, t, r, b)| {
-                    [(l, t), (r, t), (l, b), (r, b)]
+            let boxes = eyes_boxes_at(centre, ox, oy, blink, marks);
+            let first_mark = boxes.len() - marks.len();
+            boxes.into_iter().enumerate().all(|(i, (l, t, r, b))| {
+                let inside = |x: f32, y: f32| shape_contains(style, shape, x, y);
+                match marks.get(i.wrapping_sub(first_mark)) {
+                    // A cheek is a circle: its box corners would cut its
+                    // slide where the pill's end curves away.
+                    Some(PeekMark::Dot { .. }) => {
+                        let (cx, cy, rad) = ((l + r) / 2.0, (t + b) / 2.0, (r - l) / 2.0);
+                        (0..32).all(|k| {
+                            let a = k as f32 / 32.0 * std::f32::consts::TAU;
+                            inside(cx + rad * a.cos(), cy + rad * a.sin())
+                        })
+                    }
+                    _ => [(l, t), (r, t), (l, b), (r, b)]
                         .into_iter()
-                        .all(|(x, y)| shape_contains(style, shape, x, y))
-                })
+                        .all(|(x, y)| inside(x, y)),
+                }
+            })
         })
     };
     // The set of slides that fit is convex, so along a line from the middle
@@ -1300,11 +1321,12 @@ impl RobotPainter {
 }
 
 impl RobotPainter {
-    /// Only the two open eyes of the idle face, in the brand terracotta (the
-    /// espresso of the cat's own eyes would vanish on the dark notch), over a
-    /// square `area` as `eyes_area` gives; with `blink`, the cat's two short
-    /// level lines instead, in the same colour. The render target's transform
-    /// is restored; the brush colour is not.
+    /// Only the two open eyes of the idle face, in `face.eye` (the mascot's
+    /// dark, or the Black cat's amber), then `face.face_marks` (cheeks, beak),
+    /// over a square `area` as `eyes_area` gives; with `blink`, the mascot's two
+    /// short level lines instead of the eyes, in the same colour. All share
+    /// one transform, so the marks slide with the eyes. The render target's
+    /// transform is restored; the brush colour is not.
     pub fn paint_eyes(
         &self,
         rt: &ID2D1RenderTarget,
@@ -1312,23 +1334,14 @@ impl RobotPainter {
         area: Rect,
         alpha: f32,
         blink: bool,
+        face: &PeekFace,
     ) {
         if area.w <= 0.0 {
             return;
         }
-        let k = area.w / GRID;
-        let ch = |s: u32| ((TERRACOTTA >> s) & 0xFF) as f32 / 255.0;
         unsafe {
-            let mut previous = Matrix3x2::default();
-            rt.GetTransform(&mut previous);
-            let local = Matrix3x2::scale(k, k) * Matrix3x2::translation(area.x, area.y);
-            rt.SetTransform(&(local * previous));
-            brush.SetColor(&D2D1_COLOR_F {
-                r: ch(16),
-                g: ch(8),
-                b: ch(0),
-                a: alpha,
-            });
+            let previous = self.enter_grid(rt, area);
+            brush.SetColor(&solid(face.eye, alpha));
             if blink {
                 let line = Line::Blink;
                 if let Some(g) = self.path(Shape::Line(line)) {
@@ -1352,7 +1365,75 @@ impl RobotPainter {
                     );
                 }
             }
+            self.fill_marks(rt, brush, alpha, &face.face_marks);
             rt.SetTransform(&previous);
+        }
+    }
+
+    /// `marks` (a face's coat marks) in the eyes' grid over `area`, with no
+    /// slide: they belong to the pill, not to the look. The render target's
+    /// transform is restored; the brush colour is not.
+    pub fn paint_peek_marks(
+        &self,
+        rt: &ID2D1RenderTarget,
+        brush: &ID2D1SolidColorBrush,
+        area: Rect,
+        alpha: f32,
+        marks: &[PeekMark],
+    ) {
+        if area.w <= 0.0 || marks.is_empty() {
+            return;
+        }
+        unsafe {
+            let previous = self.enter_grid(rt, area);
+            self.fill_marks(rt, brush, alpha, marks);
+            rt.SetTransform(&previous);
+        }
+    }
+
+    /// Sets the transform to the 64-unit grid over `area`; returns the one it
+    /// replaces.
+    unsafe fn enter_grid(&self, rt: &ID2D1RenderTarget, area: Rect) -> Matrix3x2 {
+        unsafe {
+            let k = area.w / GRID;
+            let mut previous = Matrix3x2::default();
+            rt.GetTransform(&mut previous);
+            let local = Matrix3x2::scale(k, k) * Matrix3x2::translation(area.x, area.y);
+            rt.SetTransform(&(local * previous));
+            previous
+        }
+    }
+
+    /// Fills `marks` in the current (grid) transform.
+    unsafe fn fill_marks(
+        &self,
+        rt: &ID2D1RenderTarget,
+        brush: &ID2D1SolidColorBrush,
+        alpha: f32,
+        marks: &[PeekMark],
+    ) {
+        unsafe {
+            for mark in marks {
+                match *mark {
+                    PeekMark::Dot { cx, cy, r, rgb } => {
+                        brush.SetColor(&solid(rgb, alpha));
+                        rt.FillEllipse(
+                            &D2D1_ELLIPSE {
+                                point: Vector2::new(cx, cy),
+                                radiusX: r,
+                                radiusY: r,
+                            },
+                            brush,
+                        );
+                    }
+                    PeekMark::Beak { rgb } => {
+                        if let Ok(g) = path(&self.factory, &BEAK_PATH) {
+                            brush.SetColor(&solid(rgb, alpha));
+                            rt.FillGeometry(&g, brush, None);
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -3145,8 +3226,8 @@ mod tests {
             let centre = eyes_centre(pill);
             assert_eq!(centre, (pill.x + EYES_W / 2.0, pill.y + EYES_H / 2.0));
             for blink in [false, true] {
-                let still = eyes_boxes_at(centre, 0.0, 0.0, blink);
-                let slid = eyes_boxes_at(centre, 3.0, 1.0, blink);
+                let still = eyes_boxes_at(centre, 0.0, 0.0, blink, &[]);
+                let slid = eyes_boxes_at(centre, 3.0, 1.0, blink, &[]);
                 assert_eq!(still.len(), 2, "two eyes");
                 for (a, b) in still.iter().zip(&slid) {
                     assert!((b.0 - a.0 - 3.0).abs() < 1e-4 && (b.1 - a.1 - 1.0).abs() < 1e-4);
@@ -3157,16 +3238,16 @@ mod tests {
                 assert!(((centre.0 - left.0) - (right.2 - centre.0)).abs() < 1e-4);
             }
             // An open eye is 8 dip tall; the blink's lines are far flatter.
-            let open = eyes_boxes_at(centre, 0.0, 0.0, false);
+            let open = eyes_boxes_at(centre, 0.0, 0.0, false, &[]);
             assert!((open[0].3 - open[0].1 - 8.0).abs() < 1e-4);
-            let shut = eyes_boxes_at(centre, 0.0, 0.0, true);
+            let shut = eyes_boxes_at(centre, 0.0, 0.0, true, &[]);
             assert!(shut[0].3 - shut[0].1 < 2.0);
             // A request in range passes untouched, one past it is cut back
             // (and NaN is no slide).
-            assert_eq!(eyes_offset_in(style, pill, 4.0, 1.5), (4.0, 1.5));
-            let (x, y) = eyes_offset_in(style, pill, 40.0, -40.0);
+            assert_eq!(eyes_offset_in(style, pill, 4.0, 1.5, &[]), (4.0, 1.5));
+            let (x, y) = eyes_offset_in(style, pill, 40.0, -40.0, &[]);
             assert!(x > 0.0 && x < 40.0 && y < 0.0 && y > -40.0, "{x} {y}");
-            assert_eq!(eyes_offset_in(style, pill, f32::NAN, f32::NAN), (0.0, 0.0));
+            assert_eq!(eyes_offset_in(style, pill, f32::NAN, f32::NAN, &[]), (0.0, 0.0));
         }
     }
 

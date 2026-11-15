@@ -235,12 +235,13 @@
 //! last, at the right of its cell so its laptop has room.
 //!
 //! The notch peek's scenes `peek-eyes` (robot on) and `peek-eyes-plain`
-//! (robot off) draw the notch shrunk to the cat's two eyes: a 34 x 14 pill,
-//! terracotta eyes, nothing else. Hold one with `DI_DEMO_STEP=peek-eyes` in
-//! `--demo`. The eyes look and blink: `peek-eyes-left` and `peek-eyes-right`
-//! look at a pointer at the zone's far left and right (the largest slide, 4
-//! dip), `peek-eyes-down` at one low and to the right (1.5 dip down, 2 dip
-//! across), `peek-eyes-blink` shows them shut (the cat's two level lines).
+//! (robot off) draw the notch shrunk to the chosen mascot's mini face: a 34 x 14
+//! pill (it follows `DI_MASCOT` and the coat variables), nothing else. Hold
+//! one with `DI_DEMO_STEP=peek-eyes` in `--demo`. The eyes look and blink:
+//! `peek-eyes-left` and `peek-eyes-right` look at a pointer at the zone's far
+//! left and right (the largest slide, 4 dip; the falk's is a little shorter),
+//! `peek-eyes-down` at one low and to the right (1.5 dip down, 2 dip
+//! across), `peek-eyes-blink` shows them shut (the mascot's two level lines).
 //! None of them reads the pointer.
 //!
 //! The busy-notch toast's scenes (`docs/memory/toast-while-busy.md`), made-up
@@ -2476,7 +2477,7 @@ const SCENES: [Scene; 245] = [
         look: 1.0,
         ..bata("bata-look-right", ShapeKind::Idle, View0::Idle, Expr::Idle)
     },
-    // The notch shrunk to the cat's two eyes (`pointer_watch::Peek`): the
+    // The notch shrunk to the mascot's face (`pointer_watch::Peek`): the
     // pill alone, with the robot on and off.
     bata("peek-eyes", ShapeKind::Eyes, View0::Idle, Expr::Idle),
     Scene {
@@ -3521,6 +3522,7 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                     },
                 }),
                 eyes: scene.kind == ShapeKind::Eyes,
+                peek_mix: if scene.kind == ShapeKind::Eyes { 1.0 } else { 0.0 },
                 eyes_pose: {
                     let (dx_dip, dy_dip) =
                         crate::pointer_watch::eyes_offset_dip(scene.eyes_look.0, scene.eyes_look.1);

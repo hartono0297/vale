@@ -35,7 +35,7 @@ pub enum ShapeKind {
     PomodoroCompact,
     /// A recording runs: the red dot, the clock and the level bars.
     RecordCompact,
-    /// The closed island shrunk to the cat's two eyes while the pointer is
+    /// The closed island shrunk to the mascot's face while the pointer is
     /// near it over a window (`pointer_watch::Peek`): `EYES_W` x `EYES_H`,
     /// centred, at the compact shapes' top.
     Eyes,
@@ -178,7 +178,7 @@ pub fn shape_sized(style: Style, size: NotchSize, kind: ShapeKind) -> ShapeRect 
     }
 }
 
-/// The shrunk notch (`ShapeKind::Eyes`): just room for the cat's two eyes.
+/// The shrunk notch (`ShapeKind::Eyes`): just room for the mascot's face.
 pub const EYES_W: f32 = 34.0;
 pub const EYES_H: f32 = 14.0;
 
@@ -2573,7 +2573,17 @@ mod tests {
     #[test]
     fn the_shrunk_eyes_stay_inside_the_pill() {
         use crate::pointer_watch::{EYES_LOOK_DOWN_DIP, EYES_LOOK_X_DIP};
+        use crate::theme::{FalkColor, Mascot};
+        use crate::ui::cat_style::CatLook;
+        use crate::ui::peek_face::peek_face;
         use crate::ui::robot::{eyes_boxes_at, eyes_centre, eyes_offset_in};
+        // The marks that slide with the eyes: none on the cat, cheeks and a
+        // beak on the Lutino falk, the beak alone on the WhiteFace one.
+        let looks = [
+            CatLook::default(),
+            CatLook { mascot: Mascot::Falk, falk: FalkColor::Lutino, ..CatLook::default() },
+            CatLook { mascot: Mascot::Falk, falk: FalkColor::WhiteFace, ..CatLook::default() },
+        ];
         let steps = |min: u32, max: u32, step: usize, default: u32| {
             let mut v: Vec<u32> = (min..=max).step_by(step).chain([default, max]).collect();
             v.sort_unstable();
@@ -2598,65 +2608,112 @@ mod tests {
             (-20.0, 10.0),
             (0.0, 10.0),
         ];
-        let inside = |style, s: ShapeRect, boxes: &[(f32, f32, f32, f32)]| {
-            boxes.iter().all(|&(l, t, r, b)| {
-                [(l, t), (r, t), (r, b), (l, b)]
-                    .into_iter()
-                    .all(|(x, y)| island_contains(style, s, x, y, 0.0))
+        // Eyes and the beak by their box corners; a cheek (a dot) as the
+        // circle it is.
+        let inside = |style, s: ShapeRect, boxes: &[(f32, f32, f32, f32)], marks: &[crate::ui::peek_face::PeekMark]| {
+            let first_mark = boxes.len() - marks.len();
+            boxes.iter().enumerate().all(|(i, &(l, t, r, b))| {
+                let at = |x: f32, y: f32| island_contains(style, s, x, y, 0.0);
+                match marks.get(i.wrapping_sub(first_mark)) {
+                    Some(crate::ui::peek_face::PeekMark::Dot { .. }) => {
+                        let (cx, cy, rad) = ((l + r) / 2.0, (t + b) / 2.0, (r - l) / 2.0);
+                        (0..32).all(|k| {
+                            let a = k as f32 / 32.0 * std::f32::consts::TAU;
+                            at(cx + rad * a.cos(), cy + rad * a.sin())
+                        })
+                    }
+                    _ => [(l, t), (r, t), (r, b), (l, b)].into_iter().all(|(x, y)| at(x, y)),
+                }
             })
         };
-        for style in [Style::Pill, Style::Notch] {
-            let pill = shape_sized(style, NotchSize::DEFAULT, ShapeKind::Eyes);
-            // The final pill takes the look's extremes as they are: the clamp
-            // is a guard, not a visible limit.
-            for &(dx, dy) in &offsets[..6] {
-                assert_eq!(eyes_offset_in(style, pill, dx, dy), (dx, dy), "{style:?}");
-                for blink in [false, true] {
-                    let boxes = eyes_boxes_at(eyes_centre(pill), dx, dy, blink);
-                    assert!(inside(style, pill, &boxes), "{style:?} ({dx}, {dy}) {blink}");
-                }
-            }
-            // Past the extremes the pill does cut the slide back (down
-            // first, then across what is left of the room).
-            let (cx, cy) = eyes_offset_in(style, pill, 20.0, 10.0);
-            assert!(cx > 0.0 && cx < 20.0 && cy > ly && cy < 10.0, "{style:?} {cx} {cy}");
-            assert!(eyes_offset_in(style, pill, 20.0, 0.0).0 > lx);
-            for &w in &widths {
-                for &h in &heights {
-                    let size = NotchSize::from_px(w, h);
-                    let eyes = shape_sized(style, size, ShapeKind::Eyes);
-                    assert_eq!(eyes, pill, "the pill does not follow the notch size");
-                    let mut normals = Vec::new();
-                    for robot in [true, false] {
-                        for kind in [
-                            ShapeKind::Idle,
-                            ShapeKind::MediaCompact,
-                            ShapeKind::PomodoroCompact,
-                        ] {
-                            normals.push(shape_with_robot_sized(style, size, kind, robot));
-                        }
-                        for lyric_w in [LYRIC_MIN_W.max(size.w), 380.0, LYRIC_MAX_W] {
-                            normals.push(lyric_shape_sized(style, size, lyric_w));
-                        }
+        for look in looks {
+            let marks = peek_face(look, 0).face_marks;
+            for style in [Style::Pill, Style::Notch] {
+                let pill = shape_sized(style, NotchSize::DEFAULT, ShapeKind::Eyes);
+                // The final pill takes the look's extremes as they are: the clamp
+                // is a guard, not a visible limit.
+                // The cat has no marks to fit, so only it keeps every extreme.
+                let kept = if marks.is_empty() { 6 } else { 0 };
+                for &(dx, dy) in &offsets[..kept] {
+                    assert_eq!(eyes_offset_in(style, pill, dx, dy, &marks), (dx, dy), "{style:?}");
+                    for blink in [false, true] {
+                        let boxes = eyes_boxes_at(eyes_centre(pill), dx, dy, blink, &marks);
+                        assert!(inside(style, pill, &boxes, &marks), "{style:?} ({dx}, {dy}) {blink}");
                     }
-                    for normal in normals {
-                        for step in 0..=10 {
-                            let s = lerp_shape(normal, eyes, step as f32 / 10.0);
-                            for &(dx, dy) in &offsets {
-                                let (ox, oy) = eyes_offset_in(style, s, dx, dy);
-                                // Never past what was asked, never the other way.
-                                assert!(ox.abs() <= dx.abs() && ox * dx >= 0.0, "{ox} {dx}");
-                                assert!(oy.abs() <= dy.abs() && oy * dy >= 0.0, "{oy} {dy}");
-                                for blink in [false, true] {
-                                    let boxes = eyes_boxes_at(eyes_centre(s), ox, oy, blink);
-                                    assert!(
-                                        inside(style, s, &boxes),
-                                        "{style:?} {size:?} t {step}/10 ({dx}, {dy}) -> ({ox}, {oy}) blink {blink} in {s:?}"
-                                    );
+                }
+                // Past the extremes the pill does cut the slide back (down
+                // first, then across what is left of the room).
+                let (cx, cy) = eyes_offset_in(style, pill, 20.0, 10.0, &marks);
+                assert!(cx >= 0.0 && cx < 20.0 && cy > 0.0 && cy < 10.0, "{style:?} {cx} {cy}");
+                if marks.is_empty() {
+                    assert!(cx > 0.0 && cy > ly, "{style:?} {cx} {cy}");
+                    assert!(eyes_offset_in(style, pill, 20.0, 0.0, &marks).0 > lx);
+                }
+                for &w in &widths {
+                    for &h in &heights {
+                        let size = NotchSize::from_px(w, h);
+                        let eyes = shape_sized(style, size, ShapeKind::Eyes);
+                        assert_eq!(eyes, pill, "the pill does not follow the notch size");
+                        let mut normals = Vec::new();
+                        for robot in [true, false] {
+                            for kind in [
+                                ShapeKind::Idle,
+                                ShapeKind::MediaCompact,
+                                ShapeKind::PomodoroCompact,
+                            ] {
+                                normals.push(shape_with_robot_sized(style, size, kind, robot));
+                            }
+                            for lyric_w in [LYRIC_MIN_W.max(size.w), 380.0, LYRIC_MAX_W] {
+                                normals.push(lyric_shape_sized(style, size, lyric_w));
+                            }
+                        }
+                        for normal in normals {
+                            for step in 0..=10 {
+                                let s = lerp_shape(normal, eyes, step as f32 / 10.0);
+                                for &(dx, dy) in &offsets {
+                                    let (ox, oy) = eyes_offset_in(style, s, dx, dy, &marks);
+                                    // Never past what was asked, never the other way.
+                                    assert!(ox.abs() <= dx.abs() && ox * dx >= 0.0, "{ox} {dx}");
+                                    assert!(oy.abs() <= dy.abs() && oy * dy >= 0.0, "{oy} {dy}");
+                                    for blink in [false, true] {
+                                        let boxes = eyes_boxes_at(eyes_centre(s), ox, oy, blink, &marks);
+                                        assert!(
+                                            inside(style, s, &boxes, &marks),
+                                            "{style:?} {size:?} t {step}/10 ({dx}, {dy}) -> ({ox}, {oy}) blink {blink} in {s:?}"
+                                        );
+                                    }
                                 }
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_falk_looks_a_little_less_far() {
+        use crate::pointer_watch::EYES_LOOK_X_DIP;
+        use crate::theme::{FalkColor, Mascot};
+        use crate::ui::cat_style::CatLook;
+        use crate::ui::peek_face::peek_face;
+        use crate::ui::robot::{eyes_boxes_at, eyes_centre, eyes_offset_in};
+        let look = CatLook { mascot: Mascot::Falk, falk: FalkColor::Lutino, ..CatLook::default() };
+        let marks = peek_face(look, 0).face_marks;
+        for style in [Style::Pill, Style::Notch] {
+            let pill = shape_sized(style, NotchSize::DEFAULT, ShapeKind::Eyes);
+            let (x, _) = eyes_offset_in(style, pill, EYES_LOOK_X_DIP, 0.0, &marks);
+            // A little shorter than the cat's 4 dip, not cut to a stub.
+            assert!(x >= 3.0 && x <= EYES_LOOK_X_DIP, "{style:?} {x}");
+            // The cheeks are the two marks after the two eyes: every point of
+            // each cheek's circle stays inside the pill.
+            let boxes = eyes_boxes_at(eyes_centre(pill), x, 0.0, false, &marks);
+            for &(l, t, r, b) in &boxes[2..4] {
+                let (cx, cy, rad) = ((l + r) / 2.0, (t + b) / 2.0, (r - l) / 2.0);
+                for k in 0..32 {
+                    let a = k as f32 / 32.0 * std::f32::consts::TAU;
+                    let (px, py) = (cx + rad * a.cos(), cy + rad * a.sin());
+                    assert!(island_contains(style, pill, px, py, 0.0), "{style:?} cheek {k}");
                 }
             }
         }

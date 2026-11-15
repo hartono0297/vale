@@ -70,6 +70,7 @@ use super::geometry::{
 use super::icons::{Icon, IconSet};
 use super::motion::{StripFrame, Transit};
 use super::panel_layout::Region;
+use super::peek_face::{peek_face, peek_fill};
 use super::play::shape::{Deform, outline, rigid, top_corners, turn_about};
 use super::play::state::{Beat, spread_offsets};
 use super::play::stories::{
@@ -270,8 +271,11 @@ pub struct Frame<'a> {
     /// when it is off or the view has none (the panel, other apps' notices).
     pub robot: Option<RobotFrame>,
     /// The closed island is shrunk to the eyes (`ShapeKind::Eyes`): the pill
-    /// holds only the cat's two open eyes, whatever the view or `robot`.
+    /// holds only the mascot's face (its two open eyes and marks), whatever the view or `robot`.
     pub eyes: bool,
+    /// How far the island's fill has turned into the mascot's face colour
+    /// (0 = the notch surface, 1 = the face); eased with the shrink morph.
+    pub peek_mix: f32,
     /// Where the shrunk notch's eyes look and whether they are shut; only
     /// read with `eyes`. The default is centred and open.
     pub eyes_pose: EyesPose,
@@ -1442,6 +1446,7 @@ impl Renderer {
             origin: (origin.x, origin.y),
             opacity,
             fill_alpha: frame.fill_alpha,
+            peek_mix: frame.peek_mix,
             legibility: frame.legibility,
             palette: frame.palette,
             ui_font: self.ui_font,
@@ -2478,11 +2483,20 @@ impl Renderer {
             }
         }
         unsafe {
-            // 1.0 (the same call as ever) unless the closed island is see-through.
-            target.brush.SetColor(&color(
-                self.palette.surface,
-                frame.fill_alpha.clamp(0.0, 1.0),
-            ));
+            // 1.0 (the same call as ever) unless the closed island is see-through
+            // or shrunk (`peek_fill` blends to the face colour).
+            let (rgb, alpha) = if frame.peek_mix > 0.0 {
+                let face = peek_face(frame.cat, self.palette.surface);
+                peek_fill(
+                    self.palette.surface,
+                    frame.fill_alpha.clamp(0.0, 1.0),
+                    face.fill,
+                    frame.peek_mix,
+                )
+            } else {
+                (self.palette.surface, frame.fill_alpha.clamp(0.0, 1.0))
+            };
+            target.brush.SetColor(&color(rgb, alpha));
             // The fill goes down first and the content over it, play or not.
             // Nothing a story draws leans on this fill being opaque, since it
             // can be see-through: behind is clipped to `outside_island`,
@@ -2511,7 +2525,7 @@ impl Renderer {
         if let View::Panel(_) = view {
             return self.paint_panel(style, shape, frame);
         }
-        // Shrunk to the eyes: the pill and the two eyes, nothing else. Its
+        // Shrunk to the eyes: the pill and the mascot's face, nothing else. Its
         // pixels are all the island draws, so a click anywhere else reaches
         // the window below.
         if frame.eyes {
@@ -3126,25 +3140,50 @@ impl Renderer {
         }
     }
 
-    /// The cat's two open eyes alone, in the brand terracotta, centred on the
-    /// shrunk notch's place (its top, `geometry::EYES_H` tall, however far the morph has
-    /// come), fading in with `content_alpha`. They slide by `pose`'s look
-    /// (cut back so both stay inside `shape`, whatever stage of the morph it
-    /// is) and shut for its blink, as the cat's blink lines.
+    /// The chosen mascot's mini face on the shrunk notch's place (its top,
+    /// `geometry::EYES_H` tall, however far the morph has come), fading in
+    /// with `content_alpha`: the coat marks and the edge line fixed to the
+    /// island's outline (the current shape's, so they follow a morph that is
+    /// not over), then the eyes and the face marks sliding by `pose`'s look
+    /// (cut back so all of them stay inside `shape`) and shutting for its
+    /// blink, as the mascot's two level lines.
     fn paint_eyes_pill(&self, style: Style, shape: ShapeRect, content_alpha: f32, pose: EyesPose) {
         let target = self.target.as_ref().expect("target ensured by paint");
         let alpha = content_alpha.clamp(0.0, 1.0);
+        let face = peek_face(self.cat.get(), self.palette.surface);
+        let (cx, cy) = eyes_centre(shape);
+        if !face.coat_marks.is_empty() || face.edge.is_some() {
+            if let Ok(outline) = self.shape_geometry(style, shape) {
+                self.push_mask(&outline, 1.0);
+                self.robot.paint_peek_marks(
+                    &target.rt,
+                    &target.brush,
+                    eyes_area((cx, cy)),
+                    alpha,
+                    &face.coat_marks,
+                );
+                if let Some(edge) = face.edge {
+                    // Twice the line's width, half of it outside the mask:
+                    // exactly 1 dip is left inside.
+                    self.set_color(edge, alpha);
+                    unsafe { target.rt.DrawGeometry(&outline, &target.brush, 2.0, None) };
+                }
+                unsafe { target.rt.PopLayer() };
+            }
+        }
+        // Only the eyes and face marks sit under the shape's box: the coat
+        // marks and the edge above run under the outline mask alone, so the
+        // Notch's shoulders (outside the box) keep their line.
         unsafe {
             target.rt.PushAxisAlignedClip(
                 &d2d_rect(shape_rect(shape)),
                 D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
             );
         }
-        let (dx, dy) = eyes_offset_in(style, shape, pose.dx_dip, pose.dy_dip);
-        let (cx, cy) = eyes_centre(shape);
+        let (dx, dy) = eyes_offset_in(style, shape, pose.dx_dip, pose.dy_dip, &face.face_marks);
         let area = eyes_area((cx + dx, cy + dy));
         self.robot
-            .paint_eyes(&target.rt, &target.brush, area, alpha, pose.blink);
+            .paint_eyes(&target.rt, &target.brush, area, alpha, pose.blink, &face);
         unsafe { target.rt.PopAxisAlignedClip() };
     }
 
@@ -5655,6 +5694,7 @@ mod tests {
             progress: None,
             robot,
             eyes: false,
+            peek_mix: 0.0,
             eyes_pose: Default::default(),
             eq_heights: None,
             robot_fades: false,
