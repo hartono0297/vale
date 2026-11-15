@@ -63,7 +63,7 @@ pub(super) struct SearchState {
 }
 
 /// `CF_UNICODETEXT`'s bytes for `text`.
-fn text_formats(text: &str) -> Vec<(u32, Vec<u8>)> {
+pub(super) fn text_formats(text: &str) -> Vec<(u32, Vec<u8>)> {
     vec![(13, win::utf16z(text))]
 }
 

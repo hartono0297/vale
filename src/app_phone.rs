@@ -18,17 +18,19 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
 
 use super::{App, Event, Page, View, WM_APP_EVENT, poster};
+use super::quick::text_formats;
+use crate::clipboard::win;
 use crate::config::PhoneNet;
 use crate::i18n;
 use crate::model::PhoneStage;
 use crate::phone::session::TOKEN_TTL;
 use crate::phone::{
-    DeviceKind, EndReason, FailReason, Handle, NoteShare, PhoneEvent, QrMatrix, Refusal,
+    DeviceKind, EndReason, FailReason, Handle, NewLink, NoteShare, PhoneEvent, QrMatrix, Refusal,
 };
 use crate::shelf::{self, Landing, ShelfCard, ShelfKind};
 use crate::ui::phone_view::{CodeView, PhoneView, QrView, RecvView, RowStatus, RowView, Warn};
@@ -47,6 +49,8 @@ struct Ready {
     /// "192.168.18.42:47390".
     addr: String,
     made: Instant,
+    /// The link the QR code holds, for the copy icon.
+    url: String,
     /// The network is Public (or unknown): the QR view warns.
     public: bool,
     /// The network the session listens on.
@@ -113,8 +117,42 @@ struct BatchLanding {
     folder_added: bool,
 }
 
+/// How long the copy icon shows its check.
+const COPIED_FOR: Duration = Duration::from_secs(2);
+
+impl Ready {
+    /// The listening session's card from its `Ready` event; `None` for any
+    /// other event.
+    fn from_event(event: PhoneEvent) -> Option<Ready> {
+        let PhoneEvent::Ready {
+            ip,
+            port,
+            url,
+            qr,
+            network_name,
+            public,
+            net,
+            token_made,
+        } = event
+        else {
+            return None;
+        };
+        Some(Ready {
+            qr,
+            network: network_name,
+            addr: format!("{ip}:{port}"),
+            made: token_made,
+            url,
+            public,
+            net,
+        })
+    }
+}
+
 #[derive(Default)]
 pub(super) struct PhoneState {
+    /// When the link was copied; the icon shows a check for `COPIED_FOR`.
+    copied_at: Option<Instant>,
     /// The number of the current session: each start takes the next one and
     /// its events carry it, so a late event of a session that was stopped
     /// is not applied to the one that follows. Kept across sessions.
@@ -204,6 +242,35 @@ impl PhoneState {
             generation: self.generation,
             ..PhoneState::default()
         };
+    }
+
+    /// The link the copy icon puts on the clipboard: only while a live
+    /// code shows.
+    fn copy_target(&self, now: Instant) -> Option<&str> {
+        let ready = self.ready.as_ref()?;
+        if self.refusal.is_some() {
+            return None;
+        }
+        self.remaining(now)?;
+        Some(&ready.url)
+    }
+
+    fn copied(&self, now: Instant) -> bool {
+        self.remaining(now).is_some()
+            && self
+                .copied_at
+                .is_some_and(|at| now.saturating_duration_since(at) < COPIED_FOR)
+    }
+
+    /// A new code was made: the QR, its time and its link move together,
+    /// and the check goes.
+    fn link_renewed(&mut self, link: &NewLink) {
+        if let Some(ready) = &mut self.ready {
+            ready.qr = link.qr.clone();
+            ready.made = link.token_made;
+            ready.url = link.url.clone();
+        }
+        self.copied_at = None;
     }
 
     fn ever_joined(&self) -> bool {
@@ -305,7 +372,7 @@ impl App {
                 public: r.public,
                 tailnet: r.net == PhoneNet::Tailscale,
                 joined: &st.connected,
-                copied: false,
+                copied: st.copied(now),
             }),
             (None, None) => QrView::Starting,
         };
@@ -464,8 +531,20 @@ impl App {
         Some(Event::PhoneStage(Some(self.phone.resume_stage())))
     }
 
-    /// The copy icon on the QR view. Not wired yet.
-    pub(super) fn phone_copy_link(&mut self, _now: Instant) {}
+    /// The copy icon on the QR view: the live link goes to the clipboard as
+    /// plain text, and the icon shows a check for a moment.
+    pub(super) fn phone_copy_link(&mut self, now: Instant) {
+        let Some(url) = self.phone.copy_target(now).map(str::to_owned) else {
+            return;
+        };
+        let Some(sequence) = win::write(self.hwnd, &text_formats(&url)) else {
+            return;
+        };
+        // Written here: not a copy for the history to take again.
+        self.clip.own_sequence = Some(sequence);
+        self.phone.copied_at = Some(now);
+        self.draw(now);
+    }
 
     /// "Buat QR baru" (and "Coba lagi" on a warning): a fresh token for a
     /// listening server, else a new start.
@@ -473,10 +552,7 @@ impl App {
         if let (Some(handle), true) = (&self.phone.handle, self.phone.ready.is_some())
             && let Some(link) = handle.new_token()
         {
-            if let Some(ready) = &mut self.phone.ready {
-                ready.qr = link.qr;
-                ready.made = link.token_made;
-            }
+            self.phone.link_renewed(&link);
             self.phone.renew_failed = false;
             return;
         }
@@ -558,10 +634,7 @@ impl App {
         }
         match self.phone.handle.as_ref().and_then(Handle::new_token) {
             Some(link) => {
-                if let Some(ready) = &mut self.phone.ready {
-                    ready.qr = link.qr;
-                    ready.made = link.token_made;
-                }
+                self.phone.link_renewed(&link);
                 Fresh::Renewed
             }
             None => {
@@ -577,30 +650,15 @@ impl App {
             return;
         }
         match event {
-            PhoneEvent::Ready {
-                ip,
-                port,
-                qr,
-                network_name,
-                public,
-                net,
-                token_made,
-                ..
-            } => {
+            ready @ PhoneEvent::Ready { .. } => {
                 if self.phone.handle.is_none() {
                     return;
                 }
                 self.phone.starting = false;
                 self.phone.refusal = None;
                 self.phone.renew_failed = false;
-                self.phone.ready = Some(Ready {
-                    qr,
-                    network: network_name,
-                    addr: format!("{ip}:{port}"),
-                    made: token_made,
-                    public,
-                    net,
-                });
+                self.phone.ready = Ready::from_event(ready);
+                self.phone.copied_at = None;
                 // The shelf as it is now goes to the phones.
                 self.shelf_look();
             }
@@ -855,6 +913,7 @@ mod tests {
             network: "n".into(),
             addr: "10.0.0.2:47390".into(),
             made,
+            url: "http://10.0.0.2:47390/s/x".into(),
             public: false,
             net: PhoneNet::Wifi,
         }
@@ -1096,5 +1155,83 @@ mod tests {
         assert_eq!(warn_of(&Refusal::NoTailscale), Warn::NoTailscale);
         assert_eq!(warn_of(&Refusal::PortsBusy), Warn::PortsBusy);
         assert_eq!(warn_of(&Refusal::Failed), Warn::Failed);
+    }
+
+    const LINK: &str = "http://192.168.18.42:47390/s/AbCdEfGhIjKlMnOpQrStUv";
+
+    fn ready_with_url(made: Instant) -> Ready {
+        Ready {
+            url: LINK.into(),
+            ..ready_at(made)
+        }
+    }
+
+    #[test]
+    fn copy_target_is_none_without_a_live_code() {
+        let t0 = Instant::now();
+        let mut s = PhoneState::default();
+        assert_eq!(s.copy_target(t0), None);
+        s.ready = Some(ready_with_url(t0));
+        assert_eq!(s.copy_target(t0), Some(LINK));
+        assert_eq!(s.copy_target(t0 + TOKEN_TTL), None);
+        s.renew_failed = true;
+        assert_eq!(s.copy_target(t0), None);
+        s.renew_failed = false;
+        s.refusal = Some(Refusal::NoLan);
+        assert_eq!(s.copy_target(t0), None);
+    }
+
+    #[test]
+    fn the_check_lasts_two_seconds() {
+        let t = Instant::now();
+        let s = PhoneState {
+            ready: Some(ready_with_url(t)),
+            copied_at: Some(t),
+            ..PhoneState::default()
+        };
+        assert!(s.copied(t + Duration::from_millis(1900)));
+        assert!(!s.copied(t + Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn a_renewal_clears_the_check_and_moves_the_link() {
+        let t = Instant::now();
+        let mut s = PhoneState {
+            ready: Some(ready_with_url(t)),
+            copied_at: Some(t),
+            ..PhoneState::default()
+        };
+        let now = t + Duration::from_secs(1);
+        assert!(s.copied(now));
+        s.link_renewed(&NewLink {
+            url: "http://192.168.18.42:47390/s/NEW".into(),
+            qr: crate::phone::qr::make("http://192.168.18.42:47390/s/NEW").expect("qr"),
+            token_made: now,
+        });
+        assert!(!s.copied(now));
+        assert_eq!(s.copy_target(now), Some("http://192.168.18.42:47390/s/NEW"));
+    }
+
+    #[test]
+    fn ready_keeps_the_link_it_was_given() {
+        let t = Instant::now();
+        let event = PhoneEvent::Ready {
+            ip: "192.168.18.42".parse().expect("ip"),
+            port: 47390,
+            url: LINK.into(),
+            qr: crate::phone::qr::make(LINK).expect("qr"),
+            network_name: "Home".into(),
+            public: false,
+            net: PhoneNet::Wifi,
+            token_made: t,
+        };
+        let ready = Ready::from_event(event).expect("a Ready event");
+        assert_eq!(ready.url, LINK);
+        assert_eq!(ready.addr, "192.168.18.42:47390");
+        assert!(Ready::from_event(PhoneEvent::Refused(Refusal::NoLan)).is_none());
+        let mut s = PhoneState::default();
+        s.copied_at = Some(t);
+        s.forget_session();
+        assert_eq!(s.copied_at, None);
     }
 }
