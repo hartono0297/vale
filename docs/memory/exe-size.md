@@ -463,6 +463,9 @@ checksum checked against `vale.exe.sha256` at release time):
 |---|---|
 | v5.2.0 (ad08324) | 4,559,360 |
 | v5.3.0 (55a50a2) | 4,698,112 (+138,752 over v5.2.0: video quality, clipboard drag-out, settings spacing, one recordings folder, Rekam redesign, falk and octopus mascots, tooltips) |
+| v5.3.1 (443f208) | 4,759,040 (+60,928: Tailscale phone link, settings export and import) |
+| v5.5.0 (1ac63bd) | 4,937,728 (+178,688: mascot stories parts 1 and 2, What's new, shelf image preview, clipboard Clear all, fresh-install layout) |
 
-v5.3.1 adds the Tailscale phone link and the settings export and import (about
-+58 KiB measured above); add its shipped size here after the release.
+v5.5.1 adds the mascot-story fix (a story ends only on a notch press) and the
+mascot's mini face in the shrunk notch (about +4 KiB); add its shipped size
+here after the release.
