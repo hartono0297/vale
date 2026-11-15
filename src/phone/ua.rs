@@ -6,11 +6,14 @@ pub enum DeviceKind {
     Android,
     IPhone,
     IPad,
+    Laptop,
     Other,
 }
 
-/// The kind of device for a User-Agent. An iPad that asks for the desktop
-/// site (iPadOS says "Macintosh") is `Other`.
+/// The kind of device for a User-Agent. Phones and the iPad are checked first,
+/// then a Windows, ChromeOS or Linux desktop browser is a `Laptop`. An iPad that
+/// asks for the desktop site (iPadOS says "Macintosh"), a Mac and anything
+/// unknown are `Other`.
 pub fn parse(ua: &str) -> DeviceKind {
     let has = |needle: &str| ua.contains(needle);
     if has("iPhone") || has("iPod") {
@@ -19,6 +22,8 @@ pub fn parse(ua: &str) -> DeviceKind {
         DeviceKind::IPad
     } else if has("Android") {
         DeviceKind::Android
+    } else if has("Windows NT") || has("CrOS") || has("X11") || has("Linux") {
+        DeviceKind::Laptop
     } else {
         DeviceKind::Other
     }
@@ -65,5 +70,27 @@ mod tests {
         for (ua, kind) in cases {
             assert_eq!(parse(ua), kind, "{ua}");
         }
+    }
+
+    #[test]
+    fn desktop_browsers_are_laptops() {
+        let cases = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.0.0",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:127.0) Gecko/20100101 Firefox/127.0",
+            "Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (X11; Linux x86_64; rv:127.0) Gecko/20100101 Firefox/127.0",
+        ];
+        for ua in cases {
+            assert_eq!(parse(ua), DeviceKind::Laptop, "{ua}");
+        }
+    }
+
+    #[test]
+    fn an_android_says_linux_but_is_not_a_laptop() {
+        let ua = "Mozilla/5.0 (X11; Linux x86_64) Android 14 Chrome/126.0.0.0";
+        assert_eq!(parse(ua), DeviceKind::Android);
+        let ua = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36";
+        assert_eq!(parse(ua), DeviceKind::Android);
     }
 }

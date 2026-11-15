@@ -545,7 +545,7 @@ keys! {
     ShelfEmpty => "Seret berkas ke notch, ambil lagi nanti",
         "Drag files to the notch, take them out later";
     ShelfPhone => "HP", "Phone";
-    ShelfFromPhone => "dari HP", "phone";
+    ShelfFromPhone => "masuk", "received";
     ShelfPreview => "Pratinjau gambar", "Preview image";
     ShelfPreviewFailed => "Tidak bisa menampilkan gambar", "Can't show this image";
     ShelfPreviewLoading => "Memuat\u{2026}", "Loading\u{2026}";
@@ -583,7 +583,7 @@ keys! {
     PhoneWarnFailedBody => "Server lokal gagal menyala. Coba lagi sebentar lagi.",
         "The local server failed to start. Try again in a moment.";
     PhoneRetry => "Coba lagi", "Try again";
-    PhoneReceiving => "Menerima dari HP", "From phone";
+    PhoneReceiving => "Menerima berkas", "Receiving";
     PhonePickOnPhone => "Pilih berkas di HP", "Choose files on the phone";
     PhoneRowDone => "\u{2713} selesai", "\u{2713} done";
     PhoneRowCancelled => "dibatalkan", "cancelled";
@@ -593,7 +593,8 @@ keys! {
     PhoneKindAndroid => "Android", "Android";
     PhoneKindIPhone => "iPhone", "iPhone";
     PhoneKindIPad => "iPad", "iPad";
-    PhoneKindOther => "HP", "Phone";
+    PhoneKindLaptop => "Laptop", "Laptop";
+    PhoneKindOther => "perangkat", "device";
     PageSystem => "Sistem", "System";
     PageDevices => "Perangkat", "Devices";
     PageArrange => "Susun", "Arrange";
@@ -2230,7 +2231,8 @@ pub fn phone_connected(lang: Lang, kinds: &[crate::phone::DeviceKind]) -> String
     )
 }
 
-/// What a phone is called: "Android", "iPhone", "iPad", else "HP".
+/// What a device is called: "Android", "iPhone", "iPad", "Laptop", else
+/// "perangkat" / "device".
 pub fn phone_kind(lang: Lang, kind: crate::phone::DeviceKind) -> &'static str {
     use crate::phone::DeviceKind;
     text(
@@ -2239,21 +2241,31 @@ pub fn phone_kind(lang: Lang, kind: crate::phone::DeviceKind) -> &'static str {
             DeviceKind::Android => Key::PhoneKindAndroid,
             DeviceKind::IPhone => Key::PhoneKindIPhone,
             DeviceKind::IPad => Key::PhoneKindIPad,
+            DeviceKind::Laptop => Key::PhoneKindLaptop,
             DeviceKind::Other => Key::PhoneKindOther,
         },
     )
 }
 
-/// The header chip of the receiving view: one phone by its kind
-/// ("Android"), several by their number ("2 HP", "2 phones").
+/// The header chip of the receiving view: one device by its kind
+/// ("Android", "Laptop"), several by their number: "2 HP" / "2 phones" when
+/// all are phones or tablets, else "2 perangkat" / "2 devices".
 pub fn phone_devices_chip(lang: Lang, kinds: &[crate::phone::DeviceKind]) -> String {
     match kinds {
         [] => String::new(),
         [one] => phone_kind(lang, *one).to_owned(),
-        many => match lang {
-            Lang::Id => format!("{} HP", many.len()),
-            Lang::En => format!("{} phones", many.len()),
-        },
+        many => {
+            use crate::phone::DeviceKind;
+            let all_phones = many.iter().all(|k| {
+                matches!(k, DeviceKind::Android | DeviceKind::IPhone | DeviceKind::IPad)
+            });
+            match (lang, all_phones) {
+                (Lang::Id, true) => format!("{} HP", many.len()),
+                (Lang::En, true) => format!("{} phones", many.len()),
+                (Lang::Id, false) => format!("{} perangkat", many.len()),
+                (Lang::En, false) => format!("{} devices", many.len()),
+            }
+        }
     }
 }
 
@@ -5240,6 +5252,30 @@ mod copy_preview_tests {
             phone_devices_chip(Lang::En, &[DeviceKind::IPhone, DeviceKind::Android]),
             "2 phones"
         );
+        assert_eq!(phone_kind(Lang::Id, DeviceKind::Laptop), "Laptop");
+        assert_eq!(phone_kind(Lang::En, DeviceKind::Laptop), "Laptop");
+        assert_eq!(phone_kind(Lang::Id, DeviceKind::Other), "perangkat");
+        assert_eq!(phone_kind(Lang::En, DeviceKind::Other), "device");
+        assert_eq!(
+            phone_devices_chip(Lang::Id, &[DeviceKind::Android, DeviceKind::Laptop]),
+            "2 perangkat"
+        );
+        assert_eq!(
+            phone_devices_chip(Lang::En, &[DeviceKind::Android, DeviceKind::Laptop]),
+            "2 devices"
+        );
+        assert_eq!(
+            phone_devices_chip(Lang::Id, &[DeviceKind::Android, DeviceKind::Other]),
+            "2 perangkat"
+        );
+        assert_eq!(
+            phone_connected(Lang::Id, &[DeviceKind::Laptop]),
+            "Tersambung: Laptop"
+        );
+        assert_eq!(text(Lang::Id, Key::PhoneReceiving), "Menerima berkas");
+        assert_eq!(text(Lang::En, Key::PhoneReceiving), "Receiving");
+        assert_eq!(text(Lang::Id, Key::ShelfFromPhone), "masuk");
+        assert_eq!(text(Lang::En, Key::ShelfFromPhone), "received");
         // Step 2's line once a phone joined.
         assert_eq!(
             phone_connected(Lang::Id, &[DeviceKind::Android]),
@@ -5255,7 +5291,7 @@ mod copy_preview_tests {
         );
         assert_eq!(
             phone_connected(Lang::En, &[DeviceKind::Other; 2]),
-            "Connected: 2 phones"
+            "Connected: 2 devices"
         );
         // Sizes go through `format_size` from 1 MB.
         assert_eq!(phone_size(Lang::Id, 812 * 1024), "812 KB");

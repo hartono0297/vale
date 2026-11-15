@@ -41,7 +41,7 @@
 //!   network line says "Tailscale", the hint says the phone needs it too),
 //!   `phone-notailscale` (Tailscale chosen but not running: its warning
 //!   card) and `phone-receive` (two files in, one at 62 %, one that
-//!   failed). The `shelf` scene has two cards tagged "dari HP". The real
+//!   failed). The `shelf` scene has two cards tagged "masuk". The real
 //!   flow in a browser on this PC: `--phone-debug` (see `phone/debug.rs`).
 //! - The shelf's image thumbnails and the preview (generated gradients, no
 //!   files): `shelf-thumbs` (image cards with a picture, one gone, one from a
@@ -5532,7 +5532,7 @@ fn demo_search_details()
 
 /// Made-up files for the shelf scene (and an empty shelf elsewhere): never
 /// the machine's own. One of them is gone, as a card shows it, and two came
-/// from a phone (they carry the "dari HP" tag).
+/// from a phone (they carry the "masuk" tag).
 fn demo_shelf(filled: bool) -> Vec<crate::shelf::ShelfCard> {
     if !filled {
         return Vec::new();

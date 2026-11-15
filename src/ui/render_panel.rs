@@ -7017,9 +7017,9 @@ mod tests {
     }
 
     /// The phone link's titles hold their words in their header boxes, and a
-    /// shelf card's "dari HP" tag holds its word on the card, in both
+    /// shelf card's "masuk" tag holds its word on the card, in both
     /// languages, in DM Sans and in JetBrains Mono, in both styles: no
-    /// ellipsis ("Receiving from p…", "from ph…").
+    /// ellipsis ("Menerima ber…", "recei…").
     #[test]
     fn phone_titles_and_the_shelf_tag_hold_their_words_in_both_fonts() {
         use crate::config::Style;
@@ -7105,7 +7105,7 @@ mod tests {
     /// layouts (and `phone_chip_text`), the formats from the renderer's own
     /// `Fonts`, so what is measured is what `paint_phone_*` draws. The
     /// worst case of each variable text: the longest browser name, an
-    /// address of 15 characters, "99 phones", a 100 % row, a 99 GB summary.
+    /// address of 15 characters, "99 perangkat", a 100 % row, a 99 GB summary.
     #[test]
     fn every_phone_string_holds_its_box_in_both_fonts() {
         use crate::config::Style;
@@ -7166,12 +7166,14 @@ mod tests {
                             DeviceKind::Android,
                             DeviceKind::IPhone,
                             DeviceKind::IPad,
+                            DeviceKind::Laptop,
                             DeviceKind::Other,
                         ];
                         for k in kinds {
                             add(&i18n::phone_devices_chip(lang, &[k]), "small", chip_text);
                         }
                         add(&i18n::phone_devices_chip(lang, &[DeviceKind::Other; 99]), "small", chip_text);
+                        add(&i18n::phone_devices_chip(lang, &[DeviceKind::IPhone; 99]), "small", chip_text);
                         for key in [Key::PhoneRowDone, Key::PhoneRowCancelled, Key::PhoneRowFailed] {
                             add(text(lang, key), "small_right", row.status);
                         }
