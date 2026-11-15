@@ -2616,67 +2616,67 @@ mod tests {
             })
         };
         for look in looks {
-        let marks = peek_face(look, 0).face_marks;
-        for style in [Style::Pill, Style::Notch] {
-            let pill = shape_sized(style, NotchSize::DEFAULT, ShapeKind::Eyes);
-            // The final pill takes the look's extremes as they are: the clamp
-            // is a guard, not a visible limit.
-            // The cat has no marks to fit, so only it keeps every extreme.
-            let kept = if marks.is_empty() { 6 } else { 0 };
-            for &(dx, dy) in &offsets[..kept] {
-                assert_eq!(eyes_offset_in(style, pill, dx, dy, &marks), (dx, dy), "{style:?}");
-                for blink in [false, true] {
-                    let boxes = eyes_boxes_at(eyes_centre(pill), dx, dy, blink, &marks);
-                    assert!(inside(style, pill, &boxes), "{style:?} ({dx}, {dy}) {blink}");
-                }
-            }
-            // Past the extremes the pill does cut the slide back (down
-            // first, then across what is left of the room).
-            let (cx, cy) = eyes_offset_in(style, pill, 20.0, 10.0, &marks);
-            assert!(cx >= 0.0 && cx < 20.0 && cy > 0.0 && cy < 10.0, "{style:?} {cx} {cy}");
-            if marks.is_empty() {
-                assert!(cx > 0.0 && cy > ly, "{style:?} {cx} {cy}");
-                assert!(eyes_offset_in(style, pill, 20.0, 0.0, &marks).0 > lx);
-            }
-            for &w in &widths {
-                for &h in &heights {
-                    let size = NotchSize::from_px(w, h);
-                    let eyes = shape_sized(style, size, ShapeKind::Eyes);
-                    assert_eq!(eyes, pill, "the pill does not follow the notch size");
-                    let mut normals = Vec::new();
-                    for robot in [true, false] {
-                        for kind in [
-                            ShapeKind::Idle,
-                            ShapeKind::MediaCompact,
-                            ShapeKind::PomodoroCompact,
-                        ] {
-                            normals.push(shape_with_robot_sized(style, size, kind, robot));
-                        }
-                        for lyric_w in [LYRIC_MIN_W.max(size.w), 380.0, LYRIC_MAX_W] {
-                            normals.push(lyric_shape_sized(style, size, lyric_w));
-                        }
+            let marks = peek_face(look, 0).face_marks;
+            for style in [Style::Pill, Style::Notch] {
+                let pill = shape_sized(style, NotchSize::DEFAULT, ShapeKind::Eyes);
+                // The final pill takes the look's extremes as they are: the clamp
+                // is a guard, not a visible limit.
+                // The cat has no marks to fit, so only it keeps every extreme.
+                let kept = if marks.is_empty() { 6 } else { 0 };
+                for &(dx, dy) in &offsets[..kept] {
+                    assert_eq!(eyes_offset_in(style, pill, dx, dy, &marks), (dx, dy), "{style:?}");
+                    for blink in [false, true] {
+                        let boxes = eyes_boxes_at(eyes_centre(pill), dx, dy, blink, &marks);
+                        assert!(inside(style, pill, &boxes), "{style:?} ({dx}, {dy}) {blink}");
                     }
-                    for normal in normals {
-                        for step in 0..=10 {
-                            let s = lerp_shape(normal, eyes, step as f32 / 10.0);
-                            for &(dx, dy) in &offsets {
-                                let (ox, oy) = eyes_offset_in(style, s, dx, dy, &marks);
-                                // Never past what was asked, never the other way.
-                                assert!(ox.abs() <= dx.abs() && ox * dx >= 0.0, "{ox} {dx}");
-                                assert!(oy.abs() <= dy.abs() && oy * dy >= 0.0, "{oy} {dy}");
-                                for blink in [false, true] {
-                                    let boxes = eyes_boxes_at(eyes_centre(s), ox, oy, blink, &marks);
-                                    assert!(
-                                        inside(style, s, &boxes),
-                                        "{style:?} {size:?} t {step}/10 ({dx}, {dy}) -> ({ox}, {oy}) blink {blink} in {s:?}"
-                                    );
+                }
+                // Past the extremes the pill does cut the slide back (down
+                // first, then across what is left of the room).
+                let (cx, cy) = eyes_offset_in(style, pill, 20.0, 10.0, &marks);
+                assert!(cx >= 0.0 && cx < 20.0 && cy > 0.0 && cy < 10.0, "{style:?} {cx} {cy}");
+                if marks.is_empty() {
+                    assert!(cx > 0.0 && cy > ly, "{style:?} {cx} {cy}");
+                    assert!(eyes_offset_in(style, pill, 20.0, 0.0, &marks).0 > lx);
+                }
+                for &w in &widths {
+                    for &h in &heights {
+                        let size = NotchSize::from_px(w, h);
+                        let eyes = shape_sized(style, size, ShapeKind::Eyes);
+                        assert_eq!(eyes, pill, "the pill does not follow the notch size");
+                        let mut normals = Vec::new();
+                        for robot in [true, false] {
+                            for kind in [
+                                ShapeKind::Idle,
+                                ShapeKind::MediaCompact,
+                                ShapeKind::PomodoroCompact,
+                            ] {
+                                normals.push(shape_with_robot_sized(style, size, kind, robot));
+                            }
+                            for lyric_w in [LYRIC_MIN_W.max(size.w), 380.0, LYRIC_MAX_W] {
+                                normals.push(lyric_shape_sized(style, size, lyric_w));
+                            }
+                        }
+                        for normal in normals {
+                            for step in 0..=10 {
+                                let s = lerp_shape(normal, eyes, step as f32 / 10.0);
+                                for &(dx, dy) in &offsets {
+                                    let (ox, oy) = eyes_offset_in(style, s, dx, dy, &marks);
+                                    // Never past what was asked, never the other way.
+                                    assert!(ox.abs() <= dx.abs() && ox * dx >= 0.0, "{ox} {dx}");
+                                    assert!(oy.abs() <= dy.abs() && oy * dy >= 0.0, "{oy} {dy}");
+                                    for blink in [false, true] {
+                                        let boxes = eyes_boxes_at(eyes_centre(s), ox, oy, blink, &marks);
+                                        assert!(
+                                            inside(style, s, &boxes),
+                                            "{style:?} {size:?} t {step}/10 ({dx}, {dy}) -> ({ox}, {oy}) blink {blink} in {s:?}"
+                                        );
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
-        }
         }
     }
 

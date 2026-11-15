@@ -36,10 +36,10 @@ use windows::Win32::Graphics::Direct2D::{
 use windows::core::Result as WinResult;
 use windows_numerics::{Matrix3x2, Vector2};
 
-use super::cat_style::{CatLook, Placed, RIM_WIDTH, anchors};
-use super::mascot::MascotShape;
-use super::peek_face::{PeekMark, mark_boxes};
+use super::cat_style::{CatLook, Placed, RIM_WIDTH, anchors, solid};
 use super::geometry::{EYES_H, Rect, ShapeRect, shape_contains};
+use super::mascot::MascotShape;
+use super::peek_face::{BEAK_PATH, PeekFace, PeekMark, mark_boxes};
 use crate::config::Style;
 use crate::greeting::{self, DayPeriod, GreetMark};
 use crate::i18n::Key;
@@ -1309,11 +1309,12 @@ impl RobotPainter {
 }
 
 impl RobotPainter {
-    /// Only the two open eyes of the idle face, in the brand terracotta (the
-    /// espresso of the cat's own eyes would vanish on the dark notch), over a
-    /// square `area` as `eyes_area` gives; with `blink`, the cat's two short
-    /// level lines instead, in the same colour. The render target's transform
-    /// is restored; the brush colour is not.
+    /// Only the two open eyes of the idle face, in `face.eye` (the mascot's
+    /// dark, or the Black cat's amber), then `face.face_marks` (cheeks, beak),
+    /// over a square `area` as `eyes_area` gives; with `blink`, the cat's two
+    /// short level lines instead of the eyes, in the same colour. All share
+    /// one transform, so the marks slide with the eyes. The render target's
+    /// transform is restored; the brush colour is not.
     pub fn paint_eyes(
         &self,
         rt: &ID2D1RenderTarget,
@@ -1321,23 +1322,14 @@ impl RobotPainter {
         area: Rect,
         alpha: f32,
         blink: bool,
+        face: &PeekFace,
     ) {
         if area.w <= 0.0 {
             return;
         }
-        let k = area.w / GRID;
-        let ch = |s: u32| ((TERRACOTTA >> s) & 0xFF) as f32 / 255.0;
         unsafe {
-            let mut previous = Matrix3x2::default();
-            rt.GetTransform(&mut previous);
-            let local = Matrix3x2::scale(k, k) * Matrix3x2::translation(area.x, area.y);
-            rt.SetTransform(&(local * previous));
-            brush.SetColor(&D2D1_COLOR_F {
-                r: ch(16),
-                g: ch(8),
-                b: ch(0),
-                a: alpha,
-            });
+            let previous = self.enter_grid(rt, area);
+            brush.SetColor(&solid(face.eye, alpha));
             if blink {
                 let line = Line::Blink;
                 if let Some(g) = self.path(Shape::Line(line)) {
@@ -1361,7 +1353,75 @@ impl RobotPainter {
                     );
                 }
             }
+            self.fill_marks(rt, brush, alpha, &face.face_marks);
             rt.SetTransform(&previous);
+        }
+    }
+
+    /// `marks` (a face's coat marks) in the eyes' grid over `area`, with no
+    /// slide: they belong to the pill, not to the look. The render target's
+    /// transform is restored; the brush colour is not.
+    pub fn paint_peek_marks(
+        &self,
+        rt: &ID2D1RenderTarget,
+        brush: &ID2D1SolidColorBrush,
+        area: Rect,
+        alpha: f32,
+        marks: &[PeekMark],
+    ) {
+        if area.w <= 0.0 || marks.is_empty() {
+            return;
+        }
+        unsafe {
+            let previous = self.enter_grid(rt, area);
+            self.fill_marks(rt, brush, alpha, marks);
+            rt.SetTransform(&previous);
+        }
+    }
+
+    /// Sets the transform to the 64-unit grid over `area`; returns the one it
+    /// replaces.
+    unsafe fn enter_grid(&self, rt: &ID2D1RenderTarget, area: Rect) -> Matrix3x2 {
+        unsafe {
+            let k = area.w / GRID;
+            let mut previous = Matrix3x2::default();
+            rt.GetTransform(&mut previous);
+            let local = Matrix3x2::scale(k, k) * Matrix3x2::translation(area.x, area.y);
+            rt.SetTransform(&(local * previous));
+            previous
+        }
+    }
+
+    /// Fills `marks` in the current (grid) transform.
+    unsafe fn fill_marks(
+        &self,
+        rt: &ID2D1RenderTarget,
+        brush: &ID2D1SolidColorBrush,
+        alpha: f32,
+        marks: &[PeekMark],
+    ) {
+        unsafe {
+            for mark in marks {
+                match *mark {
+                    PeekMark::Dot { cx, cy, r, rgb } => {
+                        brush.SetColor(&solid(rgb, alpha));
+                        rt.FillEllipse(
+                            &D2D1_ELLIPSE {
+                                point: Vector2::new(cx, cy),
+                                radiusX: r,
+                                radiusY: r,
+                            },
+                            brush,
+                        );
+                    }
+                    PeekMark::Beak { rgb } => {
+                        if let Ok(g) = path(&self.factory, &BEAK_PATH) {
+                            brush.SetColor(&solid(rgb, alpha));
+                            rt.FillGeometry(&g, brush, None);
+                        }
+                    }
+                }
+            }
         }
     }
 }

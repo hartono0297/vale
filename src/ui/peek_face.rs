@@ -130,6 +130,7 @@ pub fn mark_boxes(marks: &[PeekMark]) -> Vec<(f32, f32, f32, f32)> {
 mod tests {
     use super::*;
     use crate::theme::{CatAccessory, OctopusColor};
+    use windows::Win32::Graphics::Direct2D::{ID2D1RenderTarget, ID2D1SolidColorBrush};
 
     const SURFACE: u32 = 0x151C2E;
 
@@ -211,5 +212,121 @@ mod tests {
         for (got, want) in [(l, 30.375), (t, 42.0), (r, 33.625), (b, 46.375)] {
             assert!((got - want).abs() < 0.5, "{got} {want}");
         }
+    }
+
+    use crate::ui::cat_style::solid;
+    use crate::ui::geometry::Rect;
+    use crate::ui::robot::RobotPainter;
+
+    /// 64 x 64 px on black, one px per grid unit, by Direct2D's software
+    /// rasterizer into a WIC bitmap (the pattern of the `mascot` tests): no
+    /// window. `paint` draws into the target; each pixel is `0xRRGGBB`.
+    fn render(paint: impl FnOnce(&RobotPainter, &ID2D1RenderTarget, &ID2D1SolidColorBrush)) -> Vec<u32> {
+        use windows::Win32::Graphics::Direct2D::Common::{
+            D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_PIXEL_FORMAT,
+        };
+        use windows::Win32::Graphics::Direct2D::{
+            D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_RENDER_TARGET_PROPERTIES,
+            D2D1_RENDER_TARGET_TYPE_SOFTWARE, D2D1CreateFactory, ID2D1Factory,
+        };
+        use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
+        use windows::Win32::Graphics::Imaging::{
+            CLSID_WICImagingFactory, GUID_WICPixelFormat32bppPBGRA, IWICImagingFactory,
+            WICBitmapCacheOnLoad,
+        };
+        use windows::Win32::System::Com::{
+            CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
+        };
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            let factory: ID2D1Factory =
+                D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None).expect("factory");
+            let painter = RobotPainter::new(&factory).expect("painter");
+            let wic: IWICImagingFactory =
+                CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)
+                    .expect("wic");
+            let bitmap = wic
+                .CreateBitmap(64, 64, &GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad)
+                .expect("bitmap");
+            let props = D2D1_RENDER_TARGET_PROPERTIES {
+                r#type: D2D1_RENDER_TARGET_TYPE_SOFTWARE,
+                pixelFormat: D2D1_PIXEL_FORMAT {
+                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                    alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                },
+                dpiX: 96.0,
+                dpiY: 96.0,
+                ..Default::default()
+            };
+            let rt = factory.CreateWicBitmapRenderTarget(&bitmap, &props).expect("target");
+            let brush = rt.CreateSolidColorBrush(&solid(0, 1.0), None).expect("brush");
+            rt.BeginDraw();
+            rt.Clear(Some(&solid(0x000000, 1.0)));
+            paint(&painter, &rt, &brush);
+            rt.EndDraw(None, None).expect("end draw");
+            let mut out = vec![0u8; 64 * 64 * 4];
+            bitmap.CopyPixels(std::ptr::null(), 64 * 4, &mut out).expect("pixels");
+            out.chunks(4)
+                .map(|p| (p[2] as u32) << 16 | (p[1] as u32) << 8 | p[0] as u32)
+                .collect()
+        }
+    }
+
+    fn px(img: &[u32], x: u32, y: u32) -> u32 {
+        img[(y * 64 + x) as usize]
+    }
+
+    #[track_caller]
+    fn assert_near(got: u32, want: u32) {
+        let off = [16, 8, 0]
+            .iter()
+            .map(|s| (((got >> s) & 0xFF) as i32 - ((want >> s) & 0xFF) as i32).abs())
+            .max()
+            .unwrap();
+        assert!(off <= 6, "got #{got:06X}, want #{want:06X}");
+    }
+
+    /// The eyes and face marks of `look` over the whole grid (k = 1).
+    fn eyes_of(look: CatLook, blink: bool) -> Vec<u32> {
+        let face = peek_face(look, SURFACE);
+        render(|painter, rt, brush| {
+            let area = Rect { x: 0.0, y: 0.0, w: 64.0, h: 64.0 };
+            painter.paint_eyes(rt, brush, area, 1.0, blink, &face);
+        })
+    }
+
+    fn falk(falk: FalkColor) -> CatLook {
+        CatLook { falk, ..look(Mascot::Falk) }
+    }
+
+    #[test]
+    fn the_shrunk_face_paints_each_mascot() {
+        let cat = |color| CatLook { color, ..look(Mascot::Cat) };
+        assert_near(px(&eyes_of(cat(CatColor::Terracotta), false), 24, 40), EYES_DARK);
+        assert_near(px(&eyes_of(cat(CatColor::Black), false), 24, 40), AMBER);
+
+        let lutino = eyes_of(falk(FalkColor::Lutino), false);
+        assert_near(px(&lutino, 24, 40), EYES_DARK);
+        assert_near(px(&lutino, 18, 44), 0xEC6B3A); // a cheek
+        assert_near(px(&lutino, 32, 44), 0xD9978F); // the beak
+        // Muka putih has no cheeks.
+        assert_near(px(&eyes_of(falk(FalkColor::WhiteFace), false), 18, 44), 0x000000);
+
+        // The blink is the two level lines in the eye colour, the eyes gone.
+        let blink = eyes_of(falk(FalkColor::Lutino), true);
+        assert_near(px(&blink, 24, 40), EYES_DARK);
+        assert_near(px(&blink, 24, 36), 0x000000);
+    }
+
+    #[test]
+    fn the_coat_marks_paint_in_place() {
+        let calico = CatLook { color: CatColor::Calico, ..look(Mascot::Cat) };
+        let face = peek_face(calico, SURFACE);
+        let img = render(|painter, rt, brush| {
+            let area = Rect { x: 0.0, y: 0.0, w: 64.0, h: 64.0 };
+            painter.paint_peek_marks(rt, brush, area, 1.0, &face.coat_marks);
+        });
+        assert_near(px(&img, 17, 35), PATCH_ORANGE);
+        assert_near(px(&img, 47, 45), PATCH_DARK);
     }
 }

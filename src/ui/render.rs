@@ -70,6 +70,7 @@ use super::geometry::{
 use super::icons::{Icon, IconSet};
 use super::motion::{StripFrame, Transit};
 use super::panel_layout::Region;
+use super::peek_face::peek_face;
 use super::play::shape::{Deform, outline, rigid, top_corners, turn_about};
 use super::play::state::{Beat, spread_offsets};
 use super::play::stories::{
@@ -79,7 +80,6 @@ use super::play::stories::{
 use super::robot::{
     Expr, EyesPose, GRID, Pose, RobotPainter, eyes_area, eyes_centre, eyes_offset_in,
 };
-use super::peek_face::peek_face;
 use super::shelf_motion::ShelfMotion;
 use super::window::IslandWindow;
 use crate::audio::MixerRow;
@@ -3127,11 +3127,13 @@ impl Renderer {
         }
     }
 
-    /// The cat's two open eyes alone, in the brand terracotta, centred on the
-    /// shrunk notch's place (its top, `geometry::EYES_H` tall, however far the morph has
-    /// come), fading in with `content_alpha`. They slide by `pose`'s look
-    /// (cut back so both stay inside `shape`, whatever stage of the morph it
-    /// is) and shut for its blink, as the cat's blink lines.
+    /// The chosen mascot's mini face on the shrunk notch's place (its top,
+    /// `geometry::EYES_H` tall, however far the morph has come), fading in
+    /// with `content_alpha`: the coat marks and the edge line fixed to the
+    /// island's outline (the current shape's, so they follow a morph that is
+    /// not over), then the eyes and the face marks sliding by `pose`'s look
+    /// (cut back so all of them stay inside `shape`) and shutting for its
+    /// blink, as the cat's blink lines.
     fn paint_eyes_pill(&self, style: Style, shape: ShapeRect, content_alpha: f32, pose: EyesPose) {
         let target = self.target.as_ref().expect("target ensured by paint");
         let alpha = content_alpha.clamp(0.0, 1.0);
@@ -3141,12 +3143,31 @@ impl Renderer {
                 D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
             );
         }
-        let marks = peek_face(self.cat.get(), self.palette.surface).face_marks;
-        let (dx, dy) = eyes_offset_in(style, shape, pose.dx_dip, pose.dy_dip, &marks);
+        let face = peek_face(self.cat.get(), self.palette.surface);
         let (cx, cy) = eyes_centre(shape);
+        if !face.coat_marks.is_empty() || face.edge.is_some() {
+            if let Ok(outline) = self.shape_geometry(style, shape) {
+                self.push_mask(&outline, 1.0);
+                self.robot.paint_peek_marks(
+                    &target.rt,
+                    &target.brush,
+                    eyes_area((cx, cy)),
+                    alpha,
+                    &face.coat_marks,
+                );
+                if let Some(edge) = face.edge {
+                    // Twice the line's width, half of it outside the mask:
+                    // exactly 1 dip is left inside.
+                    self.set_color(edge, alpha);
+                    unsafe { target.rt.DrawGeometry(&outline, &target.brush, 2.0, None) };
+                }
+                unsafe { target.rt.PopLayer() };
+            }
+        }
+        let (dx, dy) = eyes_offset_in(style, shape, pose.dx_dip, pose.dy_dip, &face.face_marks);
         let area = eyes_area((cx + dx, cy + dy));
         self.robot
-            .paint_eyes(&target.rt, &target.brush, area, alpha, pose.blink);
+            .paint_eyes(&target.rt, &target.brush, area, alpha, pose.blink, &face);
         unsafe { target.rt.PopAxisAlignedClip() };
     }
 
