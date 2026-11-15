@@ -16,10 +16,13 @@ plus a page that's comfortable on a laptop.
 ## Goals
 
 - A copy icon on the QR view's network card copies the full link, exactly what the QR
-  encodes (`Handle::url(token)`, `http://<addr>:<port>/s/<token>`), for the token and
+  encodes (`Runtime::url(token)`, `http://<addr>:<port>/s/<token>`, as carried by
+  `PhoneEvent::Ready.url` and `NewLink.url`), for the token and
   network mode that are live right now.
 - Feedback: the icon turns into a check for about 2 seconds, then back.
-- Step 1 gets a second line: "Atau salin link-nya ke laptop" / "Or copy the link to a laptop".
+- Step 1's subtitle becomes "Atau salin link-nya ke laptop" / "Or copy the link to a laptop",
+  replacing the camera hint ("iPhone: Kamera · Android: ..."), as in the approved mockup
+  (there is no room for a third line above step 2).
 - The phone page accepts files dragged from Explorer or Finder anywhere on the page and
   uploads them the same way as the file picker. While files are dragged over the page it
   shows "Lepas untuk kirim" / "Drop to send".
