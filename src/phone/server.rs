@@ -1289,6 +1289,15 @@ mod tests {
         assert!(PAGE.len() < 30 * 1024, "{} bytes", PAGE.len());
     }
 
+    /// A laptop can drop files anywhere on the page.
+    #[test]
+    fn the_page_takes_dropped_files() {
+        assert!(PAGE.contains("addEventListener(\"drop\""), "a drop handler");
+        assert!(PAGE.contains("addEventListener(\"dragover\""), "a dragover handler");
+        assert!(PAGE.contains("drop:\"Lepas untuk kirim\""), "the id text");
+        assert!(PAGE.contains("drop:\"Drop to send\""), "the en text");
+    }
+
     /// The keys of the language `lang` ("id" or "en") in the page's `S`
     /// object: every `name:` outside strings and arrays, between that
     /// language's `{` and its matching `}`.
