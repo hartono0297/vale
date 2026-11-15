@@ -14,17 +14,36 @@ pub struct Entry {
 }
 
 /// Newest first. Add the entry for a version before bumping it.
-pub static ENTRIES: &[Entry] = &[Entry {
-    version: "5.3.1",
-    id: &[
-        "Pindah ke PC lain: ekspor dan impor pengaturan di Pengaturan → Tentang.",
-        "Link HP bisa lewat Tailscale: pilih Wi-Fi atau Tailscale di tampilan QR.",
-    ],
-    en: &[
-        "Move to another PC: export and import your settings in Settings → About.",
-        "The phone link can run over Tailscale: pick Wi-Fi or Tailscale on the QR view.",
-    ],
-}];
+pub static ENTRIES: &[Entry] = &[
+    Entry {
+        version: "5.5.0",
+        id: &[
+            "Maskot kini memainkan cerita pendek di sekitar notch: sepuluh cerita untuk tiga maskot.",
+            "Klik kanan notch → Mainkan maskot. Seberapa sering: Pengaturan → Maskot.",
+            "Shelf: kartu gambar punya gambar kecil, klik kanan → Pratinjau gambar.",
+            "Clipboard: tombol Hapus semua mengosongkan riwayat, item yang di-pin tetap ada.",
+            "Klik kanan di notch tidak lagi menutup panel yang sedang terbuka.",
+        ],
+        en: &[
+            "The mascot now plays short stories around the notch: ten stories for three mascots.",
+            "Right-click the notch → Play the mascot. How often: Settings → Mascot.",
+            "Shelf: image cards show a small picture; right-click → Preview image.",
+            "Clipboard: a Clear all button empties the history; pinned items stay.",
+            "A right-click on the notch no longer closes the open panel.",
+        ],
+    },
+    Entry {
+        version: "5.3.1",
+        id: &[
+            "Pindah ke PC lain: ekspor dan impor pengaturan di Pengaturan → Tentang.",
+            "Link HP bisa lewat Tailscale: pilih Wi-Fi atau Tailscale di tampilan QR.",
+        ],
+        en: &[
+            "Move to another PC: export and import your settings in Settings → About.",
+            "The phone link can run over Tailscale: pick Wi-Fi or Tailscale on the QR view.",
+        ],
+    },
+];
 
 pub fn points(entry: &Entry, lang: Lang) -> &'static [&'static str] {
     match lang {
