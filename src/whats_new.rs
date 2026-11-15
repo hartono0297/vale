@@ -16,6 +16,17 @@ pub struct Entry {
 /// Newest first. Add the entry for a version before bumping it.
 pub static ENTRIES: &[Entry] = &[
     Entry {
+        version: "5.5.1",
+        id: &[
+            "Cerita maskot tidak berhenti lagi saat mouse digeser, hanya saat notch diklik.",
+            "Mengecil jadi mata kini memakai wajah maskot pilihanmu: kucing, falk, atau gurita.",
+        ],
+        en: &[
+            "Mascot stories no longer stop when the mouse moves, only when you click the notch.",
+            "Shrink to eyes now shows the face of the mascot you picked: cat, cockatiel or octopus.",
+        ],
+    },
+    Entry {
         version: "5.5.0",
         id: &[
             "Maskot kini memainkan cerita pendek di sekitar notch: sepuluh cerita untuk tiga maskot.",
