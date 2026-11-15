@@ -15,8 +15,9 @@ Gerak, on by default): off, `peek_eligible` is false (through
 `pointer_watch::peek_allowed(notch_peek, stay_behind)`), a shrunk notch comes
 back at once and the poll may stop ([[bata-idle-power-budget]]). The row does
 not depend on the cat (the eyes show with the cat off) and is faded, with a
-note, while "Di belakang jendela" is on. The eyes pill stays terracotta
-whatever the cat's coat ([[cat-colours-and-surfaces]]). Related:
+note, while "Di belakang jendela" is on. Since 2026-11-15 the pill shows the
+chosen mascot's mini face, coloured per coat ([[peek-mascot-face]]); until
+then it was terracotta cat eyes for every mascot. Related:
 [[stay-behind]] (the other way out of the way, which turns this off),
 [[notch-monitor]] (the notch's monitor, which the zone and the poll follow),
 [[bata-idle-power-budget]] (the shared poll), [[bata-robot-expressions]] (the
@@ -115,9 +116,9 @@ there to drop on. A notch already shrunk stays so.
   `eye_pills()`, scaled 0.8 so they are 8 dip tall, centred on the pill). No
   clock, art, timer or head. Drawn even with the cat off. The equalizer timer
   is off while shrunk. The eyes look and blink since v3.11 (next section).
-- Colour: the brand terracotta #E2683C (assumption: the espresso #17120F of the
-  cat's own eyes would be invisible on the dark notch). The blink's two level
-  lines and the open pills are both terracotta, whatever the coat.
+- Colour: until 2026-11-15 the brand terracotta #E2683C on the dark fill.
+  Now the fill turns into the mascot's face colour with the morph and the
+  eyes, blink lines and marks follow the coat ([[peek-mascot-face]]).
 
 ## The eyes look and blink
 

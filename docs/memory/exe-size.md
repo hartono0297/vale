@@ -446,6 +446,14 @@ right-click item, the strings): the exe size was not measured. The release build
 crate and no new `windows` feature were added (WIC was already enabled); the demo
 scenes are debug-only and not in the release exe.
 
+## Mascot face in the shrunk notch (2026-11-15)
+
+[[peek-mascot-face]]: `cargo build --release --locked` at c30d178 in the
+`.claude/worktrees/mata-maskot` worktree gave 4,934,144 bytes against
+4,930,048 for `main` at ee01688 in the main checkout (+4,096, about +4 KiB;
+the folder name lengths differ, so up to 512 bytes of that is the PDB path).
+No new crate or `windows` feature.
+
 ## Shipped release sizes
 
 The `vale.exe` asset of each GitHub release (built by the release workflow,

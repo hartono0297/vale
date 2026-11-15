@@ -95,8 +95,9 @@ The Auto swatch keeps its cat icon (follow-up).
 
 ## Stays the cat
 
-Logo, exe icon, tray, notch-peek eyes, landing page and the sticky-note peek
-(`widgets/paint.rs::peek_look`).
+Logo, exe icon, tray, landing page and the sticky-note peek
+(`widgets/paint.rs::peek_look`). The notch-peek eyes follow the mascot since
+2026-11-15 ([[peek-mascot-face]]).
 
 ## Demo
 
