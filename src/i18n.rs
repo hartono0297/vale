@@ -551,8 +551,7 @@ keys! {
     ShelfPreviewLoading => "Memuat\u{2026}", "Loading\u{2026}";
     PhoneStarting => "Mencari jaringan\u{2026}", "Finding the network\u{2026}";
     PhoneStep1 => "Scan pakai kamera HP", "Scan with the phone's camera";
-    PhoneStep1Sub => "iPhone: Kamera \u{b7} Android: Kamera / Google Lens",
-        "iPhone: Camera \u{b7} Android: Camera / Google Lens";
+    PhoneStep1Sub => "Atau salin link-nya ke laptop", "Or copy the link to a laptop";
     PhoneStep2 => "Kirim atau ambil berkas di HP", "Send or take files on the phone";
     PhoneStep2Sub => "Semua berkas di rak ikut tampil", "Every shelf file shows there";
     PhoneNetPrivate => "pribadi", "private";
@@ -1570,6 +1569,8 @@ keys! {
     TipBack => "Kembali", "Back";
     TipPhoneShowQr => "Tampilkan kode QR", "Show the QR code";
     TipPhoneShowQrAbout => "Pindai dengan HP untuk tersambung.", "Scan it with a phone to connect.";
+    TipPhoneCopyLink => "Salin link", "Copy link";
+    TipPhoneCopyLinkAbout => "Buka di browser laptop.", "Open it in a laptop's browser.";
     TipArrangePlay => "Terapkan", "Apply";
     TipArrangePlayAbout => "Jendela yang cocok pindah ke tempat yang disimpan.", "Matching windows move to the saved places.";
     TipRecPause => "Jeda rekaman", "Pause recording";
@@ -2205,12 +2206,18 @@ pub fn phone_valid_for(lang: Lang, secs: u64) -> String {
 /// The network line of the QR view: "Rumah-5G \u{b7} pribadi", or
 /// "Kenzie_5G \u{b7} publik" on a Public network.
 pub fn phone_network(lang: Lang, name: &str, trust: crate::phone::net::Trust) -> String {
+    format!("{name}{}", phone_network_suffix(lang, trust))
+}
+
+/// The part of the network line after the name: " · pribadi", " · public".
+/// Drawn apart when the name is too long, so the name is what gets trimmed.
+pub fn phone_network_suffix(lang: Lang, trust: crate::phone::net::Trust) -> String {
     use crate::phone::net::Trust;
     let word = match trust {
         Trust::Private => Key::PhoneNetPrivate,
         Trust::Public => Key::PhoneNetPublic,
     };
-    format!("{name} \u{b7} {}", text(lang, word))
+    format!(" \u{b7} {}", text(lang, word))
 }
 
 /// Step 2's sub line once a phone joined: "Tersambung: Android",
@@ -3454,6 +3461,12 @@ pub fn duration_label(lang: Lang, minutes: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn step_one_offers_the_copied_link() {
+        assert_eq!(text(Lang::Id, Key::PhoneStep1Sub), "Atau salin link-nya ke laptop");
+        assert_eq!(text(Lang::En, Key::PhoneStep1Sub), "Or copy the link to a laptop");
+    }
 
     #[test]
     fn the_sticky_list_labels_count_and_badge() {

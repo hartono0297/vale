@@ -2249,6 +2249,11 @@ impl IslandState {
                     effects.push(Effect::PhoneNet(net));
                 }
             }
+            Hit::PhoneCopyLink => {
+                if self.phone_shown() == Some(PhoneStage::Qr) {
+                    effects.push(Effect::PhoneCopyLink);
+                }
+            }
             Hit::PhoneShowQr => {
                 if self.phone_shown() == Some(PhoneStage::Receiving) {
                     self.phone = Some(PhoneStage::Qr);
@@ -10418,6 +10423,7 @@ mod tests {
             Hit::PhoneShowQr,
             Hit::PhoneCancel,
             Hit::PhoneDone,
+            Hit::PhoneCopyLink,
         ];
         let effects = |s: &mut IslandState, stage: PhoneStage| {
             let mut out = Vec::new();
@@ -10431,12 +10437,14 @@ mod tests {
         let qr = effects(&mut s, PhoneStage::Qr);
         assert_eq!(qr[0], vec![Effect::PhoneBack]);
         assert_eq!(qr[1], vec![Effect::PhoneNewQr]);
-        assert!(qr[2..].iter().all(Vec::is_empty));
+        assert_eq!(qr[5], vec![Effect::PhoneCopyLink]);
+        assert!(qr[2..5].iter().all(Vec::is_empty));
         let recv = effects(&mut s, PhoneStage::Receiving);
         assert_eq!(recv[0], vec![Effect::PhoneBack]);
         assert_eq!(recv[3], vec![Effect::PhoneCancel]);
         assert_eq!(recv[4], vec![Effect::PhoneStop]);
         assert!(recv[1].is_empty());
+        assert!(recv[5].is_empty(), "the copy icon is the QR view's only");
         // The small QR button flips the receiving view to the code.
         s.apply(Event::PhoneAttention(PhoneStage::Receiving), t0);
         assert!(s.apply(Event::Click(Hit::PhoneShowQr), t0).is_empty());
@@ -10464,7 +10472,13 @@ mod tests {
         s.apply(Event::PhoneAttention(PhoneStage::Receiving), t0);
         // Another page is open: the stage is kept but not on screen.
         open_on(&mut s, Page::Notes, t0);
-        for hit in [Hit::PhoneNewQr, Hit::PhoneBack, Hit::PhoneDone, Hit::ShelfPhone] {
+        for hit in [
+            Hit::PhoneNewQr,
+            Hit::PhoneBack,
+            Hit::PhoneDone,
+            Hit::PhoneCopyLink,
+            Hit::ShelfPhone,
+        ] {
             assert!(s.apply(Event::Click(hit), t0).is_empty());
         }
         // And with the panel shut.

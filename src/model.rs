@@ -815,6 +815,8 @@ pub enum Hit {
     PhoneNewQr,
     /// The Wi-Fi | Tailscale switch of the QR view: the segment picked.
     PhoneNet(PhoneNet),
+    /// The copy icon on the QR view's network card.
+    PhoneCopyLink,
     PhoneShowQr,
     PhoneCancel,
     PhoneDone,
@@ -1047,6 +1049,8 @@ pub enum Effect {
     PhoneNewQr,
     /// Run the phone link on this network (saved, and the session restarts).
     PhoneNet(PhoneNet),
+    /// Put the phone link on the clipboard.
+    PhoneCopyLink,
     PhoneCancel,
     PhoneStop,
     PhoneBack,

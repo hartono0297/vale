@@ -2754,6 +2754,7 @@ impl App {
             Effect::PhoneStart => return self.phone_pill(),
             Effect::PhoneNewQr => self.phone_new_qr(),
             Effect::PhoneNet(n) => self.phone_switch(n),
+            Effect::PhoneCopyLink => self.phone_copy_link(Instant::now()),
             Effect::PhoneCancel => self.phone_cancel(),
             Effect::PhoneStop => self.phone_stop(crate::phone::EndReason::Done),
             Effect::PhoneBack => self.phone_back(),

@@ -32,7 +32,8 @@
 //!   every card changes place). Made-up names only.
 //! - The phone link over the shelf (made-up data, no network, no server):
 //!   `phone-qr` (the QR code of an invented link, with the cat and the
-//!   countdown), `phone-qr-joined` (the same with a phone in: step 2 reads
+//!   countdown), `phone-qr-copied` (the same just after the copy icon was
+//!   used: a check instead), `phone-qr-joined` (the same with a phone in: step 2 reads
 //!   "Tersambung: Android"), `phone-qr-expired` (dimmed, with "Buat QR
 //!   baru"), `phone-public` (the QR view on a Public network: "publik" on
 //!   the network line and the warning in the hint box), `phone-nolan` (the
@@ -369,6 +370,8 @@ enum PhoneDemo {
     No,
     /// The QR code of a made-up link, with its clock.
     Qr,
+    /// The same just after the copy icon was used: a check instead.
+    QrCopied,
     /// The same, run out: dimmed, with "Buat QR baru".
     QrExpired,
     /// The same with a phone in: step 2 says who is connected.
@@ -1580,7 +1583,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 245] = [
+const SCENES: [Scene; 246] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -1929,6 +1932,10 @@ const SCENES: [Scene; 245] = [
     Scene {
         phone: PhoneDemo::Qr,
         ..panel("phone-qr", Page::Shelf)
+    },
+    Scene {
+        phone: PhoneDemo::QrCopied,
+        ..panel("phone-qr-copied", Page::Shelf)
     },
     Scene {
         phone: PhoneDemo::QrJoined,
@@ -5673,6 +5680,7 @@ impl DemoPhone {
         let stage = match self.mode {
             PhoneDemo::No => return None,
             PhoneDemo::Qr
+            | PhoneDemo::QrCopied
             | PhoneDemo::QrJoined
             | PhoneDemo::QrExpired
             | PhoneDemo::Public
@@ -5692,6 +5700,7 @@ impl DemoPhone {
                 public: false,
                 joined: "",
                 tailnet: true,
+                copied: false,
             }),
             PhoneDemo::Public => QrView::Code(CodeView {
                 qr: &self.qr,
@@ -5701,6 +5710,7 @@ impl DemoPhone {
                 public: true,
                 joined: "",
                 tailnet: false,
+                copied: false,
             }),
             _ => QrView::Code(CodeView {
                 qr: &self.qr,
@@ -5714,6 +5724,7 @@ impl DemoPhone {
                     ""
                 },
                 tailnet: false,
+                copied: self.mode == PhoneDemo::QrCopied,
             }),
         };
         Some(PhoneView {

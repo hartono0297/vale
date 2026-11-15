@@ -37,6 +37,8 @@ pub struct CodeView<'a> {
     /// The session listens on the Tailscale address: the network line names
     /// the tailnet and the hint says the phone needs Tailscale too.
     pub tailnet: bool,
+    /// The link was just copied: the copy icon shows a check.
+    pub copied: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -95,6 +97,11 @@ impl PhoneView<'_> {
     pub fn code_dead(&self) -> bool {
         matches!(self.qr, QrView::Code(c) if c.remaining.is_none())
     }
+
+    /// The QR view shows a good code: the one case where its link can be copied.
+    pub fn code_live(&self) -> bool {
+        matches!(self.qr, QrView::Code(c) if c.remaining.is_some())
+    }
 }
 
 /// The modules of `qr` as runs along each row: `(row, first column, length)`,
@@ -151,6 +158,7 @@ mod tests {
                 public: false,
                 joined: "",
                 tailnet: false,
+                copied: false,
             }),
             recv: RecvView {
                 rows: &[],
@@ -163,5 +171,12 @@ mod tests {
         };
         assert!(!view(Some(5)).code_dead());
         assert!(view(None).code_dead());
+        assert!(view(Some(5)).code_live());
+        assert!(!view(None).code_live());
+        let starting = PhoneView {
+            qr: QrView::Starting,
+            ..view(Some(5))
+        };
+        assert!(!starting.code_live() && !starting.code_dead());
     }
 }
