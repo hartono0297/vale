@@ -135,6 +135,7 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[config-parse-default-fallback]]: `config::parse` gives `Config::default()` when one non-lenient field is bad; build configs from outside data key by key and finish with `try_parse`
 - [[tray-dark-menu]]: the tray menu follows the Windows app mode via uxtheme ordinals 135/136/104 (AllowDark), not Vale's window theme
 - [[native-menu-holds-panel]]: the tray menu and the Notes card menu are modal native popups; they must run inside `hold_panel_over_app` (`MenuOpen`) or the hover panel collapses under them
+- [[play-ends-on-notch-press]]: a running mascot story ends only on a press on the idle notch (Hover modes: the press opens the panel); no hover dwell or notch peek during it; gotcha: "input without a cursor move" is not a key (sub-pixel and edge-pinned mice); `pointer_near` is the top 150 dip of the whole monitor, start-only (2026-11-15)
 - [[play-click-through]]: a playing island passes clicks with `WS_EX_TRANSPARENT` (HTTRANSPARENT only reaches the same thread), derived from the play slot at one place so it cannot stick
 - [[test-tmp-leak]]: a full `cargo test` leaves ~513 MB in `target/test-tmp`; delete it after a run; the `app::record` missing-drive test fails on a PC with a Z: drive
 

@@ -30,10 +30,13 @@ hook; serve it over http, a `file:` page loses the hash). Spec
   (a clock story) and after a greeting. Right-click → "Mainkan maskot" plays
   one any time the island could show it (it closes an open panel first with
   `Event::PanelShut`, then waits for the morph via `pending: Option<Moment>`).
-- **Ends**: pointer near the island, any mouse button, a key or a hotkey
-  (mouse movement alone does not), a gate flipping; always eased home over
-  200 ms (`WIND_DOWN`), instantly only when motion is not wanted or the
-  mascot changes.
+- **Ends**: only a press on the idle island (`play_press`, from the
+  island's own `WM_L/R/MBUTTONDOWN`) or a permanent gate flipping (a panel or
+  notice by any path, fullscreen, recording, lock, Energy Saver, the shape or
+  mascot changing, the clock jumping). Since 2026-11-15 the pointer, keys,
+  the wheel and clicks elsewhere never end it ([[play-ends-on-notch-press]]).
+  Always eased home over 200 ms (`WIND_DOWN`), instantly only when motion is
+  not wanted or the mascot changes.
 - **Layers** (the mockup's `compose`, one `PAINT_ORDER`): Back (clipped to
   window minus the played island, even-odd, before the fill), the fill, Dark
   (clipped to the island), Inside (loose), the clock, Wrap (island ∩ rect),

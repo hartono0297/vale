@@ -15,6 +15,7 @@ on the island.
 The flag is derived from the play slot at one place, after the slot is
 dropped (`advance_slot` in `app.rs`), so it cannot stay on after a play ends;
 off the idle view (a panel or notice arrived mid-wind-down) it is always off.
-A stuck flag would make the island unclickable. Mouse buttons are read with
-`GetAsyncKeyState` because a transparent window gets no button messages. See
-[[mascot-play]].
+A stuck flag would make the island unclickable. The press that ends a story
+is the island's own button message: the window is not transparent while the
+cursor is on the island, so it gets them there (2026-11-15, no more
+`GetAsyncKeyState` polling). See [[mascot-play]], [[play-ends-on-notch-press]].
