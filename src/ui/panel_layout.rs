@@ -3289,6 +3289,8 @@ const PHONE_HEAD_H: f32 = 26.0;
 /// The title's width where something follows it closely: "Connect a phone"
 /// in JetBrains Mono is 180 px.
 const PHONE_TITLE_W: f32 = 190.0;
+/// The header chip (QR countdown, receiving view's device count): "99 perangkat"
+/// in JetBrains Mono needs it.
 const PHONE_CHIP_W: f32 = 108.0;
 /// The net switch: 22 dip high like the cleaner's mode segment, two items of
 /// one width inside a 2 dip inset.
