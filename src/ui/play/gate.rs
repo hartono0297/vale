@@ -86,15 +86,11 @@ pub fn may_start(
 }
 
 /// Whether a running play has to end. It winds down unless `instant_stop`.
-pub fn must_stop(
-    env: &Env,
-    playing: Story,
-    moment: Moment,
-    shape_changed: bool,
-    clock_jumped: bool,
-) -> bool {
+/// The transient gates (the pointer, the eyes, the menu) bind only the
+/// start: once a story runs, only a press on the island (`App`) or a
+/// permanent gate ends it.
+pub fn must_stop(env: &Env, playing: Story, shape_changed: bool, clock_jumped: bool) -> bool {
     !permanent_ok(env)
-        || (moment != Moment::Manual && !transient_ok(env))
         || shape_changed
         || clock_jumped
         || (playing.needs_clock() && !env.clock_on)
@@ -145,7 +141,7 @@ mod tests {
         let (input, last) = (Duration::from_secs(60), Duration::from_secs(3600));
         for moment in [Moment::Idle, Moment::Hour, Moment::Greeting, Moment::Manual] {
             assert!(!may_start(&env, moment, MascotPlay::Sesekali, input, last), "{moment:?}");
-            assert!(must_stop(&env, Story::MalingAngka, moment, false, false), "{moment:?}");
+            assert!(must_stop(&env, Story::MalingAngka, false, false), "{moment:?}");
         }
         assert!(!instant_stop(&env), "it eases home");
     }
@@ -212,17 +208,16 @@ mod tests {
         env.menu_open = true;
         assert!(may_start(&env, Moment::Manual, MascotPlay::Mati, Duration::ZERO, Duration::ZERO));
         assert!(
-            !must_stop(&env, Story::MalingAngka, Moment::Manual, false, false),
+            !must_stop(&env, Story::MalingAngka, false, false),
             "may_start and must_stop disagree about the same env"
         );
-        assert!(must_stop(&env, Story::MalingAngka, Moment::Idle, false, false));
     }
 
     #[test]
     fn for_a_manual_play_must_stop_agrees_with_may_start_on_every_gate() {
         for (name, env) in off_by_one_envs() {
             let start = may_start(&env, Moment::Manual, MascotPlay::Sesekali, Duration::ZERO, Duration::ZERO);
-            assert_eq!(must_stop(&env, Story::Kelelawar, Moment::Manual, false, false), !start, "{name}");
+            assert_eq!(must_stop(&env, Story::Kelelawar, false, false), !start, "{name}");
         }
     }
 
@@ -276,23 +271,34 @@ mod tests {
     }
 
     #[test]
-    fn a_running_play_stops_on_use_a_shape_change_or_a_clock_jump() {
+    fn a_running_play_stops_on_a_shape_change_or_a_clock_jump() {
         let mut env = ok_env();
         env.pointer_near = true;
-        assert!(must_stop(&env, Story::MalingAngka, Moment::Idle, false, false), "the pointer entered the hover zone");
-        assert!(must_stop(&ok_env(), Story::MalingAngka, Moment::Idle, true, false), "the size or style changed");
-        assert!(must_stop(&ok_env(), Story::MalingAngka, Moment::Idle, false, true), "the clock jumped");
+        assert!(!must_stop(&env, Story::MalingAngka, false, false), "the pointer near the top edge does not stop it");
+        assert!(must_stop(&ok_env(), Story::MalingAngka, true, false), "the size or style changed");
+        assert!(must_stop(&ok_env(), Story::MalingAngka, false, true), "the clock jumped");
         let mut no_clock = ok_env();
         no_clock.clock_on = false;
-        assert!(must_stop(&no_clock, Story::MalingAngka, Moment::Idle, false, false), "a clock story with the clock off");
-        assert!(!must_stop(&no_clock, Story::Kelelawar, Moment::Idle, false, false), "a story that needs no clock carries on");
-        assert!(!must_stop(&ok_env(), Story::MalingAngka, Moment::Idle, false, false), "nothing wrong");
+        assert!(must_stop(&no_clock, Story::MalingAngka, false, false), "a clock story with the clock off");
+        assert!(!must_stop(&no_clock, Story::Kelelawar, false, false), "a story that needs no clock carries on");
+        assert!(!must_stop(&ok_env(), Story::MalingAngka, false, false), "nothing wrong");
     }
 
     #[test]
-    fn every_gate_but_the_clock_stops_a_running_play() {
+    fn every_permanent_gate_stops_a_running_play() {
         for (name, env) in off_by_one_envs() {
-            assert!(must_stop(&env, Story::Kelelawar, Moment::Idle, false, false), "{name} did not stop it");
+            assert_eq!(must_stop(&env, Story::Kelelawar, false, false), !TRANSIENT.contains(&name), "{name}");
+        }
+    }
+
+    #[test]
+    fn the_pointer_the_eyes_and_the_menu_never_stop_a_running_play() {
+        let mut env = ok_env();
+        env.pointer_near = true;
+        env.shrunk = true;
+        env.menu_open = true;
+        for story in crate::ui::play::trigger::ALL {
+            assert!(!must_stop(&env, story, false, false), "{story:?}");
         }
     }
 
