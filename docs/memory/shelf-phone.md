@@ -1,5 +1,5 @@
 ---
-tags: [decision, shelf, phone, network, security, power, download, range, thumbnail, v3.18, simplified, v3.19, tailscale]
+tags: [decision, shelf, phone, network, security, power, download, range, thumbnail, v3.18, simplified, v3.19, tailscale, copy-link]
 date: 2026-11-04
 ---
 
@@ -469,3 +469,52 @@ both fonts), the loopback e2e `ready_says_which_network_the_session_is_on`, the 
 scenes by eye in DM Sans and JetBrains Mono.
 
 Related: [[exe-size]], [[bata-idle-power-budget]], [[shelf]].
+
+## Copy link and drop (2026-11-15)
+
+Owner's request: "bisa ga bikin user bisa copy url, jadi bisa antar laptop, ga cuma antar hp".
+Spec `docs/superpowers/specs/2026-11-15-phone-copy-link-design.md`, plan
+`docs/superpowers/plans/2026-11-15-phone-copy-link.md`. Session rules unchanged.
+
+- **The server never cared phone vs laptop**: any private peer (Wi-Fi) or tailnet peer
+  (Tailscale) with a valid token joins. The only gap was getting the URL out.
+- **Copy icon** (owner picked it from three mockups: icon on the card, labelled button,
+  button under the QR): `PhoneQrLayout.copy`, a 38 dip square at the right end of the
+  network card, `Some` only for a live counting code (not Starting, warning, dead);
+  `Hit::PhoneCopyLink` → `Effect::PhoneCopyLink` (QR stage only); tooltip "Salin link".
+  The text box is `phone_net_text` (net.w - 72), shared by painter and fit test; a long
+  SSID trims the name and keeps the " · publik" suffix.
+- **The URL is cached, not read from the Handle**: `app_phone::Ready.url` (from
+  `PhoneEvent::Ready.url`), and `PhoneState::link_renewed` is the only way the app side
+  changes the token (moves qr, made, url together, clears the check). A new
+  `new_token()` call site must go through it or the copy goes stale.
+- **Renew before copy:** with under 60 s left (`RENEW_BEFORE_COPY`) the copy first renews
+  the token like "Buat QR baru", because a pasted link is opened much later than a scan
+  and an expired token is a bare 404 on the laptop. `new_token()` failing copies nothing.
+- **Clipboard:** plain CF_UNICODETEXT through `app_search::text_formats`, `own_sequence`
+  recorded (Vale's history skips it), no notice. Owner chose to let Win+V and Windows
+  "Sync across devices" keep it (the sync is a free way to get the link onto his other
+  PC); the token dies after 5 minutes. Check icon for `COPIED_FOR` 2 s, turned back by
+  the existing 1 s `TIMER_PHONE` redraw (shows 2-3 s); no new timer.
+- **Step 1's subtitle** is now "Atau salin link-nya ke laptop" (no room for a third line;
+  the camera hint is gone, as in the approved mockup).
+- **Page drag and drop:** document-level `dragenter/dragover/dragleave/drop`, only for
+  drags whose types contain "Files"; `preventDefault` always (the browser must never
+  open the dropped file), overlay "Lepas untuk kirim" (fixed, `pointer-events:none`,
+  on `body` because `show()` clears `#app`) only while `state==="approved"`; folders
+  skipped via `webkitGetAsEntry`; a drop on the "Dari laptop" tab switches to the send
+  tab so the queue shows. No save hint on a desktop browser (`!IOS && !AND`).
+- Demo scene `phone-qr-copied`.
+
+**Left as is (parked):** a laptop still shows as "HP" in "Tersambung: HP" and "Menerima
+dari HP" (`ua.rs` has no desktop kind); Safari may flicker the drop overlay
+(`dragleave` with a null `relatedTarget`, self-heals on the next `dragover`); the page
+test for the drop is string-level, the behaviour was checked with synthetic events in
+a browser pane.
+
+**Not verified live:** a real laptop opening the copied link over Wi-Fi and over
+Tailscale, sending by a real OS drag and taking a file; Win+V and cloud sync carrying
+the link; a drop straight onto the pick box (expect one upload, not two); a long SSID
+on a Public network on the real notch. Run: `cargo test --locked`, demo scenes
+`phone-qr` and `phone-qr-copied` by eye (DM Sans), synthetic drops in the browser pane
+against `--phone-debug`.
