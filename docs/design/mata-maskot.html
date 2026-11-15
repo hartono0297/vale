@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mata maskot</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&display=swap" rel="stylesheet">
+<style>
+  /* Same cream paper and DM Sans as Vale's other design sheets (maskot-pilihan-akhir.html),
+     so this page reads as one of the set. The notch pieces sit on the app's real surfaces. */
+  :root {
+    --paper: #F4EDE4; --card: #FFFBF5; --ink: #231C18; --ink-2: #5E5045;
+    --line: #D9CBBB; --edge: #8C7B6C; --pick: #A8451F; --bar: #DCD3C8;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--paper); color: var(--ink); font: 16px/1.5 "DM Sans", system-ui, sans-serif; }
+  main { max-width: 1120px; margin: 0 auto; padding: 32px 16px 80px; }
+  h1 { font-size: 34px; line-height: 1.15; margin: 0 0 8px; letter-spacing: -0.01em; }
+  h2 { font-size: 22px; margin: 44px 0 4px; }
+  p { margin: 0 0 12px; max-width: 72ch; }
+  .lead { color: var(--ink-2); font-size: 17px; }
+  .muted { color: var(--ink-2); }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  button:focus-visible { outline: 3px solid var(--ink); outline-offset: 3px; }
+
+  .bar { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-end; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin-top: 20px; }
+  .bar .g { display: flex; flex-direction: column; gap: 6px; }
+  .bar .l { font-size: 13px; font-weight: 500; color: var(--ink-2); }
+  .seg { display: flex; gap: 6px; flex-wrap: wrap; }
+  .seg button { border: 1px solid var(--edge); background: var(--card); border-radius: 8px; padding: 6px 12px; min-height: 36px; font-size: 14px; }
+  .seg button[aria-pressed="true"] { border-color: var(--pick); background: #F6E2D6; color: #7A2E10; font-weight: 500; }
+
+  .opt { display: grid; grid-template-columns: 240px 1fr; gap: 20px; align-items: start; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line); }
+  .opt:first-of-type { border-top: 0; }
+  .opt .tag { font-weight: 700; font-size: 18px; }
+  .opt .why { font-size: 14px; color: var(--ink-2); margin-top: 4px; }
+  .row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+  .cell { display: flex; flex-direction: column; gap: 6px; }
+  .zoom { background: var(--bar); border-radius: 10px; display: grid; place-items: center; padding: 14px 8px; min-height: 120px; }
+  .zoom svg { width: 100%; max-width: 238px; height: auto; display: block; }
+  /* real size: a title-bar strip at 2x (a 200% screen), the pill hanging from its top edge */
+  .real { background: var(--bar); border-radius: 8px; height: 44px; position: relative; overflow: hidden; }
+  .real svg { position: absolute; top: 0; left: 50%; transform: translateX(-50%); width: 68px; height: 28px; }
+  .real .tab { position: absolute; bottom: 6px; height: 22px; width: 38%; background: #EFE8DF; border-radius: 6px 6px 0 0; }
+  .cap { font-size: 13px; font-weight: 500; }
+  .cap span { font-weight: 400; color: var(--ink-2); }
+
+  @media (max-width: 760px) {
+    .opt { grid-template-columns: 1fr; gap: 10px; }
+    .row { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Mata yang muncul pas notch mengecil</h1>
+  <p class="lead">Sekarang ketiga maskot dapet mata kucing yang sama, warna terracotta. Di bawah ada tiga cara biar falk dan gurita kelihatan kayak dirinya sendiri. Kotak besar diperbesar 7x, strip abu-abu di bawahnya ukuran aslinya di layar 200%. Pilih huruf A, B atau C di chat.</p>
+
+  <div class="bar">
+    <div class="g"><span class="l">Warna falk</span><div class="seg" id="falkSeg"></div></div>
+    <div class="g"><span class="l">Warna gurita</span><div class="seg" id="octSeg"></div></div>
+    <div class="g"><span class="l">Kedip dan lirik</span><div class="seg"><button type="button" id="motion" aria-pressed="true">Jalan</button></div></div>
+  </div>
+
+  <section id="opts"></section>
+
+  <h2>Yang sama di semua pilihan</h2>
+  <p class="muted">Ukuran pill tetap 34 x 14 dip, kedip 3 sampai 6 detik dan lirik ke kursor tetap jalan, tidak ada timer baru. Jambul falk tidak bisa nongol di atas: pill nempel di tepi atas layar. Kucing tetap seperti sekarang di A dan B.</p>
+
+  <h2>C di semua warna</h2>
+  <p class="muted">Pilihan C buat tiap warna bulu, di atas jendela terang dan gelap, ukuran asli di layar 200% lalu diperbesar 4x. Warna pucat (kucing putih, calico, falk muka putih) dapet garis tepi tipis warna notch-nya supaya tidak lebur di jendela putih. Kucing hitam pakai mata amber dan garis ungu seperti kucing hitam di notch.</p>
+  <div id="allCoats"></div>
+</main>
+
+<script>
+(() => {
+  const D = '#17120F', TERRA = '#E2683C';
+  const SURF = { Espresso: '#17120F', Graphite: '#221B17', Sea: '#132321', Night: '#151C2E', Plum: '#2A2140' };
+  const FALK = {
+    lutino: { label: 'Lutino', surf: 'Espresso', face: '#F6D04A', crest: '#F6D04A', cheek: '#EC6B3A' },
+    grey:   { label: 'Abu-abu', surf: 'Night', face: '#F2D35A', crest: '#E9CF62', cheek: '#EC6B3A' },
+    white:  { label: 'Muka putih', surf: 'Plum', face: '#F4EFE6', crest: '#E4DED6', cheek: null },
+  };
+  const OCT = {
+    coral:  { label: 'Koral', surf: 'Espresso', col: '#E87C8E' },
+    red:    { label: 'Merah', surf: 'Graphite', col: '#D9505F' },
+    purple: { label: 'Ungu', surf: 'Night', col: '#A98BD6' },
+    blue:   { label: 'Biru laut', surf: 'Sea', col: '#5FA8C9' },
+  };
+  const BEAK = '#D9978F';
+  const state = { falk: 'lutino', oct: 'coral', moving: !window.matchMedia('(prefers-reduced-motion: reduce)').matches };
+
+  // The pill in dip: 34 x 14, eyes 4.48 x 8 at x = 17 -+ 6.4 (the app's eye_pills() at 0.8).
+  const W = 34, H = 14, CX = 17, CY = 7, EX = 6.4;
+  const pillPath = `<rect x="0" y="0" width="${W}" height="${H}" rx="7"/>`;
+  const eye = (x, c) => `<rect x="${x - 2.24}" y="${CY - 4}" width="4.48" height="8" rx="2.24" fill="${c}"/>`;
+  const shut = (x, c) => `<path d="M${x - 2.72} ${CY + 0.64}h5.44" stroke="${c}" stroke-width="1.92" stroke-linecap="round"/>`;
+  const eyes = c => `<g class="open">${eye(CX - EX, c)}${eye(CX + EX, c)}</g><g class="shut">${shut(CX - EX, c)}${shut(CX + EX, c)}</g>`;
+  const cheeks = c => c ? `<circle cx="${CX - 10.6}" cy="10.2" r="1.9" fill="${c}"/><circle cx="${CX + 10.6}" cy="10.2" r="1.9" fill="${c}"/>` : '';
+  const beak = `<path d="M${CX - 1.3} 9.4Q${CX} 8.6 ${CX + 1.3} 9.4Q${CX + 1.2} 11.4 ${CX} 12.1Q${CX - 1.2} 11.4 ${CX - 1.3} 9.4Z" fill="${BEAK}"/>`;
+  // a small curled arm tip beside each eye, turned outward
+  const curls = c => {
+    const one = s => `<path d="M${CX + s * 9.2} 6.2q${s * 1.9} 0.4 ${s * 1.9} 2.6q0 2 ${-s * 1.6} 2q${-s * 1.2} -0.2 ${-s * 0.9} -1.3" fill="none" stroke="${c}" stroke-width="1.3" stroke-linecap="round"/>`;
+    return one(-1) + one(1);
+  };
+  const spot = c => `<circle cx="${CX + 9.8}" cy="4.2" r="1.3" fill="${c}"/><circle cx="${CX - 10.4}" cy="3.6" r="0.9" fill="${c}"/>`;
+  const shade = (hex, t) => '#' + [1, 3, 5].map(i => Math.round(parseInt(hex.slice(i, i + 2), 16) * (1 - t)).toString(16).padStart(2, '0')).join('');
+
+  // One pill: fill, the face that slides with the look (clipped to the pill like the app's clamp).
+  function pill(fill, face, label) {
+    const id = 'p' + Math.random().toString(36).slice(2, 8);
+    return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${label}"><defs><clipPath id="${id}">${pillPath}</clipPath></defs>` +
+      `<rect x="0" y="0" width="${W}" height="${H}" rx="7" fill="${fill}"/>` +
+      `<g clip-path="url(#${id})"><g class="face">${face}</g></g></svg>`;
+  }
+
+  const MASCOTS = [
+    { key: 'cat', name: 'Kucing', coat: () => 'Terracotta', surf: () => SURF.Espresso },
+    { key: 'falk', name: 'Falk', coat: () => FALK[state.falk].label, surf: () => SURF[FALK[state.falk].surf] },
+    { key: 'oct', name: 'Gurita', coat: () => OCT[state.oct].label, surf: () => SURF[OCT[state.oct].surf] },
+  ];
+
+  const OPTIONS = [
+    { tag: 'Sekarang', why: 'Mata kucing terracotta buat semua maskot.',
+      draw: m => pill(m.surf(), eyes(TERRA), `${m.name}: mata terracotta`) },
+    { tag: 'A. Warnanya ikut maskot', why: 'Bentuk mata sama, warnanya diambil dari maskot: falk dari jambulnya, gurita dari badannya. Perubahan paling kecil.',
+      draw: m => {
+        if (m.key === 'cat') return pill(m.surf(), eyes(TERRA), 'Kucing: mata terracotta');
+        if (m.key === 'falk') return pill(m.surf(), eyes(FALK[state.falk].crest), 'Falk: mata warna jambul');
+        return pill(m.surf(), eyes(OCT[state.oct].col), 'Gurita: mata warna badan');
+      } },
+    { tag: 'B. Warna plus satu ciri', why: 'Seperti A, ditambah ciri kecil yang ikut melirik: falk dapet pipi oranye dan paruh, gurita dapet ujung tentakel melingkar. Liriknya sedikit lebih pendek supaya ciri tidak kepotong.',
+      draw: m => {
+        if (m.key === 'cat') return pill(m.surf(), eyes(TERRA), 'Kucing: mata terracotta');
+        if (m.key === 'falk') { const k = FALK[state.falk]; return pill(m.surf(), eyes(k.crest) + cheeks(k.cheek) + beak, 'Falk: mata, pipi dan paruh'); }
+        const c = OCT[state.oct].col; return pill(m.surf(), curls(c) + eyes(c), 'Gurita: mata dan ujung tentakel');
+      } },
+    { tag: 'C. Wajah mini', why: 'Pill-nya diwarnai seperti muka maskot, mata gelap seperti di maskot aslinya. Paling gampang dikenali, tapi lebih mencolok di atas tab browser. Kucing ikut berubah jadi pill terracotta.',
+      draw: m => {
+        if (m.key === 'cat') return pill(TERRA, eyes(D), 'Kucing: muka terracotta, mata gelap');
+        if (m.key === 'falk') { const k = FALK[state.falk]; return pill(k.face, eyes(D) + cheeks(k.cheek) + beak, 'Falk: muka kuning, pipi, paruh'); }
+        const c = OCT[state.oct].col; return pill(c, spot(shade(c, 0.18)) + eyes(D), 'Gurita: muka warna badan, bintik');
+      } },
+  ];
+
+  const host = document.getElementById('opts');
+  function render() {
+    host.innerHTML = OPTIONS.map(o => `<div class="opt"><div><div class="tag">${o.tag}</div><div class="why">${o.why}</div></div><div class="row">` +
+      MASCOTS.map(m => `<div class="cell"><div class="zoom">${o.draw(m)}</div>` +
+        `<div class="real"><div class="tab" style="left:4%"></div><div class="tab" style="left:46%;background:#E6DED3"></div>${o.draw(m)}</div>` +
+        `<div class="cap">${m.name} <span>${m.coat()}</span></div></div>`).join('') + `</div></div>`).join('');
+  }
+
+  function seg(id, table, key) {
+    const el = document.getElementById(id);
+    el.innerHTML = Object.entries(table).map(([k, v]) => `<button type="button" data-k="${k}" aria-pressed="${k === state[key]}">${v.label}</button>`).join('');
+    el.addEventListener('click', e => {
+      const b = e.target.closest('button'); if (!b) return;
+      state[key] = b.dataset.k;
+      el.querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+      render();
+    });
+  }
+  // ---- C for every coat ----
+  const CAT = {
+    terracotta: { label: 'Terracotta', face: '#E2683C', eye: D, edge: null },
+    calico:     { label: 'Calico', face: '#F4EDE4', eye: D, edge: SURF.Sea, calico: true },
+    white:      { label: 'Putih', face: '#F6F1EA', eye: D, edge: SURF.Night },
+    black:      { label: 'Hitam', face: '#1E1B22', eye: '#F2B33D', edge: '#8E7CB8' },
+  };
+  function pillC(fill, face, edge, label) {
+    const id = 'q' + Math.random().toString(36).slice(2, 8);
+    const rim = edge ? `<rect x="0.5" y="0.5" width="${W - 1}" height="${H - 1}" rx="6.5" fill="none" stroke="${edge}" stroke-width="1"/>` : '';
+    return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${label}"><defs><clipPath id="${id}">${pillPath}</clipPath></defs>` +
+      `<rect x="0" y="0" width="${W}" height="${H}" rx="7" fill="${fill}"/>` +
+      `<g clip-path="url(#${id})"><g class="face">${face}</g></g>${rim}</svg>`;
+  }
+  const calicoPatches = `<circle cx="5.5" cy="3" r="3.4" fill="#E2683C"/><circle cx="29.5" cy="11.5" r="3" fill="#2B2420"/>`;
+  const all = [
+    ...Object.values(CAT).map(c => ({ n: 'Kucing ' + c.label, svg: () => pillC(c.face, (c.calico ? calicoPatches : '') + eyes(c.eye), c.edge, 'Kucing ' + c.label) })),
+    ...Object.values(FALK).map(k => ({ n: 'Falk ' + k.label, svg: () => pillC(k.face, eyes(D) + cheeks(k.cheek) + beak, k.cheek ? null : SURF[k.surf], 'Falk ' + k.label) })),
+    ...Object.values(OCT).map(o => ({ n: 'Gurita ' + o.label, svg: () => pillC(o.col, spot(shade(o.col, 0.18)) + eyes(D), null, 'Gurita ' + o.label) })),
+  ];
+  const strip = (bg, tab, s) => `<div style="background:${bg};border-radius:8px;height:44px;position:relative;overflow:hidden"><div style="position:absolute;bottom:6px;left:6%;width:40%;height:22px;border-radius:6px 6px 0 0;background:${tab}"></div><div style="position:absolute;top:0;left:50%;transform:translateX(-50%);width:68px;height:28px">${s.replace('<svg ', '<svg style="width:68px;height:28px;display:block" ')}</div></div>`;
+  document.getElementById('allCoats').innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:14px;margin-top:12px">` +
+    all.map(a => `<div class="cell"><div style="background:var(--bar);border-radius:10px;padding:10px;display:grid;place-items:center">${a.svg().replace('<svg ', '<svg style="width:136px;height:56px;display:block" ')}</div>` +
+      strip('#F3F3F3', '#FFFFFF', a.svg()) + strip('#202020', '#2C2C2C', a.svg()) + `<div class="cap">${a.n}</div></div>`).join('') + `</div>`;
+
+  seg('falkSeg', FALK, 'falk');
+  seg('octSeg', OCT, 'oct');
+  render();
+
+  // Blink and look like the app: open 3-6 s, shut 120 ms; the look eases sideways (+-4 dip).
+  const mBtn = document.getElementById('motion');
+  const syncBtn = () => { mBtn.setAttribute('aria-pressed', String(state.moving)); mBtn.textContent = state.moving ? 'Jalan' : 'Jeda'; };
+  syncBtn();
+  mBtn.addEventListener('click', () => { state.moving = !state.moving; syncBtn(); if (!state.moving) pose(0, false); });
+  function pose(dx, blink) {
+    document.querySelectorAll('.face').forEach(f => { f.style.transform = `translateX(${dx}px)`; });
+    document.querySelectorAll('.open').forEach(g => { g.style.display = blink ? 'none' : ''; });
+    document.querySelectorAll('.shut').forEach(g => { g.style.display = blink ? '' : 'none'; });
+  }
+  const style = document.createElement('style');
+  style.textContent = '.face{transition:transform 360ms cubic-bezier(.4,0,.2,1)}.shut{display:none}';
+  document.head.appendChild(style);
+  const looks = [0, -3, -3, 0, 3, 3, 0];
+  let i = 0, dx = 0;
+  setInterval(() => { if (!state.moving) return; dx = looks[i++ % looks.length]; pose(dx, false); }, 1400);
+  (function blinkLoop() {
+    setTimeout(() => {
+      if (state.moving) { pose(dx, true); setTimeout(() => pose(dx, false), 120); }
+      blinkLoop();
+    }, 3000 + Math.random() * 3000);
+  })();
+})();
+</script>
+</body>
+</html>
