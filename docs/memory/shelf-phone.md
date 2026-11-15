@@ -12,7 +12,8 @@ v3.18 (phase 1 and 2) and are kept for the reasons behind the code that remains.
 The shelf's **HP** pill opens a link: a phone on the same Wi-Fi scans a QR code,
 opens a page the island serves, ~~the owner allows it on the notch (a four digit
 code on both screens)~~ (superseded: it joins at once), and the phone's files land in
-`Downloads\Vale` and on the [[shelf]] as cards tagged "dari HP". Phase 2 (shelf files
+`Downloads\Vale` and on the [[shelf]] as cards tagged "dari HP" ("masuk" since
+2026-11-15, see "Naming a laptop" at the end). Phase 2 (shelf files
 to the phone, below; since v3.19 all of them) added routes in `server.rs::route`, a
 second tab on the page and a notch view. The agreed mockup is `docs/design/rak-hp.html`
 (never committed).
@@ -34,7 +35,8 @@ second tab on the page and a notch view. The agreed mockup is `docs/design/rak-h
   (`Qr`, `Receiving`; superseded: it had `Approval` and `Send` too) and the hits, like
   the cleaner over System.
 - English words are short on purpose (the Pill's title and the shelf tag are
-  tight): "From phone" (not "Receiving from phone"), "phone" on the card tag,
+  tight): "From phone" (not "Receiving from phone"), "phone" on the card tag
+  (since 2026-11-15 "Receiving" and "received", both measured in Mono),
   "Finding the network...". `every_phone_string_holds_its_box_in_both_fonts` in
   `render_panel.rs` measures every phone string in the box the painter uses
   (the layouts and `phone_chip_text`) in both fonts, both styles and both
@@ -506,8 +508,7 @@ Spec `docs/superpowers/specs/2026-11-15-phone-copy-link-design.md`, plan
   tab so the queue shows. No save hint on a desktop browser (`!IOS && !AND`).
 - Demo scene `phone-qr-copied`.
 
-**Left as is (parked):** a laptop still shows as "HP" in "Tersambung: HP" and "Menerima
-dari HP" (`ua.rs` has no desktop kind); Safari may flicker the drop overlay
+**Left as is (parked):** Safari may flicker the drop overlay
 (`dragleave` with a null `relatedTarget`, self-heals on the next `dragover`); the page
 test for the drop is string-level, the behaviour was checked with synthetic events in
 a browser pane.
@@ -518,3 +519,27 @@ the link; a drop straight onto the pick box (expect one upload, not two); a long
 on a Public network on the real notch. Run: `cargo test --locked`, demo scenes
 `phone-qr` and `phone-qr-copied` by eye (DM Sans), synthetic drops in the browser pane
 against `--phone-debug`.
+
+## Naming a laptop (2026-11-15)
+
+Follow-up to the copy link: a laptop that joined was called "HP". Spec
+`docs/superpowers/specs/2026-11-15-phone-laptop-name-design.md`.
+
+- `ua::parse` order: iPhone/iPod, iPad, Android, then **Laptop** for "Windows NT",
+  "CrOS", "X11" or "Linux" (Android also says "Linux", so it is checked first), else
+  **Other**. Macintosh stays Other on purpose: iPadOS Safari sends "Macintosh" by
+  default, so "Mac" or "Laptop" would misname an iPad.
+- Words: Laptop "Laptop"; Other "perangkat" / "device" (was "HP" / "Phone"); several
+  devices "n HP" / "n phones" only when all are Android, iPhone or iPad, else
+  "n perangkat" / "n devices".
+- Neutral words because the tag cannot know who sent a file: receiving title
+  "Menerima berkas" / "Receiving", card tag "masuk" / "received". The shelf pill stays
+  "HP"; QR steps, page texts and "Kirim ke HP" unchanged.
+- `PHONE_CHIP_W` 96 → 108 dip: "99 perangkat" in JetBrains Mono is 75.6 px; the QR
+  view's countdown chip shares the width (still a wide gap to the switch).
+- Known miss: Chrome on Android in "desktop site" mode sends `X11; Linux x86_64` without
+  "Android" and is named "Laptop".
+
+**Not verified live:** a real laptop joining ("Tersambung: Laptop"), a phone plus a
+laptop ("2 perangkat"), the "masuk" tag next to a one-line name. Run: `cargo test
+--locked` (parser cases, wording, fit tests in both fonts).
