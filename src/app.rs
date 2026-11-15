@@ -2498,6 +2498,9 @@ impl App {
         if matches!(self.state.view(), View::Panel(_)) {
             self.apply_now(Event::PanelShut);
         }
+        // The eyes grow back first: the story plays round the whole island,
+        // and a press on it must not land on the eyes.
+        self.restore_peek();
         self.play_when_settled(Moment::Manual, Instant::now());
     }
 
@@ -2546,20 +2549,12 @@ impl App {
         if self.play.is_none() {
             return;
         }
-        // The one pointer reading of this frame feeds the click-through test
-        // and, without the pointer poll, `near`. Neither ends the play: only
-        // a press on the island does (`end_play_on_press`), or a gate.
+        // The one pointer reading of this frame feeds the click-through test.
+        // The pointer never ends a play: a press on the island does
+        // (`end_play_on_press`), or a permanent gate.
         let mut pt = POINT::default();
         let cursor = unsafe { GetCursorPos(&mut pt) }.is_ok().then_some(pt);
-        let near = if self.pointer_ms != 0 {
-            self.pointer_near
-        } else {
-            self.near_top_at(cursor)
-        };
-        let env = Env {
-            pointer_near: near,
-            ..self.play_env(now, false)
-        };
+        let env = self.play_env(now, false);
         let shape = play_shape_of(self.config.style, self.notch_size(), self.config.mascot);
         let jumped = std::mem::take(&mut self.play_clock_jumped);
         // Off the idle view (a panel or a notice came up) the island is not
@@ -2569,6 +2564,8 @@ impl App {
         if let Some(story) = out.finished {
             self.last_story = Some(story);
             self.last_play_at = Some(now);
+            // The notch peek may run again: its poll restarts if it stopped.
+            self.sync_pointer_watch(now);
         }
         if let Some(win) = self.win.as_mut() {
             win.set_click_through(out.click_through);
@@ -6535,7 +6532,10 @@ impl App {
     /// A mouse press on the island window during a story: it ends the story
     /// when it is on the island (`play_press`).
     fn end_play_on_press(&mut self, lparam: LPARAM, left: bool) -> PlayPress {
-        let press = play_press(self.play.is_some(), self.on_island(lparam), left, self.config.open_mode);
+        // Only the idle island the story plays round: a panel or notice that
+        // came up during the wind-down keeps its own clicks.
+        let on_island = self.state.view() == View::Idle && self.on_island(lparam);
+        let press = play_press(self.play.is_some(), on_island, left, self.config.open_mode);
         if press != PlayPress::Ignore
             && let Some(active) = self.play.as_mut()
         {
