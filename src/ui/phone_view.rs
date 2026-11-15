@@ -97,6 +97,11 @@ impl PhoneView<'_> {
     pub fn code_dead(&self) -> bool {
         matches!(self.qr, QrView::Code(c) if c.remaining.is_none())
     }
+
+    /// The QR view shows a good code: the one case where its link can be copied.
+    pub fn code_live(&self) -> bool {
+        matches!(self.qr, QrView::Code(c) if c.remaining.is_some())
+    }
 }
 
 /// The modules of `qr` as runs along each row: `(row, first column, length)`,
@@ -166,5 +171,12 @@ mod tests {
         };
         assert!(!view(Some(5)).code_dead());
         assert!(view(None).code_dead());
+        assert!(view(Some(5)).code_live());
+        assert!(!view(None).code_live());
+        let starting = PhoneView {
+            qr: QrView::Starting,
+            ..view(Some(5))
+        };
+        assert!(!starting.code_live() && !starting.code_dead());
     }
 }

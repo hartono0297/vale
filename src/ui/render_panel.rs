@@ -92,6 +92,14 @@ use crate::ui::shelf_motion::Drawn;
 #[path = "render_arrange.rs"]
 pub(super) mod arrange_paint;
 
+/// The network card's first line as drawn: the name (trimmed to its box) and,
+/// when the whole line is too wide, the suffix apart at the end.
+struct NetLine {
+    name: String,
+    name_box: Rect,
+    suffix: Option<(String, Rect)>,
+}
+
 /// A Rekam row's transcript button (`.act` in docs/design/rekam-b.html):
 /// its fill (none: the surface shows), a 1 dip inner border, the label's
 /// colour, the alpha all of it is drawn at, and for a running transcript how
@@ -4058,6 +4066,28 @@ impl Renderer {
         self.paint_segment(seg, items, on, keys, alpha);
     }
 
+    /// The network card's first line in `line1`: "name · publik" whole when
+    /// it fits, else the name takes what the suffix leaves (and is trimmed
+    /// with an ellipsis) and the suffix is drawn whole at the end, so a long
+    /// network name never costs the "public" warning.
+    fn phone_net_line(
+        &self,
+        lang: Lang,
+        name: &str,
+        trust: crate::phone::net::Trust,
+        line1: Rect,
+    ) -> NetLine {
+        let whole = i18n::phone_network(lang, name, trust);
+        if self.text_width(&whole, &self.fonts.eleven) <= line1.w {
+            return NetLine { name: whole, name_box: line1, suffix: None };
+        }
+        let suffix = i18n::phone_network_suffix(lang, trust);
+        let sw = self.text_width(&suffix, &self.fonts.eleven).ceil();
+        let name_box = Rect { w: (line1.w - sw).max(0.0), ..line1 };
+        let at = Rect { x: line1.right() - sw, w: sw, ..line1 };
+        NetLine { name: name.to_owned(), name_box, suffix: Some((suffix, at)) }
+    }
+
     /// A pill button: the accent one (Selesai) or a quiet one.
     fn paint_phone_button(&self, r: Rect, label: &str, accent: bool) {
         let p = self.palette;
@@ -4163,17 +4193,21 @@ impl Renderer {
                 let trust = if c.public { Trust::Public } else { Trust::Private };
                 // On the tailnet the line says just that: the private or
                 // public word belongs to a Wi-Fi.
-                let name = if c.tailnet {
-                    text(lang, Key::PhoneNetTailscale).to_owned()
-                } else {
-                    i18n::phone_network(lang, c.network, trust)
-                };
                 let line1 = Rect {
                     y: l.net.y + 5.0,
                     h: 14.0,
                     ..text_box
                 };
-                self.text_colored(&name, &self.fonts.eleven, line1, p.text, 1.0);
+                if c.tailnet {
+                    let name = text(lang, Key::PhoneNetTailscale);
+                    self.text_colored(name, &self.fonts.eleven, line1, p.text, 1.0);
+                } else {
+                    let net = self.phone_net_line(lang, c.network, trust, line1);
+                    self.text_colored(&net.name, &self.fonts.eleven, net.name_box, p.text, 1.0);
+                    if let Some((suffix, at)) = &net.suffix {
+                        self.text_colored(suffix, &self.fonts.eleven, *at, p.text, 1.0);
+                    }
+                }
                 let line2 = Rect {
                     y: l.net.y + 20.0,
                     ..line1
@@ -7102,7 +7136,7 @@ mod tests {
             for style in [Style::Pill, Style::Notch] {
                 let s = shape_for(style, ShapeKind::Panel);
                 for strip in [false, true] {
-                    let qr = phone_qr_layout(s, strip, true);
+                    let qr = phone_qr_layout(s, strip, true, false);
                     let warn = phone_warn_layout(s, strip);
                     let recv = phone_recv_layout(s, strip, 3);
                     let row = recv.rows.first().expect("one row");
@@ -7178,7 +7212,7 @@ mod tests {
                         }
                         // The network card's two lines, in the box the copy icon
                         // leaves them (the live code's layout).
-                        let live = phone_qr_layout(s, strip, false);
+                        let live = phone_qr_layout(s, strip, false, true);
                         let net_text = phone_net_text(&live);
                         let line1 = Rect { y: live.net.y + 5.0, h: 14.0, ..net_text };
                         let line2 = Rect { y: live.net.y + 20.0, h: 14.0, ..net_text };
@@ -7188,6 +7222,31 @@ mod tests {
                             ("Kenzie_5G", Trust::Public),
                         ] {
                             add(&i18n::phone_network(lang, name, trust), "eleven", line1);
+                        }
+                        // A long name is trimmed; the suffix stays whole.
+                        for (trust, long) in [
+                            (Trust::Private, "Kenzie_Rumah_Lantai2_5G_Extender_Belakang_Atas_Dua_Zona_Satu"),
+                            (Trust::Public, "Kenzie_Rumah_Lantai2_5G_Extender_Belakang_Atas_Dua_Zona_Satu"),
+                            (Trust::Public, "Kenzie_Rumah_Lantai2_5G"),
+                        ] {
+                            let whole = i18n::phone_network(lang, long, trust);
+                            let overflows = r.text_width(&whole, &r.fonts.eleven) > line1.w;
+                            assert!(overflows || long.len() < 30, "the long name overflows: {} vs {} ({ui:?} {style:?} {lang:?})", r.text_width(&whole, &r.fonts.eleven), line1.w);
+                            let net = r.phone_net_line(lang, long, trust, line1);
+                            if !overflows {
+                                assert!(net.suffix.is_none());
+                                continue;
+                            }
+                            let (suffix, at) = net.suffix.clone().expect("a suffix apart");
+                            assert_eq!(suffix, i18n::phone_network_suffix(lang, trust));
+                            assert!(net.name_box.right() <= at.x, "name and suffix do not overlap");
+                            assert!(at.right() <= line1.right() + 0.01);
+                            if let Err(why) = ink_check(&r, &suffix, &r.fonts.eleven, at) {
+                                cut.push(format!("{ui:?} {style:?} strip={strip} {lang:?}: {why}"));
+                            }
+                            assert!(net.name_box.w > 0.0, "the name keeps some room");
+                            let short = r.phone_net_line(lang, "Rumah-5G", trust, line1);
+                            assert!(short.suffix.is_none(), "a short name stays one string");
                         }
                         add("192.168.100.200:47390", "mono_small", line2);
                         // The warning card.

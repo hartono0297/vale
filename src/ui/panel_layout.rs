@@ -3305,7 +3305,11 @@ const PHONE_ROW_H: f32 = 40.0;
 const PHONE_ROW_GAP: f32 = 6.0;
 
 /// The QR view in `s`.
-pub fn phone_qr_layout(s: ShapeRect, strip: bool, expired: bool) -> PhoneQrLayout {
+///
+/// `expired`: the code is dead (the "Buat QR baru" button shows). `live`: a
+/// good code is on screen (the copy icon shows); neither holds while the
+/// network is still being looked at.
+pub fn phone_qr_layout(s: ShapeRect, strip: bool, expired: bool, live: bool) -> PhoneQrLayout {
     let (top, back, _) = phone_head(s, strip);
     let (seg, seg_items) = phone_seg(top, back);
     let (l, r) = (left(s), right(s));
@@ -3349,7 +3353,7 @@ pub fn phone_qr_layout(s: ShapeRect, strip: bool, expired: bool) -> PhoneQrLayou
         renew,
         steps: [step(0.0), step(1.0)],
         net,
-        copy: (!expired).then(|| rect(net.right() - 38.0, net.y, 38.0, 38.0)),
+        copy: live.then(|| rect(net.right() - 38.0, net.y, 38.0, 38.0)),
         hint,
         foot,
     }
@@ -3527,7 +3531,7 @@ pub fn phone_page_layout(s: ShapeRect, strip: bool, v: &PhoneView) -> PageLayout
         PhoneStage::Qr => match v.qr {
             QrView::Warning(..) => PageLayout::PhoneWarn(phone_warn_layout(s, strip)),
             QrView::Code(_) | QrView::Starting => {
-                PageLayout::PhoneQr(phone_qr_layout(s, strip, v.code_dead()))
+                PageLayout::PhoneQr(phone_qr_layout(s, strip, v.code_dead(), v.code_live()))
             }
         },
         PhoneStage::Receiving => {
@@ -5405,9 +5409,13 @@ mod tests {
         for expired in [false, true] {
             out.push((
                 format!("phone qr expired={expired}"),
-                PageLayout::PhoneQr(phone_qr_layout(s, strip, expired)),
+                PageLayout::PhoneQr(phone_qr_layout(s, strip, expired, !expired)),
             ));
         }
+        out.push((
+            "phone qr starting".into(),
+            PageLayout::PhoneQr(phone_qr_layout(s, strip, false, false)),
+        ));
         out.push((
             "phone warning".into(),
             PageLayout::PhoneWarn(phone_warn_layout(s, strip)),
@@ -7582,20 +7590,24 @@ mod tests {
             let s = panel(style);
             for strip in [false, true] {
                 let top = content_top(s, strip);
-                let q = phone_qr_layout(s, strip, false);
+                let q = phone_qr_layout(s, strip, false, true);
                 assert!(q.renew.is_none());
                 let copy = q.copy.expect("the copy icon shows on a live code");
                 assert!(copy.x >= q.net.x && copy.right() <= q.net.right());
                 assert!(copy.y >= q.net.y && copy.bottom() <= q.net.bottom());
                 assert_eq!(copy.h, q.net.h);
                 assert!(phone_net_text(&q).right() <= copy.x);
-                assert!(phone_qr_layout(s, strip, true).copy.is_none());
+                assert!(phone_qr_layout(s, strip, true, false).copy.is_none());
+                assert!(
+                    phone_qr_layout(s, strip, false, false).copy.is_none(),
+                    "no copy icon while the network is being looked at"
+                );
                 assert_eq!(q.chip.right(), header_right(s));
                 assert_eq!(q.qr.w, PHONE_QR);
                 assert!(q.qr.y >= top + PHONE_HEAD_H && q.qr.bottom() <= q.foot.y);
                 assert!(q.hint.bottom() <= q.foot.y, "the hint clears the footer");
                 assert!(q.net.bottom() <= q.hint.y && q.steps[1].sub.bottom() <= q.net.y);
-                let dead = phone_qr_layout(s, strip, true);
+                let dead = phone_qr_layout(s, strip, true, false);
                 let renew = dead.renew.expect("the button shows on a dead code");
                 assert!(renew.x >= dead.qr.x && renew.right() <= dead.qr.right());
                 assert!(renew.y >= dead.qr.y && renew.bottom() <= dead.qr.bottom());
@@ -7637,7 +7649,7 @@ mod tests {
                     ]
                 );
                 assert_eq!(
-                    hits(PageLayout::PhoneQr(phone_qr_layout(s, strip, false))),
+                    hits(PageLayout::PhoneQr(phone_qr_layout(s, strip, false, true))),
                     [
                         Hit::PhoneBack,
                         Hit::PhoneNet(PhoneNet::Wifi),
@@ -7646,7 +7658,7 @@ mod tests {
                     ]
                 );
                 assert_eq!(
-                    hits(PageLayout::PhoneQr(phone_qr_layout(s, strip, true))),
+                    hits(PageLayout::PhoneQr(phone_qr_layout(s, strip, true, false))),
                     [
                         Hit::PhoneBack,
                         Hit::PhoneNet(PhoneNet::Wifi),
@@ -7705,11 +7717,52 @@ mod tests {
     }
 
     #[test]
+    fn the_copy_hit_exists_only_over_a_live_code() {
+        use crate::config::PhoneNet;
+        use crate::model::PhoneStage;
+        use crate::ui::phone_view::{CodeView, QrView, RecvView};
+        let qr = crate::phone::qr::make("http://10.0.0.2:47390/s/x").expect("qr");
+        fn view(q: QrView<'_>) -> PhoneView<'_> {
+            PhoneView {
+                stage: PhoneStage::Qr,
+                qr: q,
+                recv: RecvView { rows: &[], chip: "", files: 0, bytes: 0 },
+                net: PhoneNet::Wifi,
+                switch_live: true,
+            }
+        }
+        let code = |remaining| {
+            QrView::Code(CodeView {
+                qr: &qr,
+                network: "n",
+                addr: "a",
+                remaining,
+                public: false,
+                joined: "",
+                tailnet: false,
+                copied: false,
+            })
+        };
+        let copy_of = |v: PhoneView<'_>, s, strip| match phone_page_layout(s, strip, &v) {
+            PageLayout::PhoneQr(q) => q.copy,
+            other => panic!("not the QR view: {other:?}"),
+        };
+        for style in [Style::Pill, Style::Notch] {
+            let s = panel(style);
+            for strip in [false, true] {
+                assert!(copy_of(view(QrView::Starting), s, strip).is_none());
+                assert!(copy_of(view(code(None)), s, strip).is_none());
+                assert!(copy_of(view(code(Some(120))), s, strip).is_some());
+            }
+        }
+    }
+
+    #[test]
     fn the_net_switch_sits_between_back_and_chip() {
         for style in [Style::Pill, Style::Notch] {
             let s = panel(style);
             for strip in [false, true] {
-                let q = phone_qr_layout(s, strip, false);
+                let q = phone_qr_layout(s, strip, false, true);
                 assert!(q.seg.x >= q.back.right() + 8.0);
                 assert!(q.seg.right() <= q.chip.x - 8.0);
                 assert!(q.seg_items[0].right() <= q.seg_items[1].x);

@@ -94,6 +94,7 @@ pub fn has_tip(hit: &Hit) -> bool {
             | Hit::PhoneBack
             | Hit::ShelfPreviewBack
             | Hit::PhoneShowQr
+            | Hit::PhoneCopyLink
             | Hit::ArrangePlay(_)
             | Hit::RecPause
             | Hit::RecMute(_)
@@ -229,6 +230,7 @@ pub fn tip_for(hit: &Hit, ctx: &TipCtx) -> Option<Tip> {
         Hit::SearchBack => Tip::named(Key::TipBack).key(KeyHint::Raw("Esc")),
         Hit::PhoneBack | Hit::ShelfPreviewBack => Tip::named(Key::TipBack),
         Hit::PhoneShowQr => Tip::named(Key::TipPhoneShowQr).about(Key::TipPhoneShowQrAbout),
+        Hit::PhoneCopyLink => Tip::named(Key::TipPhoneCopyLink).about(Key::TipPhoneCopyLinkAbout),
         Hit::CleanBack => Tip::named(Key::TipCleanBack),
         Hit::ArrangePlay(_) => Tip::named(Key::TipArrangePlay).about(Key::TipArrangePlayAbout),
 
@@ -419,6 +421,7 @@ mod tests {
             Hit::PhoneBack,
             Hit::ShelfPreviewBack,
             Hit::PhoneShowQr,
+            Hit::PhoneCopyLink,
             Hit::ArrangePlay(2),
             Hit::RecPause,
             Hit::RecMute(Source::Mic),

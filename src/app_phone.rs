@@ -120,6 +120,10 @@ struct BatchLanding {
 /// How long the copy icon shows its check.
 const COPIED_FOR: Duration = Duration::from_secs(2);
 
+/// A link with fewer seconds left than this gets a new token before it is
+/// copied, so the phone it is pasted for still has time to join.
+const RENEW_BEFORE_COPY: u64 = 60;
+
 impl Ready {
     /// The listening session's card from its `Ready` event; `None` for any
     /// other event.
@@ -263,7 +267,8 @@ impl PhoneState {
     }
 
     /// A new code was made: the QR, its time and its link move together,
-    /// and the check goes.
+    /// and the check goes. This is the only way the app side changes the
+    /// token, so the cached `url` never goes stale.
     fn link_renewed(&mut self, link: &NewLink) {
         if let Some(ready) = &mut self.ready {
             ready.qr = link.qr.clone();
@@ -271,6 +276,11 @@ impl PhoneState {
             ready.url = link.url.clone();
         }
         self.copied_at = None;
+    }
+
+    /// The live link has under `RENEW_BEFORE_COPY` seconds left.
+    fn copy_needs_fresh_token(&self, now: Instant) -> bool {
+        matches!(self.remaining(now), Some(left) if left < RENEW_BEFORE_COPY)
     }
 
     fn ever_joined(&self) -> bool {
@@ -532,8 +542,18 @@ impl App {
     }
 
     /// The copy icon on the QR view: the live link goes to the clipboard as
-    /// plain text, and the icon shows a check for a moment.
+    /// plain text, and the icon shows a check for a moment. A link with under a
+    /// minute left is renewed first.
     pub(super) fn phone_copy_link(&mut self, now: Instant) {
+        if self.phone.copy_target(now).is_none() {
+            return;
+        }
+        if self.phone.copy_needs_fresh_token(now) {
+            let Some(link) = self.phone.handle.as_ref().and_then(|h| h.new_token()) else {
+                return;
+            };
+            self.phone.link_renewed(&link);
+        }
         let Some(url) = self.phone.copy_target(now).map(str::to_owned) else {
             return;
         };
@@ -1182,6 +1202,20 @@ mod tests {
     }
 
     #[test]
+    fn a_nearly_dead_link_is_renewed_before_it_is_copied() {
+        let t0 = Instant::now();
+        let s = PhoneState {
+            ready: Some(ready_with_url(t0)),
+            ..PhoneState::default()
+        };
+        let left = |secs: u64| t0 + TOKEN_TTL - Duration::from_secs(secs);
+        assert!(!s.copy_needs_fresh_token(t0));
+        assert!(!s.copy_needs_fresh_token(left(60)));
+        assert!(s.copy_needs_fresh_token(left(59)));
+        assert!(s.copy_needs_fresh_token(left(1)));
+    }
+
+    #[test]
     fn the_check_lasts_two_seconds() {
         let t = Instant::now();
         let s = PhoneState {
@@ -1229,8 +1263,10 @@ mod tests {
         assert_eq!(ready.url, LINK);
         assert_eq!(ready.addr, "192.168.18.42:47390");
         assert!(Ready::from_event(PhoneEvent::Refused(Refusal::NoLan)).is_none());
-        let mut s = PhoneState::default();
-        s.copied_at = Some(t);
+        let mut s = PhoneState {
+            copied_at: Some(t),
+            ..PhoneState::default()
+        };
         s.forget_session();
         assert_eq!(s.copied_at, None);
     }
