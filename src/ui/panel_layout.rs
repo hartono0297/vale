@@ -3144,7 +3144,7 @@ pub fn shelf_card_layout(card: Rect, lines: usize) -> ShelfCardLayout {
     }
 }
 
-/// The "dari HP" tag at a card's bottom right, for a file that came from a
+/// The "masuk" tag at a card's bottom right, for a file that came from a
 /// phone: `text_w` is the tag's measured width, so a longer word in another
 /// language widens the box to the left instead of being cut.
 pub fn shelf_phone_tag(card: Rect, text_w: f32) -> Rect {
@@ -3289,7 +3289,7 @@ const PHONE_HEAD_H: f32 = 26.0;
 /// The title's width where something follows it closely: "Connect a phone"
 /// in JetBrains Mono is 180 px.
 const PHONE_TITLE_W: f32 = 190.0;
-const PHONE_CHIP_W: f32 = 96.0;
+const PHONE_CHIP_W: f32 = 108.0;
 /// The net switch: 22 dip high like the cleaner's mode segment, two items of
 /// one width inside a 2 dip inset.
 const PHONE_SEG_H: f32 = 22.0;
