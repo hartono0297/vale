@@ -179,6 +179,7 @@ function fileRow(f){
 
 function hint(){
  var a=[];
+ if(!IOS&&!AND)return null;
  if(!AND)a.push(h("p",null,t("hintIos")));
  if(!IOS)a.push(h("p",null,t("hintAnd")));
  return h("div",{class:"hint"},a[0],a[1])}
@@ -190,7 +191,7 @@ function drawFiles(){
  var list=h("div",{class:"list"});
  files.forEach(function(f){list.appendChild(fileRow(f))});
  box.appendChild(list);
- box.appendChild(hint());
+ var hn=hint();if(hn)box.appendChild(hn);
  var n=files.filter(unsaved).length;
  if(saveRun||n){
   var b=h("button",{type:"button",class:"sa"},saveRun?t("saving",saveRun.at,saveRun.total):t("saveAll",n));
@@ -434,6 +435,7 @@ document.addEventListener("drop",function(e){
    if(en&&en.isDirectory)continue;
    f=it[i].getAsFile();if(f)out.push(f)}
  }else out=d.files||[];
+ if(out.length&&tab!=="send"){tab="send";show()}
  pickFiles(out)});
 
 try{if(history.replaceState&&location.pathname!=="/")history.replaceState(null,"","/")}catch(e){}

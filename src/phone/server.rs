@@ -1298,6 +1298,26 @@ mod tests {
         assert!(PAGE.contains("drop:\"Drop to send\""), "the en text");
     }
 
+    /// A drop on the other tab opens the queue before the files go in.
+    #[test]
+    fn the_page_shows_the_queue_after_a_drop() {
+        let at = PAGE.find("addEventListener(\"drop\"").expect("a drop handler");
+        let body = &PAGE[at..];
+        let tab = body.find("tab=\"send\"").expect("the drop selects the send tab");
+        let pick = body.find("pickFiles(").expect("the drop picks files");
+        assert!(tab < pick, "the tab switches before pickFiles");
+    }
+
+    /// A desktop browser gets no phone save hint.
+    #[test]
+    fn the_page_hints_only_on_phones() {
+        let at = PAGE.find("function hint(){").expect("hint()");
+        let body = &PAGE[at..at + PAGE[at..].find("function drawFiles").unwrap()];
+        assert!(body.contains("if(!IOS&&!AND)return null"), "no hint on desktop");
+        let draw = PAGE.find("function drawFiles(){").expect("drawFiles");
+        assert!(PAGE[draw..].contains("var hn=hint();if(hn)"), "the caller allows no hint");
+    }
+
     /// The keys of the language `lang` ("id" or "en") in the page's `S`
     /// object: every `name:` outside strings and arrays, between that
     /// language's `{` and its matching `}`.
