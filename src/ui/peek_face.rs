@@ -3,15 +3,10 @@
 //! eyes' 64-unit grid (the one `robot::paint_eyes` draws in); nothing here
 //! paints or owns a timer. The accessory never changes it.
 
-use super::cat_style::{AMBER, CatLook, EYES_DARK, PATCH_DARK, PATCH_ORANGE, RIM};
+use super::cat_style::{CatLook, PATCH_DARK, PATCH_ORANGE};
 use super::mascot::{FALK_BEAK, falk_ink, octopus_rgb, shade};
 use super::robot::Seg;
 use crate::theme::{CatColor, FalkColor, Mascot};
-
-const CALICO_CREAM: u32 = 0xF4EDE4;
-const WHITE_CAT: u32 = 0xF6F1EA;
-const BLACK_CAT: u32 = 0x1E1B22;
-const TERRACOTTA: u32 = 0xE2683C;
 
 /// A small mark on the face, in the eyes' grid.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -53,12 +48,7 @@ const fn dot(cx: f32, cy: f32, r: f32, rgb: u32) -> PeekMark {
 /// alpha from the see-through `fill_alpha` up to opaque. `mix` is clamped.
 pub fn peek_fill(surface: u32, fill_alpha: f32, face_fill: u32, mix: f32) -> (u32, f32) {
     let m = mix.clamp(0.0, 1.0);
-    let channel = |shift: u32| {
-        let a = ((surface >> shift) & 0xFF) as f32;
-        let b = ((face_fill >> shift) & 0xFF) as f32;
-        (a + (b - a) * m).round() as u32
-    };
-    let rgb = (channel(16) << 16) | (channel(8) << 8) | channel(0);
+    let rgb = super::mascot::mix(surface, face_fill, m);
     (rgb, fill_alpha + (1.0 - fill_alpha) * m)
 }
 
@@ -103,18 +93,21 @@ pub fn peek_face(look: CatLook, surface: u32) -> PeekFace {
         coat_marks: Vec::new(),
     };
     match look.mascot {
-        Mascot::Cat => match look.color {
-            CatColor::Terracotta => plain(TERRACOTTA, EYES_DARK, None),
-            CatColor::Calico => PeekFace {
-                coat_marks: vec![
-                    dot(17.625, 35.0, 4.25, PATCH_ORANGE),
-                    dot(47.625, 45.625, 3.75, PATCH_DARK),
-                ],
-                ..plain(CALICO_CREAM, EYES_DARK, Some(surface))
-            },
-            CatColor::White => plain(WHITE_CAT, EYES_DARK, Some(surface)),
-            CatColor::Black => plain(BLACK_CAT, AMBER, Some(RIM)),
-        },
+        Mascot::Cat => {
+            let (head, eye) = (look.head_rgb(), look.eye_rgb());
+            match look.color {
+                CatColor::Terracotta => plain(head, eye, None),
+                CatColor::Calico => PeekFace {
+                    coat_marks: vec![
+                        dot(17.625, 35.0, 4.25, PATCH_ORANGE),
+                        dot(47.625, 45.625, 3.75, PATCH_DARK),
+                    ],
+                    ..plain(head, eye, Some(surface))
+                },
+                CatColor::White => plain(head, eye, Some(surface)),
+                CatColor::Black => plain(head, eye, look.rim()),
+            }
+        }
         Mascot::Falk => {
             let ink = falk_ink(look.falk);
             let edge = (look.falk == FalkColor::WhiteFace).then_some(surface);
@@ -124,14 +117,14 @@ pub fn peek_face(look: CatLook, surface: u32) -> PeekFace {
                 face_marks.push(dot(45.25, 44.0, 2.375, cheek));
             }
             face_marks.push(PeekMark::Beak { rgb: FALK_BEAK });
-            PeekFace { face_marks, ..plain(ink.face, EYES_DARK, edge) }
+            PeekFace { face_marks, ..plain(ink.face, look.eye_rgb(), edge) }
         }
         Mascot::Octopus => {
             let fill = octopus_rgb(look.octopus);
             let spot = shade(fill);
             PeekFace {
                 coat_marks: vec![dot(44.25, 36.5, 1.625, spot), dot(19.0, 35.75, 1.125, spot)],
-                ..plain(fill, EYES_DARK, None)
+                ..plain(fill, look.eye_rgb(), None)
             }
         }
     }
@@ -172,6 +165,12 @@ pub fn mark_boxes(marks: &[PeekMark]) -> Vec<(f32, f32, f32, f32)> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::theme::{CatAccessory, OctopusColor};
+    use crate::ui::cat_style::{AMBER, EYES_DARK, RIM, solid};
+    use crate::ui::geometry::Rect;
+    use crate::ui::robot::RobotPainter;
+    use windows::Win32::Graphics::Direct2D::{ID2D1RenderTarget, ID2D1SolidColorBrush};
 
     #[test]
     fn peek_fill_runs_from_the_surface_to_the_face() {
@@ -202,10 +201,6 @@ mod tests {
         mix.settle();
         assert_eq!(mix.at(0.0), 1.0);
     }
-    use super::*;
-    use crate::theme::{CatAccessory, OctopusColor};
-    use windows::Win32::Graphics::Direct2D::{ID2D1RenderTarget, ID2D1SolidColorBrush};
-
     const SURFACE: u32 = 0x151C2E;
 
     fn look(mascot: Mascot) -> CatLook {
@@ -287,10 +282,6 @@ mod tests {
             assert!((got - want).abs() < 0.5, "{got} {want}");
         }
     }
-
-    use crate::ui::cat_style::solid;
-    use crate::ui::geometry::Rect;
-    use crate::ui::robot::RobotPainter;
 
     /// 64 x 64 px on black, one px per grid unit, by Direct2D's software
     /// rasterizer into a WIC bitmap (the pattern of the `mascot` tests): no

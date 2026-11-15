@@ -339,7 +339,7 @@ const TIMER_BEHIND: usize = 29;
 /// does a locked, display-off, fullscreen or behind-windows one.
 const TIMER_HALO: usize = 30;
 /// Repeating, `pointer_watch::poll_ms`: the one pointer read the closed island
-/// shares between the notch peek (it shrinks to the cat's eyes over a window)
+/// shares between the notch peek (it shrinks to the mascot's eyes over a window)
 /// and the cat following the pointer. 33 ms near the top edge and 250 ms far
 /// from it while the cat follows; 80 / 350 ms for the peek alone. Nothing runs
 /// when neither feature is eligible, in fullscreen, locked or with the display

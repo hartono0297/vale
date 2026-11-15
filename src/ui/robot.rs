@@ -725,13 +725,25 @@ pub fn eyes_offset_in(
     let centre = eyes_centre(shape);
     let fits = |ox: f32, oy: f32| {
         [false, true].into_iter().all(|blink| {
-            eyes_boxes_at(centre, ox, oy, blink, marks)
-                .into_iter()
-                .all(|(l, t, r, b)| {
-                    [(l, t), (r, t), (l, b), (r, b)]
+            let boxes = eyes_boxes_at(centre, ox, oy, blink, marks);
+            let first_mark = boxes.len() - marks.len();
+            boxes.into_iter().enumerate().all(|(i, (l, t, r, b))| {
+                let inside = |x: f32, y: f32| shape_contains(style, shape, x, y);
+                match marks.get(i.wrapping_sub(first_mark)) {
+                    // A cheek is a circle: its box corners would cut its
+                    // slide where the pill's end curves away.
+                    Some(PeekMark::Dot { .. }) => {
+                        let (cx, cy, rad) = ((l + r) / 2.0, (t + b) / 2.0, (r - l) / 2.0);
+                        (0..32).all(|k| {
+                            let a = k as f32 / 32.0 * std::f32::consts::TAU;
+                            inside(cx + rad * a.cos(), cy + rad * a.sin())
+                        })
+                    }
+                    _ => [(l, t), (r, t), (l, b), (r, b)]
                         .into_iter()
-                        .all(|(x, y)| shape_contains(style, shape, x, y))
-                })
+                        .all(|(x, y)| inside(x, y)),
+                }
+            })
         })
     };
     // The set of slides that fit is convex, so along a line from the middle
@@ -1311,7 +1323,7 @@ impl RobotPainter {
 impl RobotPainter {
     /// Only the two open eyes of the idle face, in `face.eye` (the mascot's
     /// dark, or the Black cat's amber), then `face.face_marks` (cheeks, beak),
-    /// over a square `area` as `eyes_area` gives; with `blink`, the cat's two
+    /// over a square `area` as `eyes_area` gives; with `blink`, the mascot's two
     /// short level lines instead of the eyes, in the same colour. All share
     /// one transform, so the marks slide with the eyes. The render target's
     /// transform is restored; the brush colour is not.

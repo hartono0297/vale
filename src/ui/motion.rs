@@ -54,7 +54,7 @@ pub fn ease_in_out_cubic(t: f32) -> f32 {
     }
 }
 
-/// How long the notch takes to shrink to the cat's eyes or come back. Longer
+/// How long the notch takes to shrink to the mascot's eyes or come back. Longer
 /// than `ANIM_MS` and eased in and out: with the eyes it is a small, calm
 /// change next to the pointer, not a view change.
 pub const EYES_MS: u64 = 320;

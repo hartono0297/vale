@@ -152,7 +152,7 @@ pub struct Config {
     /// (default on).
     #[serde(deserialize_with = "default_on")]
     pub cat_dance: bool,
-    /// "Mengecil jadi mata": the notch shrinks to the cat's eyes near the
+    /// "Mengecil jadi mata": the notch shrinks to the mascot's eyes near the
     /// pointer over a window (default on).
     #[serde(deserialize_with = "default_on")]
     pub notch_peek: bool,
