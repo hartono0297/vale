@@ -79,6 +79,7 @@ use super::play::stories::{
 use super::robot::{
     Expr, EyesPose, GRID, Pose, RobotPainter, eyes_area, eyes_centre, eyes_offset_in,
 };
+use super::peek_face::peek_face;
 use super::shelf_motion::ShelfMotion;
 use super::window::IslandWindow;
 use crate::audio::MixerRow;
@@ -3140,7 +3141,8 @@ impl Renderer {
                 D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
             );
         }
-        let (dx, dy) = eyes_offset_in(style, shape, pose.dx_dip, pose.dy_dip);
+        let marks = peek_face(self.cat.get(), self.palette.surface).face_marks;
+        let (dx, dy) = eyes_offset_in(style, shape, pose.dx_dip, pose.dy_dip, &marks);
         let (cx, cy) = eyes_centre(shape);
         let area = eyes_area((cx + dx, cy + dy));
         self.robot

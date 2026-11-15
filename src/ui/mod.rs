@@ -28,6 +28,7 @@ pub mod motion;
 pub mod notch_fill;
 pub mod panel_layout;
 pub mod panel_tips;
+pub mod peek_face;
 pub mod phone_view;
 pub mod play;
 pub mod render;

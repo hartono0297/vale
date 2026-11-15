@@ -38,6 +38,7 @@ use windows_numerics::{Matrix3x2, Vector2};
 
 use super::cat_style::{CatLook, Placed, RIM_WIDTH, anchors};
 use super::mascot::MascotShape;
+use super::peek_face::{PeekMark, mark_boxes};
 use super::geometry::{EYES_H, Rect, ShapeRect, shape_contains};
 use crate::config::Style;
 use crate::greeting::{self, DayPeriod, GreetMark};
@@ -676,13 +677,14 @@ fn eyes_grid_boxes(blink: bool) -> Vec<(f32, f32, f32, f32)> {
     boxes
 }
 
-/// The boxes of both eyes in dip, as `paint_eyes` draws them when centred on
-/// `centre` and slid by `(dx, dy)`.
+/// The boxes of both eyes and of the face `marks` in dip, as `paint_eyes`
+/// draws them when centred on `centre` and slid by `(dx, dy)`.
 pub fn eyes_boxes_at(
     centre: (f32, f32),
     dx: f32,
     dy: f32,
     blink: bool,
+    marks: &[PeekMark],
 ) -> Vec<(f32, f32, f32, f32)> {
     let at = |x: f32, y: f32| {
         (
@@ -692,6 +694,7 @@ pub fn eyes_boxes_at(
     };
     eyes_grid_boxes(blink)
         .into_iter()
+        .chain(mark_boxes(marks))
         .map(|(l, t, r, b)| {
             let (left, top) = at(l, t);
             let (right, bottom) = at(r, b);
@@ -712,11 +715,17 @@ pub fn eyes_centre(shape: ShapeRect) -> (f32, f32) {
 /// (the Notch's shoulders are outside it, so this is the stricter side). At the
 /// final pill the look's own extremes fit, so this is a guard that the morph
 /// and odd sizes never trip over, not a visible limit.
-pub fn eyes_offset_in(style: Style, shape: ShapeRect, dx: f32, dy: f32) -> (f32, f32) {
+pub fn eyes_offset_in(
+    style: Style,
+    shape: ShapeRect,
+    dx: f32,
+    dy: f32,
+    marks: &[PeekMark],
+) -> (f32, f32) {
     let centre = eyes_centre(shape);
     let fits = |ox: f32, oy: f32| {
         [false, true].into_iter().all(|blink| {
-            eyes_boxes_at(centre, ox, oy, blink)
+            eyes_boxes_at(centre, ox, oy, blink, marks)
                 .into_iter()
                 .all(|(l, t, r, b)| {
                     [(l, t), (r, t), (l, b), (r, b)]
@@ -3145,8 +3154,8 @@ mod tests {
             let centre = eyes_centre(pill);
             assert_eq!(centre, (pill.x + EYES_W / 2.0, pill.y + EYES_H / 2.0));
             for blink in [false, true] {
-                let still = eyes_boxes_at(centre, 0.0, 0.0, blink);
-                let slid = eyes_boxes_at(centre, 3.0, 1.0, blink);
+                let still = eyes_boxes_at(centre, 0.0, 0.0, blink, &[]);
+                let slid = eyes_boxes_at(centre, 3.0, 1.0, blink, &[]);
                 assert_eq!(still.len(), 2, "two eyes");
                 for (a, b) in still.iter().zip(&slid) {
                     assert!((b.0 - a.0 - 3.0).abs() < 1e-4 && (b.1 - a.1 - 1.0).abs() < 1e-4);
@@ -3157,16 +3166,16 @@ mod tests {
                 assert!(((centre.0 - left.0) - (right.2 - centre.0)).abs() < 1e-4);
             }
             // An open eye is 8 dip tall; the blink's lines are far flatter.
-            let open = eyes_boxes_at(centre, 0.0, 0.0, false);
+            let open = eyes_boxes_at(centre, 0.0, 0.0, false, &[]);
             assert!((open[0].3 - open[0].1 - 8.0).abs() < 1e-4);
-            let shut = eyes_boxes_at(centre, 0.0, 0.0, true);
+            let shut = eyes_boxes_at(centre, 0.0, 0.0, true, &[]);
             assert!(shut[0].3 - shut[0].1 < 2.0);
             // A request in range passes untouched, one past it is cut back
             // (and NaN is no slide).
-            assert_eq!(eyes_offset_in(style, pill, 4.0, 1.5), (4.0, 1.5));
-            let (x, y) = eyes_offset_in(style, pill, 40.0, -40.0);
+            assert_eq!(eyes_offset_in(style, pill, 4.0, 1.5, &[]), (4.0, 1.5));
+            let (x, y) = eyes_offset_in(style, pill, 40.0, -40.0, &[]);
             assert!(x > 0.0 && x < 40.0 && y < 0.0 && y > -40.0, "{x} {y}");
-            assert_eq!(eyes_offset_in(style, pill, f32::NAN, f32::NAN), (0.0, 0.0));
+            assert_eq!(eyes_offset_in(style, pill, f32::NAN, f32::NAN, &[]), (0.0, 0.0));
         }
     }
 
