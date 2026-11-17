@@ -454,6 +454,15 @@ scenes are debug-only and not in the release exe.
 the folder name lengths differ, so up to 512 bytes of that is the PDB path).
 No new crate or `windows` feature.
 
+## Warna notch: Polos, Gradasi, Jadi muka (2026-11-17)
+
+[[notch-colour-style]]: `cargo build --release --locked` on `main` at e0c7738 in
+the main checkout gave 4,997,120 bytes against 4,948,480 for the v5.5.2
+release asset (+48,640, about +47.5 KiB; the release workflow builds in another
+folder, so up to 512 bytes of that is the PDB path). The colour module, the
+gradient fill, the mark-only face painter and its accessory pieces, and their
+settings row. No new crate or `windows` feature.
+
 ## Shipped release sizes
 
 The `vale.exe` asset of each GitHub release (built by the release workflow,
