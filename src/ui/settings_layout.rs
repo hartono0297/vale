@@ -7,17 +7,17 @@
 //! labels and pushed to the right edge of their card; row labels take the
 //! space left over, so the tests check that the labels fit with the estimate.
 
+use super::notch_colour::effective_style;
 use crate::arrange::{ArrangeSettings, Dir, MAX_TEMPLATES, Node};
 use crate::calendar::CalStatus;
 use crate::claude::install::HookState;
 use crate::cli::Shell;
 use crate::cli_folders::CliStart;
 use crate::clipboard::store::{ITEMS_STEP, MAX_ITEMS, MIN_ITEMS};
-use super::notch_colour::effective_style;
 use crate::config::{
-    AfterCapture, ClipboardSettings, DISK_WARN_RANGE, NotchFill, NotchMonitor, NotchStyle, NotifSettings,
-    OpenMode, RAM_WARN_RANGE, SHOT_SECS_RANGE, ScreenshotSettings, ShotIgnore, ShotTool, Style,
-    ToastStyle, UiFont,
+    AfterCapture, ClipboardSettings, DISK_WARN_RANGE, NotchFill, NotchMonitor, NotchStyle,
+    NotifSettings, OpenMode, RAM_WARN_RANGE, SHOT_SECS_RANGE, ScreenshotSettings, ShotIgnore,
+    ShotTool, Style, ToastStyle, UiFont,
 };
 use crate::hotkey::{Hotkey, HotkeyId, Hotkeys};
 use crate::i18n::{
@@ -2729,13 +2729,13 @@ pub fn notch_style_key(v: NotchStyle) -> Key {
 }
 
 /// Under "Warna notch": Polos says what it is; the others say where the
-/// colour comes from ("Gradasi · dari Terakota", the accent's name with the
-/// mascot off); a stored Jadi muka with the mascot off says why it is faded.
+/// colour comes from ("Gradasi · dari Terakota"). With the mascot off the
+/// description is just the note that Jadi muka needs it.
 fn notch_style_desc(lang: Lang, s: &State) -> String {
     let name = text(lang, notch_style_key(s.notch_style));
     match s.notch_style {
+        _ if !s.robot => text(lang, Key::NotchStyleNeedsMascot).to_owned(),
         NotchStyle::Plain => text(lang, Key::NotchStylePlainDesc).to_owned(),
-        NotchStyle::Face if !s.robot => text(lang, Key::NotchStyleNeedsMascot).to_owned(),
         _ => {
             let from = if s.robot {
                 text(lang, coat_key(s.coat()))
@@ -10008,7 +10008,10 @@ mod tests {
                 assert_eq!(off, [false, false, true]);
                 let note = text(lang, Key::NotchStyleNeedsMascot);
                 let has_note = l.texts.iter().any(|t| t.text == note);
-                assert_eq!(has_note, style == NotchStyle::Face, "{style:?}");
+                assert!(has_note, "{style:?}");
+                // The note replaces the other descriptions.
+                let plain = text(lang, Key::NotchStylePlainDesc);
+                assert!(!l.texts.iter().any(|t| t.text == plain), "{style:?}");
             }
         }
     }
@@ -10102,8 +10105,8 @@ mod tests {
                     .expect("the label");
                 assert_eq!(row_of(label.rect.y), 4);
                 assert!(l.texts.iter().any(|t| t.text == text(lang, Key::UiFontDesc)));
-                // The swatches are the row before it, Warna notch is between them; the clock toggle and the
-                // equalizer toggle follow.
+                // The swatches are two rows up (Warna notch sits between), the
+                // clock toggle and the equalizer toggle one and two rows down.
                 let swatches = l.controls.iter().find_map(|c| match c {
                     Control::SurfaceSwatches { items, .. } => Some(items[0].1),
                     _ => None,

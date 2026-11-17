@@ -1025,7 +1025,7 @@ impl Painter<'_> {
         let rects: Vec<Rect> = items.iter().map(|i| i.rect).collect();
         for item in items {
             let current = (pos - index_of(items, item) as f32).abs() < 0.5;
-            if !current && s.hover == Some(item.hit) {
+            if !current && item.enabled && s.hover == Some(item.hit) {
                 let a = if s.pressed == s.hover { 0.12 } else { 0.07 };
                 self.fill_round(item.rect, SEGMENT_RADIUS, self.p.text, a);
             }
@@ -1037,7 +1037,8 @@ impl Painter<'_> {
             // Text turns to ink as the selection slides under it.
             let covered = overlap(sel, item.rect) / item.rect.w.max(1.0);
             let rgb = mix(self.p.text, self.p.on_accent, covered.clamp(0.0, 1.0));
-            self.draw_str(&item.label, style, item.rect, rgb, 1.0);
+            let a = segment_alpha(item.enabled);
+            self.draw_str(&item.label, style, item.rect, rgb, a);
         }
     }
 
@@ -1773,13 +1774,10 @@ impl Painter<'_> {
     /// colour, always solid (Jadi muka, which needs the mascot).
     fn fill_island(&self, shape: super::geometry::ShapeRect, s: &Scene) {
         let alpha = preview_alpha(s);
-        let grad = match preview_fill(s) {
-            PreviewFill::Gradient(bottom) => Some(bottom),
-            _ => None,
-        };
-        let solid = match preview_fill(s) {
-            PreviewFill::Face(rgb) => rgb,
-            _ => s.island.surface,
+        let (solid, grad) = match preview_fill(s) {
+            PreviewFill::Plain => (s.island.surface, None),
+            PreviewFill::Gradient(bottom) => (s.island.surface, Some(bottom)),
+            PreviewFill::Face(rgb) => (rgb, None),
         };
         let top = s.island.surface;
         let gradient = grad.and_then(|bottom| unsafe {
@@ -1866,6 +1864,12 @@ impl Painter<'_> {
             row += 1;
         }
     }
+}
+
+/// The alpha of one segment's label: a segment that is off is faded as a
+/// whole control that is off is (`Painter::dimmed`).
+fn segment_alpha(enabled: bool) -> f32 {
+    if enabled { 1.0 } else { 0.45 }
 }
 
 /// The fill alpha the preview draws: Jadi muka is always solid.
@@ -2485,5 +2489,16 @@ mod tests {
                 assert!(contrast >= 4.5, "{status:?}: {contrast:.2}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod segment_tests {
+    use super::segment_alpha;
+
+    #[test]
+    fn a_segment_that_is_off_is_drawn_faded() {
+        assert_eq!(segment_alpha(true), 1.0);
+        assert!(segment_alpha(false) < 0.5);
     }
 }
