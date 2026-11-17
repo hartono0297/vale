@@ -13,8 +13,9 @@ use crate::claude::install::HookState;
 use crate::cli::Shell;
 use crate::cli_folders::CliStart;
 use crate::clipboard::store::{ITEMS_STEP, MAX_ITEMS, MIN_ITEMS};
+use super::notch_colour::effective_style;
 use crate::config::{
-    AfterCapture, ClipboardSettings, DISK_WARN_RANGE, NotchFill, NotchMonitor, NotifSettings,
+    AfterCapture, ClipboardSettings, DISK_WARN_RANGE, NotchFill, NotchMonitor, NotchStyle, NotifSettings,
     OpenMode, RAM_WARN_RANGE, SHOT_SECS_RANGE, ScreenshotSettings, ShotIgnore, ShotTool, Style,
     ToastStyle, UiFont,
 };
@@ -465,6 +466,8 @@ pub enum Hit {
     NotchReset,
     /// "Isi notch": Solid or Tembus.
     NotchFill(NotchFill),
+    /// "Warna notch": Polos, Gradasi or Jadi muka.
+    NotchStyle(NotchStyle),
     /// "Monitor": a radio entry or a rectangle of the map.
     NotchMonitor(MonitorPick),
     /// "Tandai": numbers every screen for two seconds.
@@ -782,6 +785,8 @@ pub enum Group {
     /// The Kucing preview's expression chips.
     CatFace,
     NotchFill,
+    /// Tampilan -> Island -> Warna notch.
+    NotchStyle,
     /// Tampilan -> Island -> Font.
     Font,
     Window,
@@ -816,6 +821,8 @@ pub struct Segment {
     pub hit: Hit,
     pub rect: Rect,
     pub label: String,
+    /// Off: this one segment is faded and takes no click.
+    pub enabled: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -993,7 +1000,11 @@ impl Control {
             Control::Segmented { enabled: false, .. } | Control::Toggle { enabled: false, .. } => {
                 Vec::new()
             }
-            Control::Segmented { items, .. } => items.iter().map(|s| (s.hit, s.rect)).collect(),
+            Control::Segmented { items, .. } => items
+                .iter()
+                .filter(|s| s.enabled)
+                .map(|s| (s.hit, s.rect))
+                .collect(),
             Control::Toggle { hit, rect, .. } => vec![(*hit, *rect)],
             Control::Stepper { minus, plus, .. } => [minus, plus]
                 .into_iter()
@@ -1500,6 +1511,8 @@ pub struct State<'a> {
     pub notch_height: u32,
     pub notch_fill: NotchFill,
     pub notch_opacity: u8,
+    /// "Warna notch" as stored (Face stays Face while the mascot is off).
+    pub notch_style: NotchStyle,
     /// "Monitor": the saved choice and the screens connected now.
     pub notch_monitor: NotchMonitor,
     pub monitors: &'a [MonitorRow],
@@ -2059,6 +2072,22 @@ impl Builder<'_> {
         selected: usize,
         enabled: bool,
     ) -> f32 {
+        self.segmented_each(group, right, cy, items, selected, enabled, &[])
+    }
+
+    /// `segmented_if`, and the items whose index holds `false` in `on` are
+    /// faded and take no click either (indexes past `on` stay on).
+    #[allow(clippy::too_many_arguments)]
+    fn segmented_each(
+        &mut self,
+        group: Group,
+        right: f32,
+        cy: f32,
+        items: Vec<(Hit, String)>,
+        selected: usize,
+        enabled: bool,
+        on: &[bool],
+    ) -> f32 {
         let widths = self.segment_widths(&items);
         let total = widths.iter().sum::<f32>() + 2.0 * SEG_PAD;
         let track = Rect {
@@ -2071,7 +2100,8 @@ impl Builder<'_> {
         let segs = items
             .into_iter()
             .zip(widths)
-            .map(|((hit, label), w)| {
+            .enumerate()
+            .map(|(i, ((hit, label), w))| {
                 let rect = Rect {
                     x,
                     y: track.y + SEG_PAD,
@@ -2079,7 +2109,12 @@ impl Builder<'_> {
                     h: CONTROL_H - 2.0 * SEG_PAD,
                 };
                 x += w;
-                Segment { hit, rect, label }
+                Segment {
+                    hit,
+                    rect,
+                    label,
+                    enabled: on.get(i).copied().unwrap_or(true),
+                }
             })
             .collect();
         self.l.controls.push(Control::Segmented {
@@ -2525,8 +2560,8 @@ fn appearance(b: &mut Builder, s: &State) {
     let preview = b.card(PREVIEW_H);
     b.l.preview = Some(preview);
     titled(b, Key::GroupIsland);
-    let card = b.card(6.0 * ROW_H);
-    let rows: [f32; 6] = std::array::from_fn(|i| card.y + i as f32 * ROW_H);
+    let card = b.card(7.0 * ROW_H);
+    let rows: [f32; 7] = std::array::from_fn(|i| card.y + i as f32 * ROW_H);
     let cy = |y: f32| y + ROW_H / 2.0;
 
     let styles = [
@@ -2607,6 +2642,25 @@ fn appearance(b: &mut Builder, s: &State) {
     );
     b.divider(card, rows[2]);
 
+    // "Warna notch": Polos, Gradasi or Jadi muka. Jadi muka is the mascot's
+    // face, so with the mascot off it is faded and takes no click.
+    let items = NotchStyle::ALL
+        .iter()
+        .map(|v| (Hit::NotchStyle(*v), b.t(notch_style_key(*v))))
+        .collect();
+    let x = b.segmented_each(
+        Group::NotchStyle,
+        b.g.right,
+        cy(rows[3]),
+        items,
+        index_of(NotchStyle::ALL, &s.notch_style),
+        true,
+        &[true, true, s.robot],
+    );
+    let desc = Some((notch_style_desc(b.lang, s), Tone::Secondary));
+    b.row_text(card, rows[3], b.t(Key::NotchStyle), desc, false, x);
+    b.divider(card, rows[3]);
+
     // "Font": the typeface of the notch, the panel and this window. Separate
     // from the surface; no presets.
     let items = [
@@ -2619,28 +2673,28 @@ fn appearance(b: &mut Builder, s: &State) {
     let x = b.segmented(
         Group::Font,
         b.g.right,
-        cy(rows[3]),
+        cy(rows[4]),
         items,
         index_of(UiFont::ALL, &s.font),
     );
     let desc = Some((b.t(Key::UiFontDesc), Tone::Secondary));
-    b.row_text(card, rows[3], b.t(Key::UiFont), desc, false, x);
-    b.divider(card, rows[3]);
-
-    let x = b.toggle(Hit::IdleClock, b.g.right, cy(rows[4]), s.idle_clock);
-    let desc = Some((b.t(Key::IdleClockDesc), Tone::Secondary));
-    b.row_text(card, rows[4], b.t(Key::IdleClock), desc, false, x);
+    b.row_text(card, rows[4], b.t(Key::UiFont), desc, false, x);
     b.divider(card, rows[4]);
+
+    let x = b.toggle(Hit::IdleClock, b.g.right, cy(rows[5]), s.idle_clock);
+    let desc = Some((b.t(Key::IdleClockDesc), Tone::Secondary));
+    b.row_text(card, rows[5], b.t(Key::IdleClock), desc, false, x);
+    b.divider(card, rows[5]);
 
     let x = b.toggle(
         Hit::EqFollowAudio,
         b.g.right,
-        cy(rows[5]),
+        cy(rows[6]),
         s.eq_follow_audio,
     );
     let desc = Some((b.t(Key::EqFollowAudioDesc), Tone::Secondary));
-    b.row_text(card, rows[5], b.t(Key::EqFollowAudio), desc, false, x);
-    b.divider(card, rows[5]);
+    b.row_text(card, rows[6], b.t(Key::EqFollowAudio), desc, false, x);
+    b.divider(card, rows[6]);
 
     notch_card(b, s);
 
@@ -2664,6 +2718,33 @@ fn appearance(b: &mut Builder, s: &State) {
     );
     let desc = Some((b.t(Key::WindowModeDesc), Tone::Secondary));
     b.row_text(card, card.y, b.t(Key::WindowMode), desc, false, x);
+}
+
+pub fn notch_style_key(v: NotchStyle) -> Key {
+    match v {
+        NotchStyle::Plain => Key::NotchStylePlain,
+        NotchStyle::Gradient => Key::NotchStyleGradient,
+        NotchStyle::Face => Key::NotchStyleFace,
+    }
+}
+
+/// Under "Warna notch": Polos says what it is; the others say where the
+/// colour comes from ("Gradasi · dari Terakota", the accent's name with the
+/// mascot off); a stored Jadi muka with the mascot off says why it is faded.
+fn notch_style_desc(lang: Lang, s: &State) -> String {
+    let name = text(lang, notch_style_key(s.notch_style));
+    match s.notch_style {
+        NotchStyle::Plain => text(lang, Key::NotchStylePlainDesc).to_owned(),
+        NotchStyle::Face if !s.robot => text(lang, Key::NotchStyleNeedsMascot).to_owned(),
+        _ => {
+            let from = if s.robot {
+                text(lang, coat_key(s.coat()))
+            } else {
+                text(lang, accent_key(s.accent))
+            };
+            format!("{name} · {} {from}", text(lang, Key::NotchStyleFrom))
+        }
+    }
 }
 
 /// The name of a surface choice: "Espresso", ...; Ikuti kucing says what it
@@ -3076,14 +3157,22 @@ fn notch_card(b: &mut Builder, s: &State) {
     .iter()
     .map(|(v, k)| (Hit::NotchFill(*v), b.t(*k)))
     .collect();
-    let x = b.segmented(
+    // Jadi muka is always solid: the fill rows fade and take no clicks.
+    let face = effective_style(s.notch_style, s.robot) == NotchStyle::Face;
+    let x = b.segmented_if(
         Group::NotchFill,
         b.g.right,
         cy(rows[3]),
         items,
         index_of(NotchFill::ALL, &s.notch_fill),
+        !face,
     );
-    let desc = Some((b.t(Key::NotchFillDesc), Tone::Secondary));
+    let desc_key = if face {
+        Key::NotchFillFaceDesc
+    } else {
+        Key::NotchFillDesc
+    };
+    let desc = Some((b.t(desc_key), Tone::Secondary));
     b.row_text(card, rows[3], b.t(Key::NotchFill), desc, false, x);
     b.divider(card, rows[3]);
 
@@ -3093,7 +3182,7 @@ fn notch_card(b: &mut Builder, s: &State) {
         SliderId::NotchOpacity,
         i32::from(s.notch_opacity),
         percent_value(s.notch_opacity),
-        s.notch_fill == NotchFill::Transparent,
+        s.notch_fill == NotchFill::Transparent && !face,
     );
     b.row_text(card, rows[4], b.t(Key::NotchOpacity), None, false, x);
     b.divider(card, rows[4]);
@@ -6440,6 +6529,7 @@ mod tests {
                             NotchFill::Solid
                         },
                         notch_opacity: if locked { 0 } else { 100 },
+                        notch_style: NotchStyle::ALL[out.len() % NotchStyle::ALL.len()],
                         // Locked: three screens and a saved one that is gone;
                         // otherwise the primary with no list.
                         notch_monitor: if locked {
@@ -7404,10 +7494,12 @@ mod tests {
             .map(|(h, _)| h)
             .filter(|h| matches!(h, Hit::Slider(_) | Hit::NotchReset | Hit::NotchFill(_)))
             .collect();
-        // The Island card's sixth row (the equalizer toggle) now ends the
-        // visible part; the Notch card starts below the window.
+        // The Island card's sixth row (the clock toggle) now ends the visible
+        // part: the seventh (the equalizer toggle) and the Notch card start
+        // below the window.
         assert_eq!(peeking, []);
-        assert!(top.hits().iter().any(|(h, _)| *h == Hit::EqFollowAudio));
+        assert!(top.hits().iter().any(|(h, _)| *h == Hit::IdleClock));
+        assert!(!top.hits().iter().any(|(h, _)| *h == Hit::EqFollowAudio));
         for (_, r) in top.hits() {
             assert!(r.bottom() <= CLIENT_H + 0.01, "{r:?}");
         }
@@ -9810,11 +9902,177 @@ mod tests {
         assert!(!on);
     }
 
-    /// "Font" is the Island card's third row after the style and the accent:
-    /// right after "Warna dasar" and before "Jam saat kosong"; the card has
-    /// six rows now.
+    /// "Warna notch" sits in the Island card right after "Warna dasar":
+    /// seven rows, swatches at 2, the notch colour at 3, then Font, Jam, EQ.
     #[test]
-    fn the_island_card_has_a_font_row_after_the_base_color() {
+    fn the_island_card_has_warna_notch_after_warna_dasar() {
+        for lang in [Lang::Id, Lang::En] {
+            for style in NotchStyle::ALL.iter().copied() {
+                let s = State {
+                    lang,
+                    notch_style: style,
+                    robot: true,
+                    ..states()[0].clone()
+                };
+                let l = layout(Section::Appearance, &s, &Estimate);
+                let card = l.cards[1];
+                assert_eq!(card.h, 7.0 * ROW_H);
+                let row_of = |y: f32| ((y - card.y) / ROW_H).floor() as usize;
+                let (track, segs, selected) =
+                    l.segmented(Group::NotchStyle).expect("the Warna notch row");
+                assert_eq!(row_of(track.y + track.h / 2.0), 3);
+                assert_eq!(NotchStyle::ALL[selected], style);
+                let hits: Vec<Hit> = segs.iter().map(|s| s.hit).collect();
+                assert_eq!(
+                    hits,
+                    [
+                        Hit::NotchStyle(NotchStyle::Plain),
+                        Hit::NotchStyle(NotchStyle::Gradient),
+                        Hit::NotchStyle(NotchStyle::Face)
+                    ]
+                );
+                let label = l
+                    .texts
+                    .iter()
+                    .find(|t| t.text == text(lang, Key::NotchStyle))
+                    .expect("the label");
+                assert_eq!(row_of(label.rect.y), 3);
+                let swatches = l.controls.iter().find_map(|c| match c {
+                    Control::SurfaceSwatches { items, .. } => Some(items[0].1),
+                    _ => None,
+                });
+                assert_eq!(row_of(swatches.expect("swatches").y), 2);
+                // Every segment takes its click while the mascot is on.
+                for seg in segs {
+                    let (cx, cy) = (seg.rect.x + seg.rect.w / 2.0, seg.rect.y + seg.rect.h / 2.0);
+                    assert_eq!(l.hit(cx, cy), Some(seg.hit));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_description_says_where_the_colour_comes_from() {
+        let desc = |lang, style, robot| {
+            let s = State {
+                lang,
+                notch_style: style,
+                robot,
+                mascot: Mascot::Cat,
+                cat_color: CatColor::Terracotta,
+                ..states()[0].clone()
+            };
+            let l = layout(Section::Appearance, &s, &Estimate);
+            let want = [
+                "Gelap seperti bezel",
+                "Dark like the bezel",
+                "Gradasi \u{b7} dari Terakota",
+                "Gradient \u{b7} from Terracotta",
+                "Jadi muka \u{b7} dari Terakota",
+                "Face \u{b7} from Terracotta",
+            ];
+            l.texts
+                .iter()
+                .find(|t| want.contains(&t.text.as_str()))
+                .map(|t| t.text.clone())
+        };
+        let g = NotchStyle::Gradient;
+        assert_eq!(desc(Lang::Id, NotchStyle::Plain, true).unwrap(), "Gelap seperti bezel");
+        assert_eq!(desc(Lang::En, NotchStyle::Plain, true).unwrap(), "Dark like the bezel");
+        assert_eq!(desc(Lang::Id, g, true).unwrap(), "Gradasi \u{b7} dari Terakota");
+        assert_eq!(desc(Lang::En, g, true).unwrap(), "Gradient \u{b7} from Terracotta");
+        let f = NotchStyle::Face;
+        assert_eq!(desc(Lang::Id, f, true).unwrap(), "Jadi muka \u{b7} dari Terakota");
+        assert_eq!(desc(Lang::En, f, true).unwrap(), "Face \u{b7} from Terracotta");
+    }
+
+    /// Jadi muka is the mascot's face: with the mascot off its segment is
+    /// faded and takes no click; Polos and Gradasi stay clickable.
+    #[test]
+    fn the_face_segment_is_faded_without_the_mascot() {
+        for lang in [Lang::Id, Lang::En] {
+            for style in NotchStyle::ALL.iter().copied() {
+                let s = State {
+                    lang,
+                    notch_style: style,
+                    robot: false,
+                    ..states()[0].clone()
+                };
+                let l = layout(Section::Appearance, &s, &Estimate);
+                let hits: Vec<Hit> = l.hits().into_iter().map(|(h, _)| h).collect();
+                assert!(!hits.contains(&Hit::NotchStyle(NotchStyle::Face)));
+                assert!(hits.contains(&Hit::NotchStyle(NotchStyle::Plain)));
+                assert!(hits.contains(&Hit::NotchStyle(NotchStyle::Gradient)));
+                let (_, segs, _) = l.segmented(Group::NotchStyle).expect("row");
+                let off: Vec<bool> = segs.iter().map(|s| !s.enabled).collect();
+                assert_eq!(off, [false, false, true]);
+                let note = text(lang, Key::NotchStyleNeedsMascot);
+                let has_note = l.texts.iter().any(|t| t.text == note);
+                assert_eq!(has_note, style == NotchStyle::Face, "{style:?}");
+            }
+        }
+    }
+
+    /// Jadi muka is always solid: Isi notch and Opasitas fade under it.
+    #[test]
+    fn the_fill_rows_fade_under_face() {
+        for lang in [Lang::Id, Lang::En] {
+            let on = |style, robot| {
+                let s = State {
+                    lang,
+                    notch_style: style,
+                    notch_fill: NotchFill::Transparent,
+                    robot,
+                    scroll: 1e6,
+                    ..states()[0].clone()
+                };
+                let l = layout(Section::Appearance, &s, &Estimate);
+                let hits: Vec<Hit> = l.hits().into_iter().map(|(h, _)| h).collect();
+                let face_note = l
+                    .texts
+                    .iter()
+                    .any(|t| t.text == text(lang, Key::NotchFillFaceDesc));
+                (hits, face_note)
+            };
+            let fill = |h: &[Hit]| h.iter().any(|h| matches!(h, Hit::NotchFill(_)));
+            let opacity = |h: &[Hit]| h.contains(&Hit::Slider(SliderId::NotchOpacity));
+            let (hits, note) = on(NotchStyle::Face, true);
+            assert!(!fill(&hits) && !opacity(&hits));
+            assert!(note);
+            // Gradasi, and Jadi muka with the mascot off (drawn as Gradasi),
+            // leave both alone.
+            for (style, robot) in [(NotchStyle::Gradient, true), (NotchStyle::Face, false)] {
+                let (hits, note) = on(style, robot);
+                assert!(fill(&hits) && opacity(&hits), "{style:?} {robot}");
+                assert!(!note);
+            }
+        }
+    }
+
+    #[test]
+    fn notch_style_labels_differ_by_language() {
+        for key in [
+            Key::NotchStyle,
+            Key::NotchStylePlain,
+            Key::NotchStyleGradient,
+            Key::NotchStyleFace,
+            Key::NotchStylePlainDesc,
+            Key::NotchStyleFrom,
+            Key::NotchStyleNeedsMascot,
+            Key::NotchFillFaceDesc,
+        ] {
+            assert_ne!(text(Lang::Id, key), text(Lang::En, key), "{key:?}");
+        }
+        assert_eq!(text(Lang::Id, Key::NotchStyle), "Warna notch");
+        assert_eq!(text(Lang::En, Key::NotchStyle), "Notch colour");
+        assert_eq!(text(Lang::En, Key::NotchStyleFace), "Face");
+    }
+
+    /// "Font" is the Island card's fourth row after the style and the accent:
+    /// right after "Warna notch" and before "Jam saat kosong"; the card has
+    /// seven rows now.
+    #[test]
+    fn the_island_card_has_a_font_row_after_the_notch_colour() {
         for lang in [Lang::Id, Lang::En] {
             for font in UiFont::ALL.iter().copied() {
                 let s = State {
@@ -9824,10 +10082,10 @@ mod tests {
                 };
                 let l = layout(Section::Appearance, &s, &Estimate);
                 let card = l.cards[1];
-                assert_eq!(card.h, 6.0 * ROW_H);
+                assert_eq!(card.h, 7.0 * ROW_H);
                 let row_of = |y: f32| ((y - card.y) / ROW_H).floor() as usize;
                 let (track, segs, selected) = l.segmented(Group::Font).expect("the Font row");
-                assert_eq!(row_of(track.y + track.h / 2.0), 3);
+                assert_eq!(row_of(track.y + track.h / 2.0), 4);
                 assert_eq!(selected, usize::from(font == UiFont::Mono));
                 let hits: Vec<Hit> = segs.iter().map(|s| s.hit).collect();
                 assert_eq!(
@@ -9842,10 +10100,10 @@ mod tests {
                     .iter()
                     .find(|t| t.text == text(lang, Key::UiFont))
                     .expect("the label");
-                assert_eq!(row_of(label.rect.y), 3);
+                assert_eq!(row_of(label.rect.y), 4);
                 assert!(l.texts.iter().any(|t| t.text == text(lang, Key::UiFontDesc)));
-                // The swatches are the row before it, the clock toggle and the
-                // equalizer toggle the two after.
+                // The swatches are the row before it, Warna notch is between them; the clock toggle and the
+                // equalizer toggle follow.
                 let swatches = l.controls.iter().find_map(|c| match c {
                     Control::SurfaceSwatches { items, .. } => Some(items[0].1),
                     _ => None,
@@ -9862,8 +10120,8 @@ mod tests {
                         })
                         .expect("toggle")
                 };
-                assert_eq!(toggle_row(Hit::IdleClock), 4);
-                assert_eq!(toggle_row(Hit::EqFollowAudio), 5);
+                assert_eq!(toggle_row(Hit::IdleClock), 5);
+                assert_eq!(toggle_row(Hit::EqFollowAudio), 6);
                 // A click on each segment hits it.
                 for seg in segs {
                     let (cx, cy) = (seg.rect.x + seg.rect.w / 2.0, seg.rect.y + seg.rect.h / 2.0);
@@ -9977,7 +10235,7 @@ mod tests {
                 eq_follow_audio: on,
                 ..states()[0].clone()
             };
-            let l = layout(Section::Appearance, &s, &Estimate);
+            let l = layout_in(Section::Appearance, &s, &Estimate, TALL);
             let toggle = l.controls.iter().find_map(|c| match c {
                 Control::Toggle { hit, rect, on, .. } if *hit == Hit::EqFollowAudio => {
                     Some((*rect, *on))

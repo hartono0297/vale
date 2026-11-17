@@ -22,7 +22,7 @@ use windows::Win32::Graphics::Direct2D::{
     D2D1_ROUNDED_RECT, D2D1_STROKE_STYLE_PROPERTIES, D2D1_SWEEP_DIRECTION,
     D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE,
     D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE, D2D1CreateFactory, ID2D1Factory, ID2D1HwndRenderTarget,
-    ID2D1Layer, ID2D1PathGeometry, ID2D1RenderTarget, ID2D1SolidColorBrush, ID2D1StrokeStyle,
+    ID2D1Brush, ID2D1Layer, ID2D1PathGeometry, ID2D1RenderTarget, ID2D1SolidColorBrush, ID2D1StrokeStyle,
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_WEIGHT, DWRITE_FONT_WEIGHT_NORMAL,
@@ -42,6 +42,7 @@ use super::geometry::{
     compact_layout_robot, idle_layout, shape_with_robot_sized,
 };
 use super::icons::{Icon, IconSet};
+use super::notch_colour::{CLOSED_T, TOP_STOP, bottom, effective_style, face_fill, face_palette};
 use super::notch_fill::legibility;
 use super::robot::{Expr, Pose, RobotPainter};
 use super::settings_layout::{
@@ -51,7 +52,7 @@ use super::settings_layout::{
     Bar, Rect, SEGMENT_RADIUS, SLIDER_THUMB, SWATCH_RING_GAP, SWATCH_RING_W, Section, Segment, Text, Tone, WidgetTile, accent_key,
     coat_hit, hotkey_caps_w, slider_x,
 };
-use crate::config::{Style, UiFont};
+use crate::config::{NotchStyle, Style, UiFont};
 use crate::i18n::{Key, Lang, text};
 use crate::theme;
 use crate::theme::{Accent, CatAccessory, CatColor, Coat, Mascot, Palette, Surface, WindowPalette};
@@ -76,6 +77,10 @@ pub struct Scene<'a> {
     /// the preview draws it that big, see-through when the alpha is below 1.
     pub notch: NotchSize,
     pub notch_alpha: f32,
+    /// "Warna notch" as stored, and the colour Gradasi takes from the coat
+    /// (`notch_colour::tint`); Jadi muka needs the mascot, else it is Gradasi.
+    pub notch_style: NotchStyle,
+    pub notch_tint: u32,
     /// The cat is on: the preview shows it in the album art's place.
     pub robot: bool,
     /// The cat's colour and accessory in the preview.
@@ -1475,7 +1480,7 @@ impl Painter<'_> {
             y: screen.y + base.y,
             ..base
         };
-        if s.notch_alpha < 1.0 {
+        if preview_alpha(s) < 1.0 {
             self.checker(Rect {
                 x: shape.x - 24.0,
                 y: screen.y,
@@ -1483,30 +1488,7 @@ impl Painter<'_> {
                 h: shape.y - screen.y + shape.h + 8.0,
             });
         }
-        self.set(pal.surface, s.notch_alpha);
-        unsafe {
-            match s.style {
-                Style::Pill => {
-                    self.rt.FillRoundedRectangle(
-                        &rounded(
-                            Rect {
-                                x: shape.x,
-                                y: shape.y,
-                                w: shape.w,
-                                h: shape.h,
-                            },
-                            shape.h / 2.0,
-                        ),
-                        self.brush,
-                    );
-                }
-                Style::Notch => {
-                    if let Ok(path) = notch_path(&self.gfx.d2d, shape) {
-                        self.rt.FillGeometry(&path, self.brush, None);
-                    }
-                }
-            }
-        }
+        self.fill_island(shape, s);
         let l = idle_layout(shape, s.robot, true);
         if let Some(area) = l.robot {
             self.cat(area, expr, pose, s.cat);
@@ -1517,7 +1499,7 @@ impl Painter<'_> {
                 tabular: true,
                 tracked: None,
             };
-            self.draw_str("14:32", style, clock, pal.text, 0.9);
+            self.draw_str("14:32", style, clock, preview_palette(s).text, 0.9);
         }
     }
 
@@ -1717,10 +1699,10 @@ impl Painter<'_> {
             y: screen.y + base.y,
             ..base
         };
-        let pal = s.island;
+        let pal = preview_palette(s);
         // A see-through fill needs something behind it to show: a checker
         // strip across the top of the "screen".
-        if s.notch_alpha < 1.0 {
+        if preview_alpha(s) < 1.0 {
             self.checker(Rect {
                 x: shape.x - 24.0,
                 y: screen.y,
@@ -1728,30 +1710,7 @@ impl Painter<'_> {
                 h: shape.y - screen.y + shape.h + 8.0,
             });
         }
-        self.set(pal.surface, s.notch_alpha);
-        unsafe {
-            match s.style {
-                Style::Pill => {
-                    self.rt.FillRoundedRectangle(
-                        &rounded(
-                            Rect {
-                                x: shape.x,
-                                y: shape.y,
-                                w: shape.w,
-                                h: shape.h,
-                            },
-                            shape.h / 2.0,
-                        ),
-                        self.brush,
-                    );
-                }
-                Style::Notch => {
-                    if let Ok(path) = notch_path(&self.gfx.d2d, shape) {
-                        self.rt.FillGeometry(&path, self.brush, None);
-                    }
-                }
-            }
-        }
+        self.fill_island(shape, s);
         let l = if s.robot {
             compact_layout_robot(shape)
         } else {
@@ -1782,7 +1741,7 @@ impl Painter<'_> {
             tracked: None,
         };
         // The island's own shadow under its text and bars when it is thin.
-        let shadow = legibility(s.notch_alpha);
+        let shadow = legibility(preview_alpha(s));
         if shadow > 0.0 {
             let lower = Rect {
                 y: l.text.y + 1.0,
@@ -1806,6 +1765,76 @@ impl Painter<'_> {
                 self.fill_round(lower, 1.0, 0x000000, 0.55 * shadow);
             }
             self.fill_round(bar, 1.0, pal.accent, 1.0);
+        }
+    }
+
+    /// The island's fill in the preview: the surface (Polos), a gradient
+    /// from the surface to the coat's bottom colour (Gradasi) or the face
+    /// colour, always solid (Jadi muka, which needs the mascot).
+    fn fill_island(&self, shape: super::geometry::ShapeRect, s: &Scene) {
+        let alpha = preview_alpha(s);
+        let grad = match preview_fill(s) {
+            PreviewFill::Gradient(bottom) => Some(bottom),
+            _ => None,
+        };
+        let solid = match preview_fill(s) {
+            PreviewFill::Face(rgb) => rgb,
+            _ => s.island.surface,
+        };
+        let top = s.island.surface;
+        let gradient = grad.and_then(|bottom| unsafe {
+            let stops = [
+                D2D1_GRADIENT_STOP {
+                    position: 0.0,
+                    color: color(top, alpha * self.alpha),
+                },
+                D2D1_GRADIENT_STOP {
+                    position: TOP_STOP,
+                    color: color(top, alpha * self.alpha),
+                },
+                D2D1_GRADIENT_STOP {
+                    position: 1.0,
+                    color: color(bottom, alpha * self.alpha),
+                },
+            ];
+            let stops = self
+                .rt
+                .CreateGradientStopCollection(&stops, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP)
+                .ok()?;
+            self.rt
+                .CreateLinearGradientBrush(
+                    &D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES {
+                        startPoint: Vector2::new(shape.x, shape.y),
+                        endPoint: Vector2::new(shape.x, shape.y + shape.h),
+                    },
+                    None,
+                    &stops,
+                )
+                .ok()
+        });
+        self.set(solid, alpha);
+        let brush: ID2D1Brush = match &gradient {
+            Some(g) => g.clone().into(),
+            None => self.brush.clone().into(),
+        };
+        unsafe {
+            match s.style {
+                Style::Pill => {
+                    let r = Rect {
+                        x: shape.x,
+                        y: shape.y,
+                        w: shape.w,
+                        h: shape.h,
+                    };
+                    self.rt
+                        .FillRoundedRectangle(&rounded(r, shape.h / 2.0), &brush);
+                }
+                Style::Notch => {
+                    if let Ok(path) = notch_path(&self.gfx.d2d, shape) {
+                        self.rt.FillGeometry(&path, &brush, None);
+                    }
+                }
+            }
         }
     }
 
@@ -1836,6 +1865,46 @@ impl Painter<'_> {
             y += h;
             row += 1;
         }
+    }
+}
+
+/// The fill alpha the preview draws: Jadi muka is always solid.
+fn preview_alpha(s: &Scene) -> f32 {
+    match preview_fill(s) {
+        PreviewFill::Face(_) => 1.0,
+        _ => s.notch_alpha,
+    }
+}
+
+/// The island's palette in the preview: on the face colour the text turns to
+/// whichever ink reads there.
+fn preview_palette(s: &Scene) -> Palette {
+    match preview_fill(s) {
+        PreviewFill::Face(fill) => face_palette(s.island, fill),
+        _ => s.island,
+    }
+}
+
+/// What the preview fills the island with.
+enum PreviewFill {
+    Plain,
+    /// The bottom colour of the gradient.
+    Gradient(u32),
+    /// The face colour.
+    Face(u32),
+}
+
+/// The fill for `s`'s style: Jadi muka without the mascot is Gradasi.
+fn preview_fill(s: &Scene) -> PreviewFill {
+    match effective_style(s.notch_style, s.robot) {
+        NotchStyle::Plain => PreviewFill::Plain,
+        NotchStyle::Gradient => PreviewFill::Gradient(bottom(
+            s.island.surface,
+            s.notch_tint,
+            CLOSED_T,
+            None,
+        )),
+        NotchStyle::Face => PreviewFill::Face(face_fill(s.cat, s.island.surface)),
     }
 }
 
