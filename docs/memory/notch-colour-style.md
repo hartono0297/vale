@@ -130,6 +130,33 @@ Pure functions, no drawing.
 - Face <-> Gradasi morph (notice arrives, panel opens): the fill cross-fades, the
   marks fade out, ink switches where cream reaches 4.5:1 on the blended fill.
 
+## Accessories move with the face (2026-11-18)
+
+Owner, after the first hand test: "accesorisnya dibikin ngikut gerak juga dong".
+Spec `docs/superpowers/specs/2026-11-18-face-accessories-follow-design.md`.
+
+- Every worn piece moves by the face's look slide and nod (`FacePiece::place`
+  applies both to every anchor); blink stays on the eyes.
+- `face_pose_in(.., kind)` clamps one group: the face marks plus the whole-object
+  pieces (Glasses, Bow tie, Bow, Flower). Edge-hugging pieces (`hugs_edge`: hat
+  brims with the nightcap tip and sailor tails, Scarf band and tail, Headphone
+  earcups) are left out of the clamp and drawn clipped to the island outline, so
+  at full look an earcup or a scarf end slips behind the notch edge like a turning
+  head. A single clamp over every piece had cut the look to under 1 dip with the
+  scarf (ruling, ledger). With no whole-object piece the face keeps its full
+  4 dip look and 1.5 dip nod on 190 x 34.
+- The scarf runs past both ends (`face_reach_x`) so a slide never shows a gap; hat
+  brims extend above the top edge so a nod opens no gap under them; `RIM_PAST` is
+  1.5 so the brim stays left of the clock at the full typing glance.
+- The pale faces' edge and the Black cat's rim are stroked again after the pieces
+  (`stroke_face_edge`, the preview's `edge_line`), in the base palette's colour.
+- With the Headphone, the unread toast dot clears the earcup at its furthest-in
+  position; narrow views end their content ~5.3 dip earlier and the idle
+  face + clock group moves up to ~4 dip left on notches under 170 (Face +
+  Headphone only).
+- Not looked at on screen: the earcup gap of up to ~8.6 dip on the far side at
+  full glance, the clipped earcup and scarf ends, the preview's re-stroke.
+
 ## Rulings made while building
 
 - Mascot off: the note "Nyalakan maskot dulu" only when Face is stored (first

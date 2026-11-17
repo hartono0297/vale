@@ -462,6 +462,8 @@ release asset (+48,640, about +47.5 KiB; the release workflow builds in another
 folder, so up to 512 bytes of that is the PDB path). The colour module, the
 gradient fill, the mark-only face painter and its accessory pieces, and their
 settings row. No new crate or `windows` feature.
+Accessories following the face (2641ff8, 2026-11-18): 4,998,656 bytes, +1,536 over
+e0c7738 in the same folder.
 
 ## Shipped release sizes
 
