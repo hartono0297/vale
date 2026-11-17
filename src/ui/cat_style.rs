@@ -878,14 +878,12 @@ const FACE_CUP_IN: f32 = 3.5;
 const FACE_CUP_W: f32 = 7.0;
 
 /// The farthest left the right earcup reaches on the face notch `shape` with
-/// `unit` dip per grid unit, its edge included (`FacePiece::corners`): what
-/// the unread dot keeps clear of (`geometry::face_toast_dot`). The earcups
-/// move with the face, and `robot::face_pose_in` keeps the left one inside
-/// the notch, so the group slides left less than that cup's room to the
-/// notch's left end (`FACE_CUP_IN`, less its edge).
-pub fn face_cup_left(shape: Rect, unit: f32) -> f32 {
-    let at_rest = shape.right() - FACE_CUP_IN - FACE_CUP_W * FACE_CUP_K * unit - FACE_EDGE_DIP;
-    at_rest - (FACE_CUP_IN - FACE_EDGE_DIP)
+/// `unit` dip per grid unit, its edge included (`FacePiece::corners`), when
+/// the face slides `reach` dip sideways (`robot::face_reach_x` on the idle
+/// notch, 0 where the face does not look): what the unread dot keeps clear
+/// of (`geometry::face_toast_dot`). The nod moves it down only.
+pub fn face_cup_left(shape: Rect, unit: f32, reach: f32) -> f32 {
+    shape.right() - FACE_CUP_IN - FACE_CUP_W * FACE_CUP_K * unit - FACE_EDGE_DIP - reach.max(0.0)
 }
 /// The scarf on the notch's bottom edge: band and tail height (grid units)
 /// and the room kept under the tail (dip), past its edge.
@@ -923,6 +921,19 @@ pub enum FaceAnchor {
     /// The notch's top edge over the face (the hats' brims, the rest of the
     /// hat past the screen edge).
     Rim,
+}
+
+impl FaceAnchor {
+    /// The piece hugs the island's edge (the earcups, the scarf, the hats'
+    /// brims with their tip, pompom or tails): it moves with the face but
+    /// never cuts its move (`robot::face_pose_in`); the island's outline
+    /// clips it, so at full look it slips partly behind the edge, as a head
+    /// turning would. The rest (the glasses, the bow tie, the bow, the
+    /// flower) are whole objects on the face: they stay inside and cut the
+    /// face's move with them.
+    pub fn hugs_edge(self) -> bool {
+        matches!(self, FaceAnchor::Notch | FaceAnchor::Rim)
+    }
 }
 
 /// One piece of an accessory on the face notch: `piece` in its own units
@@ -1094,13 +1105,16 @@ pub fn face_wears(accessory: CatAccessory, kind: ShapeKind) -> bool {
 /// - Glasses: on the eyes.
 /// - Headphone: two earcups at the notch's left and right ends (no band).
 /// - Bow tie: small, under the eyes.
-/// - Scarf: a band along the notch's bottom edge, its tail hanging from it.
+/// - Scarf: a band along the notch's bottom edge, past both ends (clipped),
+///   its tail hanging from it.
 /// - Bow, flower: in the notch's left corner, left of the face.
 /// - Nightcap, crown, sailor cap: worn, the top past the screen edge, so
 ///   only the brim shows along the notch's top edge over the face
 ///   ("pinggiran"), with one detail hanging left of the eyes (`rim_pieces`).
 ///
-/// Every piece moves with the face (`FacePiece::place`). A piece under 3:1
+/// Every piece moves with the face (`FacePiece::place`); the edge pieces
+/// (`FaceAnchor::hugs_edge`) run past the outline, so the caller clips to
+/// it, as it does for the calico patches. A piece under 3:1
 /// against what lies under it at rest gets a 1 dip edge (`FacePiece::edge`);
 /// the crown always has its darker gold one.
 pub fn face_pieces(
@@ -1180,23 +1194,19 @@ pub fn face_pieces(
             use Seg::{Close, Line as To, Move};
             let (band_h, tail_h) = (FACE_BAND_H * unit, FACE_TAIL_H * unit);
             let bottom = shape.bottom() - FACE_SCARF_LIFT;
-            let (band_t, band_b) = (bottom - tail_h - band_h, bottom - tail_h);
-            // Each box, its edge included, clears the rounded bottom corners.
-            let band_in = corner_in(shape, shape.bottom() - band_b - FACE_EDGE_DIP)
-                + FACE_EDGE_DIP
-                + 0.25;
+            let band_t = bottom - tail_h - band_h;
+            // The band runs past both ends by the face's sideways reach (and
+            // its edge), so sliding with the face never opens a gap at an
+            // end: the island's outline clips it, as a scarf round a neck.
+            let past = super::robot::face_reach_x(unit) + FACE_EDGE_DIP + 0.25;
+            // The tail's box, its edge included, clears the rounded bottom
+            // corner at rest.
             let tail_x = shape.x
                 + corner_in(shape, shape.bottom() - bottom - FACE_EDGE_DIP)
                 + FACE_EDGE_DIP
                 + 0.25;
             let tail_w = 2.6 * unit;
-            let band = rrect(
-                shape.x + band_in,
-                band_t,
-                (shape.w - 2.0 * band_in).max(0.0),
-                band_h,
-                band_h / 2.0,
-            );
+            let band = rrect(shape.x - past, band_t, shape.w + 2.0 * past, band_h, band_h / 2.0);
             let tail = vec![
                 Move(tail_x, band_t + band_h / 2.0),
                 To(tail_x + tail_w, band_t + band_h / 2.0),
@@ -1261,10 +1271,11 @@ fn side_in(shape: Rect, top: f32, bottom: f32) -> f32 {
 /// sizes are in grid units of the face (`unit` dip each, the mockup's 1.28),
 /// centred on the eyes' x.
 ///
-/// - The brim starts `FACE_EDGE_DIP` below the top edge (its edge, when it
-///   has one, stays inside the notch) and keeps `RIM_GAP` above the eyes'
-///   box (`FACE_EYES_UP`), so it is shallower than the mockup where the eyes
-///   sit high.
+/// - The brim's depth is measured from `FACE_EDGE_DIP` below the top edge
+///   and keeps `RIM_GAP` above the eyes' box (`FACE_EYES_UP`), so it is
+///   shallower than the mockup where the eyes sit high. Its top runs up past
+///   the edge by the face's reach down (`robot::face_reach_down`): it moves
+///   with the face (`FaceAnchor::Rim`) and the outline clips it.
 /// - It reaches across at most `RIM_PAST` past the face's box, short of the
 ///   clock, and each end comes in to clear both styles' rounded corners.
 /// - The detail (the nightcap's tip and pompom, the sailor's two tails)
@@ -1314,6 +1325,10 @@ fn rim_pieces(hat: CatAccessory, shape: Rect, eyes: (f32, f32), unit: f32) -> Ve
         edge: None,
     };
     let rect = |l: f32, t: f32, r: f32, b: f32| vec![Move(l, t), To(r, t), To(r, b), To(l, b), Close];
+    // What lies along the top runs up past the edge as far as the face moves
+    // down (`robot::face_reach_down`), so nodding never lifts the hat off it:
+    // the island's outline clips it.
+    let top = shape.y - super::robot::face_reach_down(u);
     // The brim, in paint order, and the detail at a scale `k` (dip per grid
     // unit), drawn under the brim.
     let (brim, detail): (Vec<FacePiece>, Box<dyn Fn(f32) -> Vec<FacePiece>>) = match hat {
@@ -1323,7 +1338,7 @@ fn rim_pieces(hat: CatAccessory, shape: Rect, eyes: (f32, f32), unit: f32) -> Ve
             let fur = (y0 + 2.75 * v, y0 + 6.25 * v);
             let mid = y0 + 1.75 * v;
             let brim = vec![
-                at(shape_of(rect(bl, y0, br, y0 + 3.5 * v), NAVY), false),
+                at(shape_of(rect(bl, top, br, y0 + 3.5 * v), NAVY), false),
                 at(
                     shape_of(rrect(left, fur.0, right - left, fur.1 - fur.0, (fur.1 - fur.0) / 2.0), CREAM_PIECE),
                     false,
@@ -1350,7 +1365,7 @@ fn rim_pieces(hat: CatAccessory, shape: Rect, eyes: (f32, f32), unit: f32) -> Ve
             let (body, tip) = (y0 + 4.3 * v, y0 + 5.86 * v);
             let teeth = ((right - left) / (7.8 * u)).round().max(2.0) as usize;
             let w = (right - left) / teeth as f32;
-            let mut segs = vec![Move(left, y0), To(right, y0), To(right, body)];
+            let mut segs = vec![Move(left, top), To(right, top), To(right, body)];
             for i in (0..teeth).rev() {
                 let x = left + w * i as f32;
                 segs.push(To(x + w / 2.0, tip));
@@ -1366,7 +1381,7 @@ fn rim_pieces(hat: CatAccessory, shape: Rect, eyes: (f32, f32), unit: f32) -> Ve
             let jewel = |x: f32, r: f32, rgb: u32| at(Piece::Dot { cx: x, cy: jy, r: r * v, tone: fixed(rgb) }, true);
             let brim = vec![
                 band,
-                at(shape_of(rect(left, y0, right, y0 + 1.56 * v), GOLD_DARK), true),
+                at(shape_of(rect(left, top, right, y0 + 1.56 * v), GOLD_DARK), true),
                 jewel(c - gap, 1.09, RASPBERRY),
                 jewel(c, 1.25, TIE_KNOT),
                 jewel(c + gap, 1.09, RASPBERRY),
@@ -1379,7 +1394,7 @@ fn rim_pieces(hat: CatAccessory, shape: Rect, eyes: (f32, f32), unit: f32) -> Ve
             let (wl, wr) = (left + 2.34 * u, right - 2.34 * u);
             let (rim_t, rim_b) = (y0 + 4.69 * v, y0 + 6.72 * v);
             let brim = vec![
-                at(shape_of(rect(wl, y0, wr, rim_t), SAILOR_WHITE), false),
+                at(shape_of(rect(wl, top, wr, rim_t), SAILOR_WHITE), false),
                 at(shape_of(rect(wl, y0 + 2.03 * v, wr, y0 + 4.06 * v), NAVY), true),
                 at(shape_of(rrect(left, rim_t, right - left, rim_b - rim_t, (rim_b - rim_t) / 2.0), NAVY), false),
             ];
@@ -1743,10 +1758,11 @@ impl RobotPainter {
     /// Paints `pieces` (`face_pieces`) on the face notch for `look`, every
     /// one moved with the face as its eyes are: slid by the face's look
     /// (`robot::face_slide` of `pose` at `scale`) and nodded `pose.nod_dip`
-    /// (cut back first, as one group, with `robot::face_pose_in`). Each
-    /// piece's edge (`FacePiece::edge`) is drawn under it, `FACE_EDGE_DIP`
-    /// past its outline. Painted with the caller's `brush` (its colour left
-    /// changed). The render target's transform is restored.
+    /// (cut back first with `robot::face_pose_in`). The caller clips to the
+    /// island's outline: the edge pieces run past it. Each piece's edge
+    /// (`FacePiece::edge`) is drawn under it, `FACE_EDGE_DIP` past its
+    /// outline. Painted with the caller's `brush` (its colour left changed).
+    /// The render target's transform is restored.
     #[allow(clippy::too_many_arguments)]
     pub fn paint_face_pieces(
         &self,
@@ -2099,12 +2115,13 @@ mod tests {
                     let (_, _, r, b) = drawn_box(p);
                     assert!(b <= eye_top || r <= eyes_left, "{what}: {p:?}");
                 }
-                // The brim: from the top edge, across both eyes, and not a
-                // hairline (the mockup's is 8 dip at this size).
+                // The brim: from past the top edge (it moves with the face,
+                // the outline clips it), across both eyes, and not a hairline
+                // (the mockup's is 8 dip at this size).
                 let boxes: Vec<_> = face.iter().map(drawn_box).collect();
                 let (l, r) = boxes
                     .iter()
-                    .filter(|b| (b.1 - shape.y).abs() < 1e-3)
+                    .filter(|b| b.1 < shape.y)
                     .fold((f32::MAX, f32::MIN), |a, b| (a.0.min(b.0), a.1.max(b.2)));
                 let depth = boxes.iter().filter(|b| b.3 <= eye_top).fold(0.0f32, |a, b| a.max(b.3 - shape.y));
                 assert!(l < eyes.0 - 8.0 * unit && r > eyes.0 + 8.0 * unit, "{what}: {l}..{r}");

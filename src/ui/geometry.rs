@@ -401,6 +401,35 @@ pub fn face_content(s: ShapeRect, kind: ShapeKind) -> ShapeRect {
     }
 }
 
+/// The least room kept between a text box and the unread dot on the face
+/// notch wearing the earcups (dip).
+const TEXT_AIR: f32 = 0.5;
+
+/// `face_content` for a face wearing `accessory`. With the earcups on a
+/// narrow view, the content also ends short of the right earcup and the
+/// unread dot moved in past it (`face_toast_dot`), so no text box runs under
+/// the dot: every view's text keeps `COMPACT_INSET` from the content's right
+/// end, so the content ends by what the dot needs past that, at the face's
+/// largest size (`robot::FACE_SCALE`; the face never sets the content's
+/// right end, so this does not depend on it).
+pub fn face_content_wearing(
+    s: ShapeRect,
+    kind: ShapeKind,
+    accessory: crate::theme::CatAccessory,
+) -> ShapeRect {
+    let c = face_content(s, kind);
+    if accessory != crate::theme::CatAccessory::Headphone || face_extra(kind) == 0.0 {
+        return c;
+    }
+    let ((cx, _), r) = face_toast_dot(s, super::robot::face_unit(super::robot::FACE_SCALE), kind);
+    let dot_room = s.x + s.w - (cx - r - TOAST_DOT_RING);
+    let trim = (dot_room + TEXT_AIR - COMPACT_INSET).max(0.0);
+    ShapeRect {
+        w: (c.w - trim).max(0.0),
+        ..c
+    }
+}
+
 /// The box the face notch's face is centred in (its eyes on the box's
 /// centre) in a narrow view: left of `clock_left` (the left of whatever sits
 /// right of the face: the media title, the lyric line, the pomodoro ring,
@@ -438,7 +467,9 @@ pub fn face_area(shape: Rect, clock_left: Option<f32>) -> Rect {
 /// centre) and the clock's box, side by side with the clock's gap and centred
 /// as one group in `s`, as `idle_layout` centres the head and the clock. The
 /// face is as large as `face_scale` allows in what the clock leaves; without
-/// the clock it is centred alone.
+/// the clock it is centred alone. With the earcups on, the group moves left
+/// of centre only as far as the unread dot (`face_toast_dot`) needs to sit
+/// clear of the clock, on the narrowest notches.
 pub fn face_idle_layout(
     s: ShapeRect,
     clock: bool,
@@ -459,7 +490,12 @@ pub fn face_idle_layout(
     } else {
         0.0
     };
-    let x = s.x + (s.w - face_w - clock_w) / 2.0;
+    let mut x = s.x + (s.w - face_w - clock_w) / 2.0;
+    if clock && accessory == crate::theme::CatAccessory::Headphone && scale > 0.0 {
+        let ((cx, _), r) = face_toast_dot(s, face_unit(scale), ShapeKind::Idle);
+        let room = cx - r - TOAST_DOT_RING - TEXT_AIR;
+        x -= (x + face_w + clock_w - room).max(0.0);
+    }
     let face = Rect {
         x,
         y: s.y,
@@ -929,11 +965,25 @@ pub fn toast_dot(shape: ShapeRect) -> ((f32, f32), f32) {
 /// the fill, drawn just outside the dot: it reaches this far past it.
 pub const TOAST_DOT_RING: f32 = 1.5;
 
-/// The unread dot on Jadi muka's face notch wearing the earcups, the face
-/// at `unit` dip per grid unit: `toast_dot` moved in past the right earcup,
-/// so the dot and its ring keep 1 dip clear of the cup wherever it moves
-/// with the face (`cat_style::face_cup_left`).
-pub fn face_toast_dot(shape: ShapeRect, unit: f32) -> ((f32, f32), f32) {
+/// How far the face, and the earcups with it, slides sideways in a `kind`
+/// view at `unit` dip per grid unit: `robot::face_reach_x` on the idle
+/// notch, the only one that looks or glances (`app.rs`, `Spot::Idle`); 0
+/// elsewhere (the nod moves it down only).
+pub fn face_side_reach(kind: ShapeKind, unit: f32) -> f32 {
+    if kind == ShapeKind::Idle {
+        super::robot::face_reach_x(unit)
+    } else {
+        0.0
+    }
+}
+
+/// The unread dot on Jadi muka's face notch of a `kind` view wearing the
+/// earcups, the face at `unit` dip per grid unit: `toast_dot` moved in past
+/// the right earcup, so the dot and its ring keep 1 dip clear of the cup
+/// wherever it slides with the face (`face_side_reach`,
+/// `cat_style::face_cup_left`).
+pub fn face_toast_dot(shape: ShapeRect, unit: f32, kind: ShapeKind) -> ((f32, f32), f32) {
+    let reach = face_side_reach(kind, unit);
     let ((cx, cy), r) = toast_dot(shape);
     let cup = super::cat_style::face_cup_left(
         Rect {
@@ -943,6 +993,7 @@ pub fn face_toast_dot(shape: ShapeRect, unit: f32) -> ((f32, f32), f32) {
             h: shape.h,
         },
         unit,
+        reach,
     );
     ((cx.min(cup - 1.0 - r - TOAST_DOT_RING), cy), r)
 }
@@ -2572,7 +2623,15 @@ mod tests {
                     let (area, clock) = face_idle_layout(s, true, accessory);
                     let clock = clock.expect("the clock");
                     let (left, right) = (area.x - s.x, s.x + s.w - clock.right());
-                    assert!((left - right).abs() < 1e-3, "{style:?} {size:?} {accessory:?}: {left} vs {right}");
+                    // With the earcups, only as far left of centre as the
+                    // unread dot needs (`the_toast_dot_clears_the_content_text`):
+                    // only on the narrowest notches.
+                    let shift = (right - left) / 2.0;
+                    let most = if accessory == CatAccessory::Headphone && size.w < 170.0 { 4.5 } else { 0.0 };
+                    assert!(
+                        shift > -1e-3 && shift < most + 1e-3,
+                        "{style:?} {size:?} {accessory:?}: {left} vs {right}"
+                    );
                     assert!((clock.x - area.right() - ROBOT_GAP).abs() < 1e-3);
                     let (alone, none) = face_idle_layout(s, false, accessory);
                     assert!(none.is_none());
@@ -2685,8 +2744,24 @@ mod tests {
                         // `the_face_and_its_pieces_stay_inside_when_they_move`.
                         for p in &pieces {
                             let what = format!("{style:?} {size:?} {name} {accessory:?}: {p:?}");
+                            // The edge pieces run past the outline (it clips
+                            // them), but each shows: the middle of what of its
+                            // box lies across the notch is in.
+                            if p.anchor.hugs_edge() {
+                                let c = p.corners((0.0, 0.0), 0.0);
+                                let (l, t, r, b) = c.iter().fold(
+                                    (f32::MAX, f32::MAX, f32::MIN, f32::MIN),
+                                    |a, &(x, y)| (a.0.min(x), a.1.min(y), a.2.max(x), a.3.max(y)),
+                                );
+                                let (t, b) = (t.max(s.y), b.min(s.y + s.h));
+                                let (mx, my) = ((l + r) / 2.0, (t + b) / 2.0);
+                                assert!(shape_contains(style, s, mx, my), "{what}: its middle ({mx}, {my}) is out");
+                            }
                             for (x, y) in p.corners((0.0, 0.0), 0.0) {
-                                assert!(shape_contains(style, s, x, y), "{what} leaves {s:?} at ({x}, {y})");
+                                assert!(
+                                    p.anchor.hugs_edge() || shape_contains(style, s, x, y),
+                                    "{what} leaves {s:?} at ({x}, {y})"
+                                );
                                 // The earcups and the scarf belong to the
                                 // notch's ends and bottom edge, not the face.
                                 if let (Some(c), false) = (clock, p.anchor == FaceAnchor::Notch) {
@@ -2762,13 +2837,15 @@ mod tests {
     }
 
     /// One clamp for the group: wherever the face looks and nods, cut back
-    /// by `face_pose_in`, every mark and every worn piece stays inside the
-    /// island and left of the clock / content (the earcups and the scarf
-    /// belong to the notch's ends and bottom edge, not the face).
+    /// by `face_pose_in`, every mark and every whole-object piece (the
+    /// glasses, the bow tie, the bow, the flower) stays inside the island and
+    /// left of the clock / content. The edge pieces (earcups, scarf, hats)
+    /// move too but the outline clips them instead
+    /// (`render::tests::edge_pieces_never_paint_outside_the_island`).
     #[test]
     fn the_face_and_its_pieces_stay_inside_when_they_move() {
         use crate::theme::CatAccessory;
-        use crate::ui::cat_style::{CatLook, FaceAnchor, face_pieces};
+        use crate::ui::cat_style::{CatLook, face_pieces};
         use crate::ui::robot::{
             Expr, FaceBoxKind, NOD_MAX_DIP, face_boxes, face_pose_in, face_slide, face_unit,
         };
@@ -2795,13 +2872,13 @@ mod tests {
                                     let what = format!(
                                         "{style:?} {size:?} {name} {accessory:?} {expr:?} v {v} nod {nod}"
                                     );
-                                    for p in &pieces {
+                                    for p in pieces.iter().filter(|p| !p.anchor.hugs_edge()) {
                                         for (x, y) in p.corners(slide, pose.nod_dip) {
                                             assert!(
                                                 shape_contains(style, s, x, y),
                                                 "{what}: {p:?} leaves {s:?} at ({x}, {y})"
                                             );
-                                            if let (Some(c), false) = (clock, p.anchor == FaceAnchor::Notch) {
+                                            if let Some(c) = clock {
                                                 assert!(x < c, "{what}: {p:?} reaches the clock at {c}");
                                             }
                                         }
@@ -2830,7 +2907,96 @@ mod tests {
                 }
             }
         }
-        assert!(checked > 1_000_000, "{checked} pieces checked");
+        assert!(checked > 300_000, "{checked} pieces checked");
+    }
+
+    /// Without a whole-object piece the face keeps its full look, glance and
+    /// nod on the 190 x 34 notch, whatever edge piece it wears: the earcups,
+    /// the scarf and the hats never cut it.
+    #[test]
+    fn the_edge_pieces_never_cut_the_faces_move() {
+        use crate::theme::CatAccessory;
+        use crate::ui::cat_style::CatLook;
+        use crate::ui::robot::{Expr, NOD_MAX_DIP, Pose, face_pose_in, face_slide};
+        let worn = [
+            CatAccessory::None,
+            CatAccessory::Scarf,
+            CatAccessory::Headphone,
+            CatAccessory::Nightcap,
+            CatAccessory::Crown,
+            CatAccessory::Sailor,
+        ];
+        let mut checked = 0;
+        for style in [Style::Pill, Style::Notch] {
+            for accessory in worn {
+                let look = CatLook { accessory, ..CatLook::default() };
+                for view in face_views(style, NotchSize::DEFAULT, accessory) {
+                    let FaceView { name, kind, shape: s, clock, area } = view;
+                    let scale = face_scale(area, accessory);
+                    let centre = centre_of(area);
+                    let mut poses = vec![
+                        (Expr::Music, Pose { nod_dip: NOD_MAX_DIP, ..Pose::default() }),
+                        (Expr::Idle, Pose { nod_dip: NOD_MAX_DIP, ..Pose::default().looking(-1.0) }),
+                        (Expr::Idle, Pose { nod_dip: NOD_MAX_DIP, ..Pose::default().looking(1.0) }),
+                    ];
+                    for (vx, vy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+                        poses.push((Expr::Typing, Pose::default().glancing(vx, vy)));
+                    }
+                    for (expr, want) in poses {
+                        let got = face_pose_in(style, s, kind, clock, centre, scale, expr, look, want);
+                        let (w, g) = (face_slide(&want, scale), face_slide(&got, scale));
+                        let what = format!("{style:?} {name} {accessory:?} {expr:?} {want:?}");
+                        assert!((w.0 - g.0).abs() < 1e-4 && (w.1 - g.1).abs() < 1e-4, "{what}: {g:?} of {w:?}");
+                        assert_eq!(got.nod_dip, want.nod_dip, "{what}");
+                        checked += 1;
+                    }
+                    // The idle face's full look: 4 dip across, nodding 1.5.
+                    if kind == ShapeKind::Idle {
+                        let p = face_pose_in(
+                            style, s, kind, clock, centre, scale, Expr::Idle, look,
+                            Pose { nod_dip: NOD_MAX_DIP, ..Pose::default().looking(-1.0) },
+                        );
+                        assert_eq!((face_slide(&p, scale).0, p.nod_dip), (-4.0, 1.5), "{style:?} {name} {accessory:?}");
+                    }
+                }
+            }
+        }
+        assert!(checked > 100, "{checked}");
+    }
+
+    /// The scarf's band runs past both ends of the notch by the face's
+    /// sideways reach, so sliding with the face never opens a gap at either
+    /// end (the outline clips what is past it).
+    #[test]
+    fn the_scarf_never_shows_a_gap_at_either_end() {
+        use crate::theme::CatAccessory;
+        use crate::ui::cat_style::face_pieces;
+        use crate::ui::robot::{face_reach_x, face_unit};
+        let mut checked = 0;
+        for style in [Style::Pill, Style::Notch] {
+            for size in notch_sizes() {
+                for view in face_views(style, size, CatAccessory::Scarf) {
+                    let FaceView { name, kind, shape: s, area, .. } = view;
+                    let unit = face_unit(face_scale(area, CatAccessory::Scarf));
+                    let pieces = face_pieces(CatAccessory::Scarf, kind, as_rect(s), centre_of(area), unit);
+                    // The band: painted last, over its tail.
+                    let Some(band) = pieces.last() else {
+                        continue;
+                    };
+                    let reach = face_reach_x(unit);
+                    let c = band.corners((0.0, 0.0), 0.0);
+                    let (l, r) = c.iter().fold((f32::MAX, f32::MIN), |a, &(x, _)| (a.0.min(x), a.1.max(x)));
+                    assert!(
+                        l + reach <= s.x && r - reach >= s.x + s.w,
+                        "{style:?} {size:?} {name}: band {l}..{r} on {}..{}",
+                        s.x,
+                        s.x + s.w
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 100, "{checked}");
     }
 
     /// The eyes' boxes as drawn ("open and shut" by `blink`), without what
@@ -2887,14 +3053,16 @@ mod tests {
                                 )
                             })
                             .collect();
-                        // It hugs the notch's top edge...
+                        // It hugs the notch's top edge, running past it as far
+                        // as the face moves down, so it never comes off it...
                         let top = boxes.iter().fold(f32::MAX, |a, b| a.min(b.1));
-                        assert!((top - s.y).abs() < 1e-3, "{what}: top {top} vs {}", s.y);
-                        // ...over the face: the brim (what starts at the top)
+                        let down = crate::ui::robot::face_reach_down(unit);
+                        assert!(top + down <= s.y + 1e-3, "{what}: top {top} vs {}", s.y);
+                        // ...over the face: the brim (what starts past the top)
                         // reaches past the face's centre and over the right eye.
                         let (l, r) = boxes
                             .iter()
-                            .filter(|b| (b.1 - s.y).abs() < 1e-3)
+                            .filter(|b| b.1 < s.y)
                             .fold((f32::MAX, f32::MIN), |a, b| (a.0.min(b.0), a.1.max(b.2)));
                         assert!(l < centre.0 && r > centre.0 + 8.0 * unit, "{what}: brim {l}..{r}");
                         for expr in Expr::ALL {
@@ -4895,7 +5063,7 @@ mod tests {
                     let eyes = (v.area.x + v.area.w / 2.0, v.area.y + v.area.h / 2.0);
                     let cups = face_pieces(CatAccessory::Headphone, v.kind, as_rect(v.shape), eyes, unit);
                     assert!(!cups.is_empty(), "{}", v.name);
-                    let ((cx, cy), r) = face_toast_dot(v.shape, unit);
+                    let ((cx, cy), r) = face_toast_dot(v.shape, unit, v.kind);
                     let reach = r + TOAST_DOT_RING;
                     let (dl, dt, dr, db) = (cx - reach, cy - reach, cx + reach, cy + reach);
                     for p in &cups {
@@ -4920,9 +5088,10 @@ mod tests {
         assert!(checked > 0);
     }
 
-    /// The earcups move with the face (look and nod, cut back by
-    /// `face_pose_in`): the unread dot and its ring clear the right one
-    /// wherever it goes.
+    /// The earcups move with the face (its look and nod, never cut by them):
+    /// the unread dot and its ring clear the right one at its furthest in,
+    /// the face's full slide and nod. Only the idle notch looks or glances
+    /// (`face_side_reach`); the other views nod.
     #[test]
     fn the_toast_dot_clears_the_moving_earcup() {
         use crate::theme::CatAccessory;
@@ -4939,11 +5108,13 @@ mod tests {
                     let unit = face_unit(scale);
                     let centre = centre_of(area);
                     let cups = face_pieces(CatAccessory::Headphone, kind, as_rect(s), centre, unit);
-                    let ((cx, cy), r) = face_toast_dot(s, unit);
+                    let ((cx, cy), r) = face_toast_dot(s, unit, kind);
                     let reach = r + TOAST_DOT_RING;
                     let (dl, dt, dr, db) = (cx - reach, cy - reach, cx + reach, cy + reach);
-                    for expr in Expr::ALL.into_iter().filter(|e| e.follows()) {
-                        for &v in &vs {
+                    let looks = kind == ShapeKind::Idle;
+                    for expr in Expr::ALL {
+                        let vs: &[f32] = if looks && expr.follows() { &vs } else { &[0.0] };
+                        for &v in vs {
                             for nod in [0.0, NOD_MAX_DIP] {
                                 let pose = face_pose_in(
                                     style, s, kind, clock, centre, scale, expr, look,
@@ -4969,6 +5140,52 @@ mod tests {
             }
         }
         assert!(checked > 10_000, "{checked} cups checked");
+    }
+
+    /// With the earcups, the unread dot and its ring sit right of every text
+    /// box left of them: the idle clock, the media title, the lyric line, the
+    /// pomodoro's time and label, the REC clock and its paused label or
+    /// caption line, as laid out in `face_content_wearing`.
+    #[test]
+    fn the_toast_dot_clears_the_content_text() {
+        use crate::theme::CatAccessory;
+        use crate::ui::panel_layout::{pomodoro_compact_layout_robot, record_compact_layout};
+        use crate::ui::robot::face_unit;
+        let hp = CatAccessory::Headphone;
+        let mut checked = 0;
+        for style in [Style::Pill, Style::Notch] {
+            for size in notch_sizes() {
+                for view in face_views(style, size, hp) {
+                    let FaceView { name, kind, shape: s, area, .. } = view;
+                    let unit = face_unit(face_scale(area, hp));
+                    let ((cx, _), r) = face_toast_dot(s, unit, kind);
+                    let dot_left = cx - r - TOAST_DOT_RING;
+                    let c = face_content_wearing(s, kind, hp);
+                    let texts: Vec<(&str, f32)> = match name.as_str() {
+                        "idle" => vec![("clock", face_idle_layout(s, true, hp).1.expect("clock").right())],
+                        "idle without clock" => Vec::new(),
+                        "media" => vec![("title", compact_layout_robot(c).text.right())],
+                        "pomodoro" => vec![("time and label", pomodoro_compact_layout_robot(c).3.right())],
+                        "record" | "caption" => {
+                            let l = record_compact_layout(c, true, name == "caption");
+                            vec![("clock", l.time.right()), ("label", l.label.right())]
+                        }
+                        lyric => {
+                            assert!(lyric.starts_with("lyric"), "{lyric}");
+                            vec![("line", lyric_layout_robot(c).1.right())]
+                        }
+                    };
+                    for (what, right) in texts {
+                        assert!(
+                            right < dot_left,
+                            "{style:?} {size:?} {name}: the {what} ends at {right}, the dot starts at {dot_left}"
+                        );
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert!(checked > 1_000, "{checked}");
     }
 
     #[test]

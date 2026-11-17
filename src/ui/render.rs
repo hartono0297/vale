@@ -71,7 +71,7 @@ use super::geometry::{
 use super::icons::{Icon, IconSet};
 use super::motion::{StripFrame, Transit};
 use super::geometry::{
-    NOTCH_H_MAX, ShapeKind, face_area, face_content, face_idle_layout, face_scale, panel_kind,
+    NOTCH_H_MAX, ShapeKind, face_area, face_content_wearing, face_idle_layout, face_scale, panel_kind,
     shape_for,
 };
 use super::notch_colour::{self, CLOSED_T, PANEL_T, TOP_STOP};
@@ -3066,7 +3066,8 @@ impl Renderer {
                     .face_last
                     .get()
                     .map_or(super::robot::FACE_SCALE, |s| face_place(s, accessory).1);
-                face_toast_dot(shape, face_unit(scale))
+                let kind = notch_colour::face_kind(view).unwrap_or(ShapeKind::Idle);
+                face_toast_dot(shape, face_unit(scale), kind)
             } else {
                 toast_dot(shape)
             };
@@ -3836,11 +3837,12 @@ impl Renderer {
     }
 
     /// The shape a narrow closed view lays its content out in: under Jadi
-    /// muka the face-mode `shape` less the face's room (`face_content`),
+    /// muka the face-mode `shape` less the face's room and, with the
+    /// earcups, the right earcup's and unread dot's (`face_content_wearing`),
     /// else `shape` itself.
     pub(super) fn face_content(&self, shape: ShapeRect) -> ShapeRect {
         match self.face.get() {
-            Some(ctx) => face_content(shape, ctx.kind),
+            Some(ctx) => face_content_wearing(shape, ctx.kind, self.cat.get().accessory),
             None => shape,
         }
     }
@@ -7299,6 +7301,62 @@ mod tests {
         assert!(r.face_last.get().is_none());
         let pill_alone = paint(&mut fresh, View::Idle, pill, &shrinking(1.0));
         assert_eq!(gap(&there, &pill_alone), (0, 0));
+    }
+
+    /// Jadi muka's edge pieces (earcups, scarf, hats) move with the face's
+    /// full look, glance and nod without cutting it, so they run past the
+    /// island's outline: the outline clips them. Nowhere the island leaves
+    /// bare (the face wearing nothing) does a worn piece paint a pixel.
+    #[test]
+    fn edge_pieces_never_paint_outside_the_island() {
+        use crate::theme::CatAccessory;
+        use crate::ui::robot::NOD_MAX_DIP;
+        let poses = [
+            (Expr::Idle, Pose { nod_dip: NOD_MAX_DIP, ..Pose::default().looking(-1.0) }),
+            (Expr::Idle, Pose { nod_dip: NOD_MAX_DIP, ..Pose::default().looking(1.0) }),
+            (Expr::Typing, Pose::default().glancing(1.0, 1.0)),
+            (Expr::Typing, Pose::default().glancing(-1.0, -1.0)),
+        ];
+        let worn = [
+            CatAccessory::Scarf,
+            CatAccessory::Headphone,
+            CatAccessory::Nightcap,
+            CatAccessory::Crown,
+            CatAccessory::Sailor,
+        ];
+        let mut checked = 0;
+        for style in [Style::Pill, Style::Notch] {
+            for (w, h) in [(190.0, 34.0), (160.0, 28.0)] {
+                let s = shape(style, w, h);
+                let dip = (crate::ui::geometry::WINDOW_W, s.y + s.h + 8.0);
+                for (expr, pose) in poses {
+                    let robot = RobotFrame { expr, pose };
+                    let paint = |accessory| {
+                        let mut r = renderer();
+                        let look = CatLook { accessory, ..CatLook::default() };
+                        with_frame_tweaked(None, Some("12:34".into()), Some(robot), 1.0, face_frame(View::Idle, look), |frame| {
+                            r.palette = frame.palette;
+                            r.cat.set(frame.cat);
+                            painted(&mut r, dip, |r| r.paint_island(style, s, frame).unwrap())
+                        })
+                    };
+                    let bare = paint(CatAccessory::None);
+                    for accessory in worn {
+                        let px = paint(accessory);
+                        assert!(gap(&px, &bare).1 > 0, "{style:?} {w}x{h} {accessory:?}: nothing worn shows");
+                        let outside = bare
+                            .bgra
+                            .chunks(4)
+                            .zip(px.bgra.chunks(4))
+                            .filter(|(b, p)| b[3] == 0 && p[3] != 0)
+                            .count();
+                        assert_eq!(outside, 0, "{style:?} {w}x{h} {accessory:?} {expr:?} {pose:?}: painted outside");
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(checked, 2 * 2 * 4 * 5);
     }
 
     #[test]

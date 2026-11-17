@@ -39,7 +39,7 @@ use super::cat_style::CatLook;
 use super::fonts::{self, Face, Role};
 use super::geometry::{
     BAR_COUNT, BAR_GAP, BAR_W, NotchSize, SHOULDER, ShapeKind, compact_layout,
-    compact_layout_robot, face_area, face_content, face_idle_layout, face_scale, idle_layout,
+    compact_layout_robot, face_area, face_content_wearing, face_idle_layout, face_scale, idle_layout,
     shape_with_robot_sized, with_face_extra,
 };
 use super::icons::{Icon, IconSet};
@@ -1737,7 +1737,7 @@ impl Painter<'_> {
         }
         self.fill_island(shape, s);
         let content = if face {
-            face_content(shape, ShapeKind::MediaCompact)
+            face_content_wearing(shape, ShapeKind::MediaCompact, s.cat.accessory)
         } else {
             shape
         };

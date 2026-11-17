@@ -789,6 +789,20 @@ pub fn face_unit(scale: f32) -> f32 {
     EYES_SCALE * scale
 }
 
+/// The farthest the face (and all it wears) slides sideways at `unit` dip
+/// per grid unit: the look (`LOOK_EYE_DIP`) or the typing glance
+/// (`GLANCE_X`), never both (`Expr::looks` and `Expr::glances` exclude each
+/// other). Only the idle notch looks or glances (`app.rs`, `Spot::Idle`).
+pub fn face_reach_x(unit: f32) -> f32 {
+    LOOK_EYE_DIP.max(GLANCE_X * unit)
+}
+
+/// The farthest the face (and all it wears) moves down at `unit` dip per
+/// grid unit: the deepest nod and the typing glance down.
+pub fn face_reach_down(unit: f32) -> f32 {
+    NOD_MAX_DIP + GLANCE_Y * unit
+}
+
 /// A mark of the face on the notch, in the eyes' grid: `part` (one of
 /// `face`'s) drawn with its grid point p at `at + k * p`. The eyes keep their
 /// places (`k` 1, `at` 0); what floats beside the head comes in smaller,
@@ -930,15 +944,17 @@ pub fn face_boxes(
 }
 
 /// `pose` with the face's nod and look (`face_slide`) cut back, as one
-/// group, so that, open or shut, every mark that slides and every piece of
-/// the accessory worn in a `kind` view (`face_pieces`, which move with the
-/// face: `FacePiece::place`) stay inside `shape`, and all but the notch's
-/// earcups and scarf stay left of `clock_left` (what sits right of the
-/// face). A piece that would leave cuts the whole group's move, so the face
-/// never goes further than what it wears. The nod is cut first (in
-/// `nod_dip`), then the slide down or up, then across; the cut slide is in
-/// `eye_dx_dip` and `glance_y`, `glance_x` is 0. Like `eyes_offset_in`, a
-/// guard: where the face has its room the look's own extremes fit.
+/// group, so that, open or shut, every mark that slides and every
+/// whole-object piece the face wears in a `kind` view (`face_pieces`: the
+/// glasses, the bow tie, the bow, the flower) stay inside `shape` and left
+/// of `clock_left` (what sits right of the face). A piece that would leave
+/// cuts the whole group's move, so the face never goes further than what it
+/// wears. The edge pieces (`FaceAnchor::hugs_edge`: earcups, scarf, hats)
+/// move as far as the face but never cut it: the island's outline clips
+/// them. The nod is cut first (in `nod_dip`), then the slide down or up,
+/// then across; the cut slide is in `eye_dx_dip` and `glance_y`,
+/// `glance_x` is 0. Like `eyes_offset_in`, a guard: where the face has its
+/// room the look's own extremes fit.
 #[allow(clippy::too_many_arguments)]
 pub fn face_pose_in(
     style: Style,
@@ -951,7 +967,7 @@ pub fn face_pose_in(
     look: CatLook,
     pose: Pose,
 ) -> Pose {
-    use super::cat_style::{FaceAnchor, face_pieces};
+    use super::cat_style::face_pieces;
     let u = face_unit(scale);
     let (want_x, want_y) = face_slide(&pose, scale);
     let still = Pose {
@@ -969,28 +985,30 @@ pub fn face_pose_in(
         w: shape.w,
         h: shape.h,
     };
-    let pieces = face_pieces(look.accessory, kind, rect, centre, u);
+    // The whole objects; the edge pieces move as far and are clipped.
+    let pieces: Vec<_> = face_pieces(look.accessory, kind, rect, centre, u)
+        .into_iter()
+        .filter(|p| !p.anchor.hugs_edge())
+        .collect();
     // Open and shut: a blink never moves the eyes.
     let marks: Vec<FaceBox> = [false, true]
         .into_iter()
         .flat_map(|blink| face_boxes(look, expr, blink, centre, scale, (0.0, 0.0), 0.0))
         .filter(|b| b.kind == FaceBoxKind::Mark)
         .collect();
-    let inside = |x: f32, y: f32, clock: bool| {
-        shape_contains(style, shape, x, y) && (!clock || clock_left.is_none_or(|c| x < c))
-    };
+    let inside =
+        |x: f32, y: f32| shape_contains(style, shape, x, y) && clock_left.is_none_or(|c| x < c);
     // The marks and the pieces all move by (dx, dy): the slide plus the nod.
     let fits = |dx: f32, dy: f32| {
         marks.iter().all(|b| {
             let (l, t, r, b) = (b.l + dx, b.t + dy, b.r + dx, b.b + dy);
             [(l, t), (r, t), (l, b), (r, b)]
                 .into_iter()
-                .all(|(x, y)| inside(x, y, true))
+                .all(|(x, y)| inside(x, y))
         }) && pieces.iter().all(|p| {
-            let clock = p.anchor != FaceAnchor::Notch;
             p.corners((dx, dy), 0.0)
                 .into_iter()
-                .all(|(x, y)| inside(x, y, clock))
+                .all(|(x, y)| inside(x, y))
         })
     };
     // A cut move ends right on the outline: keep a hair inside it, so the
