@@ -3335,6 +3335,33 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                     .map(|(key, thumb)| ToastLogoView { key, thumb }),
                 _ => None,
             };
+            // A story scene draws its own mascot, whatever `DI_MASCOT` says.
+            let look = match scene.play {
+                DemoPlay::MalingAngka(_)
+                | DemoPlay::Kelelawar(_)
+                | DemoPlay::TerbangKeliling(_)
+                | DemoPlay::FalkOpen
+                | DemoPlay::FalkHang => CatLook {
+                    mascot: Mascot::Falk,
+                    ..cat
+                },
+                DemoPlay::CatBody
+                | DemoPlay::SyalEkor(_)
+                | DemoPlay::PetakUmpet(_)
+                | DemoPlay::BantalAngka(_)
+                | DemoPlay::PianoEkor(_) => CatLook {
+                    mascot: Mascot::Cat,
+                    ..cat
+                },
+                DemoPlay::OctopusArms
+                | DemoPlay::PenasaranJam(_)
+                | DemoPlay::PelukPulau(_)
+                | DemoPlay::Bungee(_) => CatLook {
+                    mascot: Mascot::Octopus,
+                    ..cat
+                },
+                _ => cat,
+            };
             let frame = Frame {
                 view: &view,
                 caption: scene.caption.filter(|_| match scene.view {
@@ -3458,35 +3485,9 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                 }),
                 tiles: scene_tiles(&scene),
                 palette,
-                // A story scene draws its own mascot, whatever `DI_MASCOT` says.
-                cat: match scene.play {
-                    DemoPlay::MalingAngka(_)
-                    | DemoPlay::Kelelawar(_)
-                    | DemoPlay::TerbangKeliling(_)
-                    | DemoPlay::FalkOpen
-                    | DemoPlay::FalkHang => CatLook {
-                        mascot: Mascot::Falk,
-                        ..cat
-                    },
-                    DemoPlay::CatBody
-                    | DemoPlay::SyalEkor(_)
-                    | DemoPlay::PetakUmpet(_)
-                    | DemoPlay::BantalAngka(_)
-                    | DemoPlay::PianoEkor(_) => CatLook {
-                        mascot: Mascot::Cat,
-                        ..cat
-                    },
-                    DemoPlay::OctopusArms
-                    | DemoPlay::PenasaranJam(_)
-                    | DemoPlay::PelukPulau(_)
-                    | DemoPlay::Bungee(_) => CatLook {
-                        mascot: Mascot::Octopus,
-                        ..cat
-                    },
-                    _ => cat,
-                },
+                cat: look,
                 notch_style: notch_colour::effective_style(notch_style, scene.robot.is_some()),
-                notch_tint: notch_colour::tint(cat, scene.robot.is_some(), palette.accent),
+                notch_tint: notch_colour::tint(look, scene.robot.is_some(), palette.accent),
                 fill_alpha,
                 legibility: notch_fill::legibility(fill_alpha),
                 clock: match scene.clock {

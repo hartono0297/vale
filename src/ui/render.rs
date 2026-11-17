@@ -69,7 +69,7 @@ use super::geometry::{
 };
 use super::icons::{Icon, IconSet};
 use super::motion::{StripFrame, Transit};
-use super::geometry::{panel_kind, shape_for};
+use super::geometry::{NOTCH_H_MAX, ShapeKind, panel_kind, shape_for};
 use super::notch_colour::{self, CLOSED_T, PANEL_T, TOP_STOP};
 use super::panel_layout::Region;
 use super::peek_face::{peek_face, peek_fill};
@@ -1043,10 +1043,20 @@ pub struct Renderer {
     legible: std::cell::Cell<f32>,
     /// The cat's colour and accessory for this frame (`Frame::cat`).
     cat: std::cell::Cell<CatLook>,
-    /// The closed island's Gradasi while its content is painted, for the
-    /// marks that check their contrast against it (the mascot's halo, the
-    /// REC dot's ring); `None` on a plain fill and outside that content.
+    /// The Gradasi `paint_island` filled the island with this frame (the
+    /// colours as painted: blended with the face and the panel's), for the
+    /// marks that check their contrast against it (the REC dots' rings, the
+    /// mascot's halo); `None` on a plain fill and outside `paint_island`.
     notch_grad: std::cell::Cell<Option<NotchGrad>>,
+    /// The closed island's content is being painted: the mascot's halo
+    /// checks `notch_grad` (never the panel's mascot).
+    notch_halo: std::cell::Cell<bool>,
+    /// A story's share of the mascot's halo (`paint_story_mascot`), 1
+    /// otherwise; Gradasi's halo is scaled by it like the see-through one.
+    halo_scale: std::cell::Cell<f32>,
+    /// Gradasi's bottom colours for the (surface, tint, accent) they were
+    /// worked out for.
+    bottoms: std::cell::Cell<Option<((u32, u32, u32), Bottoms)>>,
     /// The Notifikasi time column's width (`notif_time_w`) for the language
     /// and year it was measured for; `set_ui_font` clears it.
     notif_time_cache: std::cell::Cell<Option<(crate::i18n::Lang, i32, f32)>>,
@@ -1177,6 +1187,9 @@ struct Target {
     /// A `Draw::Clipped`'s clip, inside any of the others. Clipped parts
     /// never nest.
     clip: ID2D1Layer,
+    /// Gradasi's brush and what it was made for (top, bottom, alpha bits,
+    /// the shape's y and height bits): remade only when one changes.
+    gradient: std::cell::RefCell<Option<([u32; 5], ID2D1Brush)>>,
 }
 
 /// 32-bpp top-down DIB selected into a memory DC; the layered window is
@@ -1320,6 +1333,9 @@ impl Renderer {
                 robot_later: std::cell::Cell::new(None),
                 legible: std::cell::Cell::new(0.0),
                 notch_grad: std::cell::Cell::new(None),
+                notch_halo: std::cell::Cell::new(false),
+                halo_scale: std::cell::Cell::new(1.0),
+                bottoms: std::cell::Cell::new(None),
                 cat: std::cell::Cell::new(CatLook::default()),
                 notif_time_cache: std::cell::Cell::new(None),
                 pomo_time_cache: std::cell::Cell::new(None),
@@ -2209,6 +2225,7 @@ impl Renderer {
                 layer2,
                 fade,
                 clip,
+                gradient: std::cell::RefCell::new(None),
             });
         }
         Ok(())
@@ -2462,22 +2479,18 @@ impl Renderer {
     }
 
     /// How the island's shape is filled for `frame` at rest: the open
-    /// panel's fill for the panel, the closed island's for every other view.
-    /// `paint_island` asks `island_fill_at` with the morph's share instead.
+    /// panel's fill for the panel, a notice's for a notice, the closed
+    /// island's for every other view. `paint_island` asks `island_fill_at`
+    /// with the morph's shares instead.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn island_fill(&self, frame: &Frame) -> IslandFill {
-        let panel = if matches!(frame.view, View::Panel(_)) {
-            1.0
-        } else {
-            0.0
-        };
-        self.island_fill_at(frame, panel)
+        self.island_fill_at(frame, Shares::at_rest(frame.view))
     }
 
-    /// `island_fill` with a gradient's bottom `panel` of the way from the
-    /// closed island's to the open panel's (`panel_share`, while one morphs
-    /// into the other).
-    fn island_fill_at(&self, frame: &Frame, panel: f32) -> IslandFill {
+    /// `island_fill` with a gradient's bottom blended by `shares` (a notice's
+    /// over the closed view's, the panel's over both) while one view morphs
+    /// into another.
+    fn island_fill_at(&self, frame: &Frame, shares: Shares) -> IslandFill {
         let surface = self.palette.surface;
         let alpha = frame.fill_alpha.clamp(0.0, 1.0);
         // Shrunk (or shrinking) to the eyes, the fill blends to the face
@@ -2494,16 +2507,12 @@ impl Renderer {
             // Jadi muka draws Gradasi until its face is painted (Task 5): its
             // solid face fill on the closed compact views goes in here.
             NotchStyle::Gradient | NotchStyle::Face => {
-                let closed = self.closed_bottom(frame);
-                let bottom = if panel > 0.0 {
-                    mix(closed, self.panel_bottom(frame), panel.min(1.0))
-                } else {
-                    closed
-                };
+                let b = self.bottoms(frame);
+                let bottom = mix(self.closed_bottom(frame, shares.notice), b.panel, shares.panel);
                 match face {
                     Some(face) => {
                         let (top, alpha) = peek_fill(surface, alpha, face, frame.peek_mix);
-                        let bottom = mix(bottom, face, frame.peek_mix.clamp(0.0, 1.0));
+                        let bottom = mix(bottom, face, frame.peek_mix);
                         IslandFill::Gradient { top, bottom, alpha }
                     }
                     None => IslandFill::Gradient {
@@ -2516,64 +2525,128 @@ impl Renderer {
         }
     }
 
-    /// The gradient's bottom colour on the closed island: a notice's also
-    /// keeps the accent at 3:1.
-    fn closed_bottom(&self, frame: &Frame) -> u32 {
-        let accent = matches!(frame.view, View::Notice(_)).then_some(self.palette.accent);
-        notch_colour::bottom(self.palette.surface, frame.notch_tint, CLOSED_T, accent)
+    /// Gradasi's bottom colours for this frame's surface, tint and accent,
+    /// worked out once for each of them.
+    fn bottoms(&self, frame: &Frame) -> Bottoms {
+        let (surface, tint, accent) = (self.palette.surface, frame.notch_tint, self.palette.accent);
+        let key = (surface, tint, accent);
+        if let Some((k, b)) = self.bottoms.get()
+            && k == key
+        {
+            return b;
+        }
+        let b = Bottoms {
+            closed: notch_colour::bottom(surface, tint, CLOSED_T, None),
+            notice: notch_colour::bottom(surface, tint, CLOSED_T, Some(accent)),
+            panel: notch_colour::bottom(surface, tint, PANEL_T, Some(accent)),
+        };
+        self.bottoms.set(Some((key, b)));
+        b
     }
 
-    /// The gradient's bottom colour on the open panel.
-    fn panel_bottom(&self, frame: &Frame) -> u32 {
-        notch_colour::bottom(
-            self.palette.surface,
-            frame.notch_tint,
-            PANEL_T,
-            Some(self.palette.accent),
-        )
+    /// The closed island's bottom colour, `notice` of the way from a closed
+    /// view's to a notice's (which also keeps the accent at 3:1).
+    fn closed_bottom(&self, frame: &Frame, notice: f32) -> u32 {
+        let b = self.bottoms(frame);
+        mix(b.closed, b.notice, notice)
     }
 
-    /// The palette the closed island's content is drawn with: under Gradasi
-    /// an accent under 3:1 on the bottom colour takes the text colour.
+    /// The palette the closed island's content is drawn with at rest: under
+    /// Gradasi an accent under 3:1 on the bottom colour takes the text colour.
+    #[cfg(test)]
     fn content_palette(&self, frame: &Frame) -> Palette {
+        let notice = Shares::at_rest(frame.view).notice;
+        self.content_palette_on(frame, self.closed_bottom(frame, notice))
+    }
+
+    /// `content_palette` on the closed bottom colour `closed`.
+    fn content_palette_on(&self, frame: &Frame, closed: u32) -> Palette {
         match frame.notch_style {
             NotchStyle::Plain => self.palette,
             NotchStyle::Gradient | NotchStyle::Face => {
-                notch_colour::gradient_palette(self.palette, self.closed_bottom(frame))
+                notch_colour::gradient_palette(self.palette, closed)
             }
         }
     }
 
     /// Gradasi's brush over `r`'s height: `top` down to `TOP_STOP`, then to
-    /// `bottom` at the bottom edge, every stop at `alpha`.
+    /// `bottom` at the bottom edge, every stop at `alpha`. Kept on the target
+    /// and made again only when one of them changes.
     fn island_gradient(&self, r: Rect, top: u32, bottom: u32, alpha: f32) -> Result<ID2D1Brush> {
         let target = self.target.as_ref().expect("target ensured by paint");
+        let key = [top, bottom, alpha.to_bits(), r.y.to_bits(), r.h.to_bits()];
+        if let Some((k, brush)) = target.gradient.borrow().as_ref()
+            && *k == key
+        {
+            return Ok(brush.clone());
+        }
         let stops = [(0.0, top), (TOP_STOP, top), (1.0, bottom)].map(|(position, rgb)| {
             D2D1_GRADIENT_STOP {
                 position,
                 color: color(rgb, alpha),
             }
         });
-        unsafe {
+        let brush: ID2D1Brush = unsafe {
             let stops = target.rt.CreateGradientStopCollection(
                 &stops,
                 D2D1_GAMMA_2_2,
                 D2D1_EXTEND_MODE_CLAMP,
             )?;
-            let brush = target.rt.CreateLinearGradientBrush(
-                &D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES {
-                    startPoint: Vector2::new(0.0, r.y),
-                    endPoint: Vector2::new(0.0, r.bottom()),
-                },
-                None,
-                &stops,
-            )?;
-            brush.cast()
+            target
+                .rt
+                .CreateLinearGradientBrush(
+                    &D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES {
+                        startPoint: Vector2::new(0.0, r.y),
+                        endPoint: Vector2::new(0.0, r.bottom()),
+                    },
+                    None,
+                    &stops,
+                )?
+                .cast()?
+        };
+        *target.gradient.borrow_mut() = Some((key, brush.clone()));
+        Ok(brush)
+    }
+
+    /// How strong the mascot's dark halo is: the see-through one
+    /// (`legible`), or under Gradasi a coat under 3:1 on the island's bottom
+    /// colour gets it in full, scaled by a story's share (`halo_scale`).
+    fn halo_strength(&self) -> f32 {
+        let look = self.cat.get();
+        let on_tint = self.notch_halo.get()
+            && self.notch_grad.get().is_some_and(|g| {
+                notch_colour::needs_halo(look.head_rgb(), g.bottom, look.rim().is_some())
+            });
+        if on_tint {
+            self.halo_scale.get()
+        } else {
+            self.legible.get()
         }
     }
 
+    /// Whether a `mark` at `y` (`None`: anywhere, judged on the bottom
+    /// colour) needs a ring in the text colour on this frame's Gradasi.
+    fn mark_needs_ring(&self, mark: u32, y: Option<f32>) -> bool {
+        self.notch_grad.get().is_some_and(|g| {
+            let under = y.map_or(g.bottom, |y| g.at(y));
+            notch_colour::needs_ring(mark, under)
+        })
+    }
+
+    /// Paints the island; what it noted for the marks over its Gradasi goes
+    /// with it, so nothing painted after it sees this frame's fill.
     fn paint_island(&mut self, style: Style, shape: ShapeRect, frame: &Frame) -> Result<()> {
+        let painted = self.paint_island_inner(style, shape, frame);
         self.notch_grad.set(None);
+        self.notch_halo.set(false);
+        self.halo_scale.set(1.0);
+        painted
+    }
+
+    fn paint_island_inner(&mut self, style: Style, shape: ShapeRect, frame: &Frame) -> Result<()> {
+        self.notch_grad.set(None);
+        self.notch_halo.set(false);
+        self.halo_scale.set(1.0);
         let view = frame.view;
         let radius = corner_radius(style, shape);
         // A play draws the island from its deformed outline. Built before
@@ -2609,7 +2682,12 @@ impl Renderer {
                 self.paint_parts(pass, island, shape, frame, p, alpha);
             }
         }
-        let fill = self.island_fill_at(frame, panel_share(style, shape, frame));
+        let shares = Shares {
+            notice: notice_share(shape),
+            panel: panel_share(style, shape, frame),
+        };
+        let fill = self.island_fill_at(frame, shares);
+        self.notch_grad.set(NotchGrad::of(fill, shape_rect(shape)));
         let gradient;
         unsafe {
             // Plain: the one solid brush, as ever. Gradasi: a vertical
@@ -2682,14 +2760,8 @@ impl Renderer {
         // content is drawn; the panel closing above keeps its own palette.
         let base = self.palette;
         if frame.notch_style != NotchStyle::Plain {
-            let r = shape_rect(shape);
-            self.notch_grad.set(Some(NotchGrad {
-                y: r.y,
-                h: r.h,
-                top: base.surface,
-                bottom: self.closed_bottom(frame),
-            }));
-            self.palette = self.content_palette(frame);
+            self.notch_halo.set(true);
+            self.palette = self.content_palette_on(frame, self.closed_bottom(frame, shares.notice));
         }
         // Only the compact views and notices carry the shadow, never the
         // panel that is closing out of them.
@@ -2800,7 +2872,7 @@ impl Renderer {
             }
         }
         self.palette = base;
-        self.notch_grad.set(None);
+        self.notch_halo.set(false);
         // The busy toast's logo, at the slot's alpha, over the island's own
         // fill: no shadow on it.
         self.legible.set(0.0);
@@ -2904,6 +2976,7 @@ impl Renderer {
     /// together by the shot's `alpha`.
     fn paint_story_mascot(&self, area: Rect, robot: RobotFrame, m: &MascotShot, halo: f32) {
         self.legible.set(self.legible.get() * halo.clamp(0.0, 1.0));
+        self.halo_scale.set(self.halo_scale.get() * halo.clamp(0.0, 1.0));
         let k = area.w / GRID;
         let pivot = (area.x + HEAD_PIVOT.0 * k, area.y + HEAD_PIVOT.1 * k);
         let own = Matrix3x2::scale_around(m.sx, m.sy, Vector2::new(pivot.0, pivot.1))
@@ -3367,13 +3440,9 @@ impl Renderer {
         let target = self.target.as_ref().expect("target ensured by paint");
         // On a see-through island: a soft dark halo round the mascot (the
         // cat's head, the falk's egg and crest, the octopus's mantle and
-        // arms), so the face reads on a light wallpaper. Gradasi gives it at
-        // full strength to a coat under 3:1 on the bottom colour.
-        let look = self.cat.get();
-        let on_tint = self.notch_grad.get().is_some_and(|g| {
-            notch_colour::needs_halo(look.head_rgb(), g.bottom, look.rim().is_some())
-        });
-        let strength = if on_tint { 1.0 } else { self.legible.get() };
+        // arms), so the face reads on a light wallpaper; under Gradasi also
+        // a coat that would not read on the bottom colour (`halo_strength`).
+        let strength = self.halo_strength();
         if strength > 0.0 {
             // The halo follows the dance's nod.
             let (head, radius) = super::mascot::mascot_box(
@@ -5152,6 +5221,19 @@ struct NotchGrad {
 }
 
 impl NotchGrad {
+    /// The Gradasi of `fill` over `r`; `None` for a solid fill.
+    fn of(fill: IslandFill, r: Rect) -> Option<NotchGrad> {
+        match fill {
+            IslandFill::Solid { .. } => None,
+            IslandFill::Gradient { top, bottom, .. } => Some(NotchGrad {
+                y: r.y,
+                h: r.h,
+                top,
+                bottom,
+            }),
+        }
+    }
+
     /// The fill's colour at `y`, as the brush paints it.
     fn at(&self, y: f32) -> u32 {
         let p = if self.h > 0.0 {
@@ -5167,10 +5249,48 @@ impl NotchGrad {
     }
 }
 
+/// Gradasi's three bottom colours (`notch_colour::bottom`): a closed view's,
+/// a notice's (the accent kept at 3:1) and the open panel's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Bottoms {
+    closed: u32,
+    notice: u32,
+    panel: u32,
+}
+
+/// How far the island's Gradasi bottom has turned into a notice's and into
+/// the open panel's (each 0..=1).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Shares {
+    notice: f32,
+    panel: f32,
+}
+
+impl Shares {
+    /// `view` settled: all its own.
+    fn at_rest(view: &View) -> Shares {
+        Shares {
+            notice: if matches!(view, View::Notice(_)) { 1.0 } else { 0.0 },
+            panel: if matches!(view, View::Panel(_)) { 1.0 } else { 0.0 },
+        }
+    }
+}
+
+/// How far the island's fill is a notice's rather than a closed view's: the
+/// shape's height between the tallest closed view (`NOTCH_H_MAX`) and a
+/// notice's, which the morph eases as it does the fill. The panel is past
+/// both (`panel_share` takes over there).
+fn notice_share(shape: ShapeRect) -> f32 {
+    let closed = NOTCH_H_MAX as f32;
+    let notice = shape_for(Style::Notch, ShapeKind::Notice).h;
+    ((shape.h - closed) / (notice - closed)).clamp(0.0, 1.0)
+}
+
 /// How far the island's fill is the open panel's (0 a closed view, 1 the
-/// panel): settled panel 1, and while the panel opens or closes the shape's
-/// height between the closed view's (`fade_floor_h`) and the panel's, which
-/// the morph eases as it does the fill.
+/// panel): while the panel opens or closes, the shape's height between the
+/// closed view's (`fade_floor_h`) and the smallest panel's, which the morph
+/// eases as it does the fill. A panel at least as tall as the smallest one
+/// is all panel, so a panel resizing into another stays the panel's.
 fn panel_share(style: Style, shape: ShapeRect, frame: &Frame) -> f32 {
     let page = match (frame.view, frame.transit.leaving) {
         (View::Panel(_), _) => frame.page,
@@ -5181,14 +5301,15 @@ fn panel_share(style: Style, shape: ShapeRect, frame: &Frame) -> f32 {
         style,
         panel_kind(page, frame.cli.tall, frame.cleaner.is_some()),
     );
-    let floor = frame.transit.fade_floor_h;
-    if shape == rest {
+    let full = rest.h.min(shape_for(style, ShapeKind::Panel).h);
+    if shape.h >= full {
         return 1.0;
     }
-    if rest.h <= floor {
+    let floor = frame.transit.fade_floor_h;
+    if full <= floor {
         return if matches!(frame.view, View::Panel(_)) { 1.0 } else { 0.0 };
     }
-    ((shape.h - floor) / (rest.h - floor)).clamp(0.0, 1.0)
+    ((shape.h - floor) / (full - floor)).clamp(0.0, 1.0)
 }
 
 /// 0xRRGGBB plus alpha as a Direct2D color (straight alpha; Direct2D premultiplies).
@@ -6151,6 +6272,201 @@ mod tests {
         assert_eq!(at(idle, None, half), 0.0);
         let compact = shape_for(Style::Notch, ShapeKind::MediaCompact);
         assert_eq!(at(idle, None, compact.h), 0.0);
+    }
+
+    #[test]
+    fn a_panel_resizing_into_another_stays_the_panel_s() {
+        // Panel (290) into the enlarged CLI (440): the morph keeps the
+        // content at 1 with a floor far under the closed views
+        // (`floor_for_alpha(290, 440, 1.0)`), which must not read as closing.
+        let tall = shape_for(Style::Notch, ShapeKind::PanelTall);
+        let small = shape_for(Style::Notch, ShapeKind::Panel);
+        let floor = (small.h - 0.7 * tall.h) / 0.3;
+        let at = |h: f32, floor: f32| {
+            with_frame_tweaked(
+                None,
+                None,
+                None,
+                1.0,
+                |f| {
+                    f.view = leak(View::Panel(Page::Cli));
+                    f.page = Page::Cli;
+                    f.cli.tall = true;
+                    f.transit.fade_floor_h = floor;
+                },
+                |frame| panel_share(Style::Notch, ShapeRect { h, ..tall }, frame),
+            )
+        };
+        for h in [small.h, (small.h + tall.h) / 2.0, tall.h] {
+            assert_eq!(at(h, floor), 1.0, "{h}");
+        }
+        // Opening the tall one from the closed island: all panel by the
+        // smallest panel's height, never a jump.
+        assert_eq!(at(34.0, 34.0), 0.0);
+        assert!((at(34.0 + (small.h - 34.0) / 2.0, 34.0) - 0.5).abs() < 1e-4);
+        assert_eq!(at(small.h, 34.0), 1.0);
+    }
+
+    #[test]
+    fn the_bottom_turns_into_a_notice_s_with_the_shape() {
+        let closed = NOTCH_H_MAX as f32;
+        let notice = shape_for(Style::Notch, ShapeKind::Notice).h;
+        let s = |h: f32| notice_share(ShapeRect { h, ..shape(Style::Notch, 190.0, 34.0) });
+        assert_eq!(s(28.0), 0.0);
+        assert_eq!(s(closed), 0.0);
+        assert!((s((closed + notice) / 2.0) - 0.5).abs() < 1e-4);
+        assert_eq!(s(notice), 1.0);
+        assert_eq!(s(shape_for(Style::Notch, ShapeKind::NoticeShot).h), 1.0);
+        // Halfway, the bottom is halfway between the two caps.
+        let mut r = renderer();
+        let got = with_frame_tweaked(
+            None,
+            None,
+            None,
+            1.0,
+            notch_styled(NotchStyle::Gradient, leak(a_notice())),
+            |frame| {
+                r.palette = frame.palette;
+                let b = r.bottoms(frame);
+                let half = Shares { notice: 0.5, panel: 0.0 };
+                (r.island_fill_at(frame, half), mix(b.closed, b.notice, 0.5))
+            },
+        );
+        let IslandFill::Gradient { bottom, .. } = got.0 else {
+            panic!("{:?}", got.0);
+        };
+        assert_eq!(bottom, got.1);
+    }
+
+    #[test]
+    fn the_bottoms_follow_the_palette_and_the_tint() {
+        use super::super::notch_colour::bottom;
+        let mut r = renderer();
+        for (accent, tint) in [
+            (Accent::Terracotta, 0xE2683C),
+            (Accent::Sage, 0xE2683C),
+            (Accent::Sage, 0xF6D04A),
+        ] {
+            let b = with_frame_tweaked(
+                None,
+                None,
+                None,
+                1.0,
+                |f| {
+                    notch_styled(NotchStyle::Gradient, leak(View::Idle))(f);
+                    f.palette = theme::island(accent, theme::Surface::Espresso);
+                    f.notch_tint = tint;
+                },
+                |frame| {
+                    r.palette = frame.palette;
+                    r.bottoms(frame)
+                },
+            );
+            let (s, a) = (r.palette.surface, r.palette.accent);
+            assert_eq!(
+                b,
+                Bottoms {
+                    closed: bottom(s, tint, CLOSED_T, None),
+                    notice: bottom(s, tint, CLOSED_T, Some(a)),
+                    panel: bottom(s, tint, PANEL_T, Some(a)),
+                },
+                "{accent:?} {tint:06X}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_gradient_brush_is_made_again_only_when_it_changes() {
+        let mut r = renderer();
+        r.ensure_target(SIZE { cx: 16, cy: 16 }).unwrap();
+        let rect = Rect { x: 0.0, y: 0.0, w: 190.0, h: 34.0 };
+        let raw = |r: &Renderer, rect: Rect, alpha: f32| {
+            r.island_gradient(rect, 0x17120F, 0x723923, alpha).unwrap().as_raw()
+        };
+        let first = raw(&r, rect, 1.0);
+        assert_eq!(raw(&r, rect, 1.0), first);
+        assert_ne!(raw(&r, rect, 0.5), first);
+        assert_ne!(raw(&r, Rect { h: 40.0, ..rect }, 0.5), raw(&r, rect, 0.5));
+    }
+
+    #[test]
+    fn the_halo_on_gradasi_follows_the_story_s_share() {
+        let r = renderer();
+        let look = CatLook::default();
+        r.cat.set(look);
+        r.legible.set(0.2);
+        // A bottom the coat does not read on.
+        let grad = NotchGrad { y: 0.0, h: 34.0, top: 0x17120F, bottom: look.head_rgb() };
+        r.notch_grad.set(Some(grad));
+        assert_eq!(r.halo_strength(), 0.2, "only the closed content's mascot");
+        r.notch_halo.set(true);
+        assert_eq!(r.halo_strength(), 1.0);
+        r.halo_scale.set(0.5);
+        assert_eq!(r.halo_strength(), 0.5);
+        // A bottom it reads on: the see-through halo as ever.
+        r.notch_grad.set(Some(NotchGrad { bottom: 0x17120F, ..grad }));
+        assert_eq!(r.halo_strength(), 0.2);
+    }
+
+    #[test]
+    fn rec_marks_get_a_ring_only_where_the_gradasi_hides_them() {
+        let r = renderer();
+        let red = theme::REC_RED;
+        assert!(!r.mark_needs_ring(red, None), "plain");
+        let grad = NotchGrad { y: 0.0, h: 40.0, top: 0x17120F, bottom: red };
+        r.notch_grad.set(Some(grad));
+        assert!(r.mark_needs_ring(red, None));
+        assert!(r.mark_needs_ring(red, Some(40.0)));
+        assert!(!r.mark_needs_ring(red, Some(5.0)), "on the dark top");
+        r.notch_grad.set(Some(NotchGrad { bottom: 0x17120F, ..grad }));
+        assert!(!r.mark_needs_ring(red, None));
+    }
+
+    #[test]
+    fn marks_are_judged_on_the_colours_as_painted() {
+        // Shrunk to the eyes, the gradient has blended to the face: that is
+        // what the marks check against, not the bottom before the blend.
+        let mut r = renderer();
+        let fill = with_frame_tweaked(
+            None,
+            None,
+            None,
+            1.0,
+            |f| {
+                notch_styled(NotchStyle::Gradient, leak(View::Idle))(f);
+                f.peek_mix = 1.0;
+            },
+            |frame| fill_of(&mut r, frame),
+        );
+        let face = peek_face(CatLook::default(), 0x17120F).fill;
+        let rect = Rect { x: 0.0, y: 0.0, w: 34.0, h: 14.0 };
+        let grad = NotchGrad::of(fill, rect).expect("a gradient");
+        assert_eq!((grad.top, grad.bottom), (face, face));
+        assert_eq!(NotchGrad::of(IslandFill::Solid { rgb: 1, alpha: 1.0 }, rect), None);
+    }
+
+    #[test]
+    fn nothing_after_the_island_sees_its_gradasi() {
+        let mut r = renderer();
+        let s = shape(Style::Notch, 190.0, 34.0);
+        let dip = (crate::ui::geometry::WINDOW_W, s.y + s.h + 4.0);
+        for view in [leak(View::Idle), leak(View::Panel(Page::ALL[0]))] {
+            with_frame_tweaked(
+                None,
+                None,
+                None,
+                1.0,
+                notch_styled(NotchStyle::Gradient, view),
+                |frame| {
+                    r.palette = frame.palette;
+                    painted(&mut r, dip, |r| r.paint_island(Style::Notch, s, frame).unwrap())
+                },
+            );
+            assert_eq!(r.notch_grad.get(), None);
+            assert!(!r.notch_halo.get());
+            assert_eq!(r.halo_scale.get(), 1.0);
+            assert_eq!(r.palette, theme::island(Accent::Terracotta, theme::Surface::Espresso));
+        }
     }
 
     #[test]
