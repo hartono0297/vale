@@ -2964,6 +2964,39 @@ mod tests {
         assert!(checked > 100, "{checked}");
     }
 
+    /// The hats' brims move with the face but never cut it: at its full
+    /// glance right (`face_side_reach`, and nodding), every brim piece, its
+    /// edge included, still ends left of the clock / content, on every size,
+    /// style and view.
+    #[test]
+    fn hat_brims_stay_clear_of_the_clock_at_full_glance() {
+        use crate::theme::CatAccessory;
+        use crate::ui::cat_style::face_pieces;
+        use crate::ui::robot::{NOD_MAX_DIP, face_unit};
+        let mut checked = 0;
+        for style in [Style::Pill, Style::Notch] {
+            for size in notch_sizes() {
+                for hat in [CatAccessory::Nightcap, CatAccessory::Crown, CatAccessory::Sailor] {
+                    for view in face_views(style, size, hat) {
+                        let FaceView { name, kind, shape: s, clock, area } = view;
+                        let Some(c) = clock else {
+                            continue;
+                        };
+                        let unit = face_unit(face_scale(area, hat));
+                        let reach = face_side_reach(kind, unit);
+                        for p in face_pieces(hat, kind, as_rect(s), centre_of(area), unit) {
+                            for (x, _) in p.corners((reach, 0.0), NOD_MAX_DIP) {
+                                assert!(x < c, "{style:?} {size:?} {name} {hat:?}: {x} reaches the clock at {c}");
+                            }
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 1_000, "{checked}");
+    }
+
     /// The scarf's band runs past both ends of the notch by the face's
     /// sideways reach, so sliding with the face never opens a gap at either
     /// end (the outline clips what is past it).

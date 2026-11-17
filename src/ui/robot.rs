@@ -1014,7 +1014,7 @@ pub fn face_pose_in(
     // A cut move ends right on the outline: keep a hair inside it, so the
     // painter's own sums (the slide back from `glance_y`, the nod added
     // last) never round out of it.
-    let reach = |want: f32, fits: &dyn Fn(f32) -> bool| {
+    let reach_in = |want: f32, fits: &dyn Fn(f32) -> bool| {
         let got = reach(want, fits);
         if got == want {
             got
@@ -1022,9 +1022,9 @@ pub fn face_pose_in(
             got.signum() * (got.abs() - FACE_CUT_MARGIN).max(0.0)
         }
     };
-    let nod = reach(pose.nod_dip, &|v| fits(0.0, v));
-    let dy = reach(want_y, &|v| fits(0.0, nod + v));
-    let dx = reach(want_x, &|v| fits(v, nod + dy));
+    let nod = reach_in(pose.nod_dip, &|v| fits(0.0, v));
+    let dy = reach_in(want_y, &|v| fits(0.0, nod + v));
+    let dx = reach_in(want_x, &|v| fits(v, nod + dy));
     Pose {
         eye_dx_dip: dx,
         glance_y: if u > 0.0 { dy / u } else { 0.0 },

@@ -1056,6 +1056,10 @@ pub struct Renderer {
     /// The island's outline for the face's mask and edge, kept for the
     /// (style, shape) it was built for.
     face_outline: std::cell::RefCell<Option<(OutlineKey, ID2D1Geometry)>>,
+    /// Jadi muka's line on the outline this frame (its colour, width and
+    /// alpha, `paint_face_edge`), gone back over the edge pieces once they
+    /// are painted; `None` where the island draws none.
+    face_line: std::cell::Cell<Option<(u32, f32, f32)>>,
     /// The dark shadow strength (0..1) the compact views' and notices'
     /// text, icons, equalizer, lyric and Bata are drawn with
     /// (`Frame::legibility`); 0 everywhere else, always for the panel.
@@ -1355,6 +1359,7 @@ impl Renderer {
                 face_last: std::cell::Cell::new(None),
                 face_clock: std::cell::Cell::new(None),
                 face_outline: std::cell::RefCell::new(None),
+                face_line: std::cell::Cell::new(None),
                 legible: std::cell::Cell::new(0.0),
                 notch_grad: std::cell::Cell::new(None),
                 notch_halo: std::cell::Cell::new(false),
@@ -2802,6 +2807,7 @@ impl Renderer {
         if *view == View::Hidden {
             return Ok(());
         }
+        self.face_line.set(None);
         if face_style && shares.face > 0.0 {
             // Jadi muka's edge on the island's outline, with the fill: the
             // same line on the notch, through the shrink and on the pill.
@@ -3623,6 +3629,8 @@ impl Renderer {
         let Some(edge) = peek_face(look, self.palette.surface).edge else {
             return;
         };
+        let width = if look.rim().is_some() { 1.5 } else { 1.0 };
+        self.face_line.set(Some((edge, width, alpha)));
         let outline = match played {
             Some(g) => g.clone(),
             None => match self.island_outline(style, shape) {
@@ -3630,15 +3638,25 @@ impl Renderer {
                 Err(_) => return,
             },
         };
-        let width = if look.rim().is_some() { 1.5 } else { 1.0 };
         let target = self.target.as_ref().expect("target ensured by paint");
         // Unbounded: the Notch's shoulders reach past the shape's box.
         self.push_face_mask(&outline, None);
+        self.stroke_face_edge(&outline, alpha);
+        unsafe { target.rt.PopLayer() };
+    }
+
+    /// This frame's Jadi muka line (`face_line`, set by `paint_face_edge`)
+    /// along `outline`, at most `alpha`, stroked twice as wide, inside a mask
+    /// of that outline the caller has pushed. Nothing where the island draws
+    /// none.
+    fn stroke_face_edge(&self, outline: &ID2D1Geometry, alpha: f32) {
+        let Some((edge, width, line_alpha)) = self.face_line.get() else {
+            return;
+        };
+        let alpha = alpha.min(line_alpha);
+        let target = self.target.as_ref().expect("target ensured by paint");
         self.set_color(edge, alpha);
-        unsafe {
-            target.rt.DrawGeometry(&outline, &target.brush, 2.0 * width, None);
-            target.rt.PopLayer();
-        }
+        unsafe { target.rt.DrawGeometry(outline, &target.brush, 2.0 * width, None) };
     }
 
     /// `shape_geometry`, kept while the (style, shape) stays: at rest the
@@ -3752,6 +3770,11 @@ impl Renderer {
             let _ = self
                 .robot
                 .paint_face_pieces(&target.rt, &target.brush, &pieces, scale, &pose, look, pieces_alpha);
+            // The edge pieces run over the outline: its line goes back on
+            // top of them, as the pale faces' edge and the Black cat's rim.
+            if pieces.iter().any(|p| p.anchor.hugs_edge()) {
+                self.stroke_face_edge(&outline, pieces_alpha);
+            }
         }
         unsafe { target.rt.PopLayer() };
     }
@@ -7357,6 +7380,57 @@ mod tests {
             }
         }
         assert_eq!(checked, 2 * 2 * 4 * 5);
+    }
+
+    /// The scarf's band runs over the island's sides, under the outline's
+    /// line: the pale face's 1 dip edge and the Black cat's 1.5 dip rim go
+    /// back on top of it, so the line holds where the band meets the side.
+    #[test]
+    fn the_face_edge_shows_over_the_scarf() {
+        use crate::theme::{CatAccessory, CatColor};
+        use crate::ui::cat_style::face_pieces;
+        use crate::ui::geometry::shape_contains;
+        let robot = RobotFrame { expr: Expr::Idle, pose: Pose::default() };
+        let mut checked = 0;
+        for style in [Style::Pill, Style::Notch] {
+            let s = shape(style, 190.0, 34.0);
+            let dip = (crate::ui::geometry::WINDOW_W, s.y + s.h + 4.0);
+            for (color, inset) in [(CatColor::White, 0.5), (CatColor::Black, 0.75)] {
+                let look = CatLook { color, accessory: CatAccessory::Scarf, ..CatLook::default() };
+                let mut r = renderer();
+                let (px, edge) = with_frame_tweaked(None, Some("12:34".into()), Some(robot), 1.0, face_frame(View::Idle, look), |frame| {
+                    r.palette = frame.palette;
+                    r.cat.set(frame.cat);
+                    let px = painted(&mut r, dip, |r| r.paint_island(style, s, frame).unwrap());
+                    (px, peek_face(look, frame.palette.surface).edge.expect("an edge"))
+                });
+                // Where the band meets each side: its middle line.
+                let (area, _) = face_idle_layout(s, true, CatAccessory::Scarf);
+                let unit = face_unit(face_scale(area, CatAccessory::Scarf));
+                let eyes = (area.x + area.w / 2.0, area.y + area.h / 2.0);
+                let band = face_pieces(CatAccessory::Scarf, ShapeKind::Idle, shape_rect(s), eyes, unit)
+                    .pop()
+                    .expect("the band");
+                let c = band.corners((0.0, 0.0), 0.0);
+                let (t, b) = c.iter().fold((f32::MAX, f32::MIN), |a, &(_, y)| (a.0.min(y), a.1.max(y)));
+                let y = (t + b) / 2.0;
+                let steps = (0..4000).map(|i| s.x + i as f32 * 0.05);
+                let left = steps.clone().find(|&x| shape_contains(style, s, x, y)).expect("the left side");
+                let right = steps.rev().find(|&x| shape_contains(style, s, x, y)).expect("the right side");
+                for x in [left + inset, right - inset] {
+                    // The pixel may straddle the outline: its colour without
+                    // the coverage (the target is premultiplied).
+                    let i = (((y * r.scale) as usize) * px.w + (x * r.scale) as usize) * 4;
+                    let a = f32::from(px.bgra[i + 3]).max(1.0) / 255.0;
+                    let ch = |k: usize| ((f32::from(px.bgra[i + k]) / a).round() as u32).min(255);
+                    let got = ch(2) << 16 | ch(1) << 8 | ch(0);
+                    assert!(a > 0.5, "{style:?} {color:?} at ({x}, {y}): coverage {a}");
+                    assert!(near_rgb(got, edge, 48), "{style:?} {color:?} at ({x}, {y}): #{got:06X} vs edge #{edge:06X}");
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(checked, 8);
     }
 
     #[test]

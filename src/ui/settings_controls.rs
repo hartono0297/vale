@@ -1840,17 +1840,24 @@ impl Painter<'_> {
         };
         unsafe { self.rt.PushLayer(&params, self.layer) };
         drop(ManuallyDrop::into_inner(params.geometricMask));
-        if let Some(edge) = super::peek_face::peek_face(look, s.island.surface).edge {
-            let width = if look.rim().is_some() { 1.5 } else { 1.0 };
-            self.set(edge, 1.0);
-            unsafe { self.rt.DrawGeometry(&outline, self.brush, 2.0 * width, None) };
-        }
+        let edge_line = || {
+            if let Some(edge) = super::peek_face::peek_face(look, s.island.surface).edge {
+                let width = if look.rim().is_some() { 1.5 } else { 1.0 };
+                self.set(edge, 1.0);
+                unsafe { self.rt.DrawGeometry(&outline, self.brush, 2.0 * width, None) };
+            }
+        };
+        edge_line();
         let robot = &self.gfx.robot;
         let _ = robot.paint_face(self.rt, self.brush, centre, scale, expr, &pose, look, self.alpha);
         let r = Rect { x: at.shape.x, y: at.shape.y, w: at.shape.w, h: at.shape.h };
         let unit = face_unit(scale);
         let pieces = super::cat_style::face_pieces(look.accessory, at.kind, r, centre, unit);
         let _ = robot.paint_face_pieces(self.rt, self.brush, &pieces, scale, &pose, look, self.alpha);
+        // The edge pieces run over the outline: its line goes back on top.
+        if pieces.iter().any(|p| p.anchor.hugs_edge()) {
+            edge_line();
+        }
         unsafe { self.rt.PopLayer() };
     }
 

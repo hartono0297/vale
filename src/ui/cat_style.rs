@@ -897,11 +897,12 @@ const CORNER_GAP: f32 = 1.0;
 const CORNER_PAD: f32 = 3.0;
 const CORNER_DOWN: f32 = 0.45;
 /// The hats' brims ("pinggiran"): the room kept above the eyes' box (dip);
-/// how far past the face's box they reach across (dip, well inside the gap to
-/// the clock); the least the hanging detail (the nightcap's tip, the sailor's
+/// how far past the face's box they reach across (dip: with the brim's edge
+/// and the face's full glance right, `robot::face_reach_x`, still short of
+/// the clock's 8 dip gap); the least the hanging detail (the nightcap's tip, the sailor's
 /// tails) shrinks to, against the face's unit, before it is left off.
 const RIM_GAP: f32 = 0.5;
-const RIM_PAST: f32 = 2.5;
+const RIM_PAST: f32 = 1.5;
 const RIM_DETAIL_MIN: f32 = 0.5;
 
 /// Where a face piece is placed at rest. Whatever its anchor, every piece
@@ -996,13 +997,14 @@ impl FacePiece {
     /// The colours under it on `look`'s face notch: the face's fill and each
     /// calico patch its box (at rest) reaches.
     pub fn colours_under(&self, look: CatLook) -> Vec<u32> {
+        self.colours_under_box(look, drawn_box(self))
+    }
+
+    /// The face's fill and each calico patch that reaches the box
+    /// `(l, t, r, b)` (dip), on `look`'s face this piece is worn on.
+    pub fn colours_under_box(&self, look: CatLook, (l, t, r, b): (f32, f32, f32, f32)) -> Vec<u32> {
         use super::peek_face::PeekMark;
         use super::robot::{FaceBoxKind, face_coat};
-        let corners = self.corners((0.0, 0.0), 0.0);
-        let (l, t, r, b) = corners.iter().fold(
-            (f32::MAX, f32::MAX, f32::MIN, f32::MIN),
-            |a, &(x, y)| (a.0.min(x), a.1.min(y), a.2.max(x), a.3.max(y)),
-        );
         let ((ex, ey), u) = self.face;
         let mut under = vec![super::peek_face::peek_face(look, 0).fill];
         for (mark, kind) in face_coat(look) {
@@ -1277,7 +1279,7 @@ fn side_in(shape: Rect, top: f32, bottom: f32) -> f32 {
 ///   the edge by the face's reach down (`robot::face_reach_down`): it moves
 ///   with the face (`FaceAnchor::Rim`) and the outline clips it.
 /// - It reaches across at most `RIM_PAST` past the face's box, short of the
-///   clock, and each end comes in to clear both styles' rounded corners.
+///   clock even at the face's full glance right, and each end comes in to clear both styles' rounded corners.
 /// - The detail (the nightcap's tip and pompom, the sailor's two tails)
 ///   hangs from the brim's left end. It shrinks until it is inside the notch
 ///   and left of the eyes' reach (`FACE_EYES_HALF_W` and the look's slide),
@@ -2017,6 +2019,47 @@ mod tests {
         // Some piece really sits on a calico patch it would melt into.
         assert!(over_a_patch > 0);
         assert_eq!(CROWN_EDGE, 0x9A6A12);
+    }
+
+    /// The edge pieces run past the notch (the long scarf band, the brims up
+    /// past the top), where the outline clips them: what lies under them, and
+    /// so their 3:1 edge, is the same as for the part on the notch, on every
+    /// coat (the calico's patches included).
+    #[test]
+    fn edge_pieces_are_edged_by_what_shows_on_the_notch() {
+        use crate::config::Style;
+        use crate::ui::geometry::NotchSize;
+        let sizes = [NotchSize::DEFAULT, NotchSize::from_px(160, 28), NotchSize::from_px(300, 44)];
+        let worn = [
+            CatAccessory::Scarf,
+            CatAccessory::Headphone,
+            CatAccessory::Nightcap,
+            CatAccessory::Crown,
+            CatAccessory::Sailor,
+        ];
+        let mut on_a_patch = 0;
+        for style in [Style::Pill, Style::Notch] {
+            for size in sizes {
+                for accessory in worn {
+                    let (shape, eyes, unit) = idle_face(style, size, accessory);
+                    for p in face_pieces(accessory, ShapeKind::Idle, shape, eyes, unit) {
+                        let (l, t, r, b) = drawn_box(&p);
+                        let shown = (l.max(shape.x), t.max(shape.y), r.min(shape.right()), b.min(shape.bottom()));
+                        for look in every_coat(accessory) {
+                            let under = p.colours_under(look);
+                            assert_eq!(
+                                under,
+                                p.colours_under_box(look, shown),
+                                "{style:?} {size:?} {accessory:?} {look:?}: {p:?}"
+                            );
+                            on_a_patch += usize::from(under.len() > 1);
+                        }
+                    }
+                }
+            }
+        }
+        // The calico's patches really lie under some of them.
+        assert!(on_a_patch > 0);
     }
 
     #[test]
