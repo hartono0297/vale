@@ -961,7 +961,8 @@ pub fn face_pose_in(
         w: shape.w,
         h: shape.h,
     };
-    let glasses: Vec<_> = face_pieces(look.accessory, rect, centre, u)
+    // The glasses are worn in every view.
+    let glasses: Vec<_> = face_pieces(look.accessory, super::geometry::ShapeKind::Idle, rect, centre, u)
         .into_iter()
         .filter(|p| p.anchor == FaceAnchor::Eyes)
         .collect();
@@ -1212,6 +1213,9 @@ pub struct RobotPainter {
     pub(super) extras: RefCell<Vec<((Mascot, CatAccessory), Rc<Vec<Placed>>)>>,
     /// The falk's and the octopus's still paths (`mascot`).
     pub(super) mascot_paths: RefCell<Vec<(MascotShape, ID2D1Geometry)>>,
+    /// The face notch's accessory paths, by their segments (`cat_style`):
+    /// built once per notch size and kept, a few at most.
+    pub(super) face_paths: RefCell<Vec<(Vec<Seg>, ID2D1PathGeometry)>>,
     pub(super) round: ID2D1StrokeStyle,
 }
 
@@ -1237,6 +1241,7 @@ impl RobotPainter {
             calico: RefCell::new(Vec::new()),
             extras: RefCell::new(Vec::new()),
             mascot_paths: RefCell::new(Vec::new()),
+            face_paths: RefCell::new(Vec::new()),
             round,
         })
     }
@@ -1636,7 +1641,7 @@ impl RobotPainter {
     ) -> WinResult<()> {
         use super::notch_colour::{CREAM as CREAM_TEXT, INK, contrast};
         let u = face_unit(scale);
-        if !(u > 0.0) {
+        if u.is_nan() || u <= 0.0 {
             return Ok(());
         }
         let face = peek_face(look, 0);
@@ -3012,6 +3017,7 @@ mod tests {
             let shape = Rect { x: 0.0, y: 0.0, w: 128.0, h: 64.0 };
             let pieces = super::super::cat_style::face_pieces(
                 look.accessory,
+                super::super::geometry::ShapeKind::Idle,
                 shape,
                 (64.0, 32.0),
                 face_unit(FACE_SCALE),
