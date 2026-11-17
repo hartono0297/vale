@@ -5409,10 +5409,12 @@ impl Renderer {
     /// Small ring, `mm:ss`, then "Fokus 2/4", "Istirahat" or "Siap · klik".
     pub(super) fn paint_pomodoro_compact(&mut self, shape: ShapeRect, frame: &Frame) -> Result<()> {
         let pomo = frame.pomodoro;
+        // Jadi muka: laid out without the face's room, the face left of the ring.
+        let shape = self.face_content(shape);
         let (center, radius, text) = match frame.robot {
             Some(robot) => {
                 let (slot, center, radius, text) = pomodoro_compact_layout_robot(shape);
-                self.paint_robot(slot, robot);
+                self.paint_mascot(slot, robot, center.0 - radius);
                 (center, radius, text)
             }
             None => pomodoro_compact_layout(shape),
@@ -5443,9 +5445,11 @@ impl Renderer {
         // The newest caption line shares the clock's row while the recording
         // runs; paused, the REC view says "dijeda" alone.
         let caption = frame.caption.filter(|_| !rec.paused);
+        // Jadi muka: laid out without the face's room, the face left of the dot.
+        let shape = self.face_content(shape);
         let l = record_compact_layout(shape, frame.robot.is_some(), caption.is_some());
         if let (Some(slot), Some(robot)) = (l.robot, frame.robot) {
-            self.paint_robot(slot, robot);
+            self.paint_mascot(slot, robot, l.dot.0.0 - l.dot.1);
         }
         let tint = if rec.paused {
             self.palette.ochre
@@ -5476,6 +5480,7 @@ impl Renderer {
         );
         // Gradasi: a dot under 3:1 on the fill under it (its lowest point,
         // where the fill is nearest the tint) gets a ring in the text colour.
+        // Jadi muka's solid face is judged the same way.
         if self.mark_needs_ring(tint, cy + r) {
             self.stroke_circle((cx, cy), r + 0.75, 1.5, self.palette.text, 1.0);
         }
@@ -5549,9 +5554,10 @@ impl Renderer {
         let Some(line) = frame.caption else {
             return Ok(());
         };
+        let shape = self.face_content(shape);
         let l = caption_compact_layout(shape, frame.robot.is_some());
         if let (Some(slot), Some(robot)) = (l.robot, frame.robot) {
-            self.paint_robot(slot, robot);
+            self.paint_mascot(slot, robot, l.mark.x);
         }
         let ink = self.palette.secondary;
         self.stroke_round(inset(l.mark, 0.5, 0.5), 3.0, ink);
@@ -5613,9 +5619,10 @@ impl Renderer {
     /// number in the clock's place and "Esc untuk batal" after it. Nothing
     /// in it takes a click.
     pub(super) fn paint_screen_countdown(&mut self, shape: ShapeRect, frame: &Frame, n: u8) {
+        let shape = self.face_content(shape);
         let l = record_compact_layout(shape, frame.robot.is_some(), false);
         if let (Some(slot), Some(robot)) = (l.robot, frame.robot) {
-            self.paint_robot(slot, robot);
+            self.paint_mascot(slot, robot, l.dot.0.0 - l.dot.1);
         }
         let (centre, r) = l.dot;
         // Both are strokes, so the middle stays the island's own fill: the
@@ -5635,7 +5642,14 @@ impl Renderer {
     }
 
     /// A circle's outline, `stroke` wide, centred on radius `r`.
-    fn stroke_circle(&self, (cx, cy): (f32, f32), r: f32, stroke: f32, rgb: u32, alpha: f32) {
+    pub(super) fn stroke_circle(
+        &self,
+        (cx, cy): (f32, f32),
+        r: f32,
+        stroke: f32,
+        rgb: u32,
+        alpha: f32,
+    ) {
         let target = self.target.as_ref().expect("target ensured by paint");
         let ellipse = D2D1_ELLIPSE {
             point: Vector2::new(cx, cy),

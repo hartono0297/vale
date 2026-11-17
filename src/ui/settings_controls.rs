@@ -39,12 +39,13 @@ use super::cat_style::CatLook;
 use super::fonts::{self, Face, Role};
 use super::geometry::{
     BAR_COUNT, BAR_GAP, BAR_W, NotchSize, SHOULDER, ShapeKind, compact_layout,
-    compact_layout_robot, idle_layout, shape_with_robot_sized,
+    compact_layout_robot, face_area, face_content, face_idle_layout, face_scale, idle_layout,
+    shape_with_robot_sized, with_face_extra,
 };
 use super::icons::{Icon, IconSet};
 use super::notch_colour::{CLOSED_T, TOP_STOP, bottom, effective_style, face_fill, face_palette};
 use super::notch_fill::legibility;
-use super::robot::{Expr, Pose, RobotPainter};
+use super::robot::{Expr, Pose, RobotPainter, face_pose_in, face_unit};
 use super::settings_layout::{
     Align, Button, ButtonKind, CARD_RADIUS, CAT_TILE, CONTROL_RADIUS, CatFace, Chip, Control,
     EXTERNAL_GLYPH, FULL_RADIUS, Field, Font, Group, HOTKEY_CAP_H, HOTKEY_CAP_PAD,
@@ -1490,7 +1491,21 @@ impl Painter<'_> {
             });
         }
         self.fill_island(shape, s);
-        let l = idle_layout(shape, s.robot, true);
+        let l = match preview_fill(s) {
+            // Jadi muka: the face and the clock centred as one group.
+            PreviewFill::Face(_) => {
+                let (area, clock) = face_idle_layout(shape, true, s.cat.accessory);
+                let at = FaceAt {
+                    shape,
+                    kind: ShapeKind::Idle,
+                    area,
+                    clock_left: clock.map(|c| c.x),
+                };
+                self.face_notch(s, at, expr, pose);
+                super::geometry::IdleLayout { robot: None, clock }
+            }
+            _ => idle_layout(shape, s.robot, true),
+        };
         if let Some(area) = l.robot {
             self.cat(area, expr, pose, s.cat);
         }
@@ -1695,6 +1710,13 @@ impl Painter<'_> {
         // The island, at its real size (the sliders' width and height; they
         // top out well inside the card), centered at the top of the "screen".
         let base = shape_with_robot_sized(s.style, s.notch, ShapeKind::MediaCompact, s.robot);
+        // Jadi muka widens the media notch for the face, as on the island.
+        let face = matches!(preview_fill(s), PreviewFill::Face(_));
+        let base = if face {
+            with_face_extra(base, ShapeKind::MediaCompact)
+        } else {
+            base
+        };
         let shape = super::geometry::ShapeRect {
             x: screen.x + (screen.w - base.w) / 2.0,
             y: screen.y + base.y,
@@ -1712,13 +1734,27 @@ impl Painter<'_> {
             });
         }
         self.fill_island(shape, s);
-        let l = if s.robot {
-            compact_layout_robot(shape)
+        let content = if face {
+            face_content(shape, ShapeKind::MediaCompact)
         } else {
-            compact_layout(shape)
+            shape
+        };
+        let l = if s.robot {
+            compact_layout_robot(content)
+        } else {
+            compact_layout(content)
         };
         let art = l.art;
-        if s.robot {
+        if face {
+            let r = Rect { x: shape.x, y: shape.y, w: shape.w, h: shape.h };
+            let at = FaceAt {
+                shape,
+                kind: ShapeKind::MediaCompact,
+                area: face_area(r, Some(l.text.x)),
+                clock_left: Some(l.text.x),
+            };
+            self.face_notch(s, at, Expr::Music, Pose::default());
+        } else if s.robot {
             // The cat listening, as on the island.
             self.cat(art, Expr::Music, Pose::default(), s.cat);
         } else {
@@ -1767,6 +1803,51 @@ impl Painter<'_> {
             }
             self.fill_round(bar, 1.0, pal.accent, 1.0);
         }
+    }
+
+    /// Jadi muka's face on a preview notch, as `Renderer::paint_face_shot`
+    /// draws it on the island: cut to the notch's outline, the pale faces'
+    /// edge or the Black cat's rim along it, the face marks and the
+    /// accessory as the face wears it in that view.
+    fn face_notch(&self, s: &Scene, at: FaceAt, expr: Expr, pose: Pose) {
+        let look = s.cat;
+        let scale = face_scale(at.area, look.accessory);
+        if scale.is_nan() || scale <= 0.0 || self.alpha <= 0.0 {
+            return;
+        }
+        let Some(outline) = island_outline(&self.gfx.d2d, s.style, at.shape) else {
+            return;
+        };
+        let centre = (at.area.x + at.area.w / 2.0, at.area.y + at.area.h / 2.0);
+        let pose = face_pose_in(s.style, at.shape, at.clock_left, centre, scale, expr, look, pose);
+        let params = D2D1_LAYER_PARAMETERS {
+            contentBounds: D2D_RECT_F {
+                left: -f32::MAX,
+                top: -f32::MAX,
+                right: f32::MAX,
+                bottom: f32::MAX,
+            },
+            geometricMask: ManuallyDrop::new(Some(outline.clone())),
+            maskAntialiasMode: D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+            maskTransform: Matrix3x2::identity(),
+            opacity: 1.0,
+            opacityBrush: ManuallyDrop::new(None),
+            layerOptions: D2D1_LAYER_OPTIONS_NONE,
+        };
+        unsafe { self.rt.PushLayer(&params, self.layer) };
+        drop(ManuallyDrop::into_inner(params.geometricMask));
+        if let Some(edge) = super::peek_face::peek_face(look, s.island.surface).edge {
+            let width = if look.rim().is_some() { 1.5 } else { 1.0 };
+            self.set(edge, 1.0);
+            unsafe { self.rt.DrawGeometry(&outline, self.brush, 2.0 * width, None) };
+        }
+        let robot = &self.gfx.robot;
+        let _ = robot.paint_face(self.rt, centre, scale, expr, &pose, look, self.alpha);
+        let r = Rect { x: at.shape.x, y: at.shape.y, w: at.shape.w, h: at.shape.h };
+        let unit = face_unit(scale);
+        let pieces = super::cat_style::face_pieces(look.accessory, at.kind, r, centre, unit);
+        let _ = robot.paint_face_pieces(self.rt, &pieces, scale, &pose, look, self.alpha);
+        unsafe { self.rt.PopLayer() };
     }
 
     /// The island's fill in the preview: the surface (Polos), a gradient
@@ -1870,6 +1951,35 @@ impl Painter<'_> {
 /// whole control that is off is (`Painter::dimmed`).
 fn segment_alpha(enabled: bool) -> f32 {
     if enabled { 1.0 } else { 0.45 }
+}
+
+/// Where a preview draws Jadi muka's face: the notch, the view's kind, the
+/// face's box and the left of what follows it.
+#[derive(Clone, Copy)]
+struct FaceAt {
+    shape: super::geometry::ShapeRect,
+    kind: ShapeKind,
+    area: Rect,
+    clock_left: Option<f32>,
+}
+
+/// A preview island's outline as a geometry (the mask the face is cut to).
+fn island_outline(
+    d2d: &ID2D1Factory,
+    style: Style,
+    shape: super::geometry::ShapeRect,
+) -> Option<windows::Win32::Graphics::Direct2D::ID2D1Geometry> {
+    use windows::core::Interface;
+    match style {
+        Style::Pill => {
+            let r = Rect { x: shape.x, y: shape.y, w: shape.w, h: shape.h };
+            unsafe { d2d.CreateRoundedRectangleGeometry(&rounded(r, shape.h / 2.0)) }
+                .ok()?
+                .cast()
+                .ok()
+        }
+        Style::Notch => notch_path(d2d, shape).ok()?.cast().ok(),
+    }
 }
 
 /// The fill alpha the preview draws: Jadi muka is always solid.
