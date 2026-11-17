@@ -91,8 +91,8 @@ use crate::model::RecSources;
 use crate::recorder::Source;
 use crate::recorder::prefs::RecordingPrefs;
 use crate::config::{
-    AfterCapture, ClipboardSettings, Config, NotchFill, NotchMonitor, NotifSettings, OpenMode,
-    ScreenshotSettings, ShotIgnore, ShotTool, Style, ToastStyle, UiFont, WindowPlace,
+    AfterCapture, ClipboardSettings, Config, NotchFill, NotchMonitor, NotchStyle, NotifSettings,
+    OpenMode, ScreenshotSettings, ShotIgnore, ShotTool, Style, ToastStyle, UiFont, WindowPlace,
 };
 use crate::google::client;
 use crate::hotkey::{Hotkey, HotkeyId, Hotkeys, Mods, Reject, Step, check, record_step, used_by};
@@ -145,6 +145,8 @@ pub enum Action {
         commit: bool,
     },
     NotchFill(NotchFill),
+    /// "Warna notch": Polos, Gradasi or Jadi muka.
+    NotchStyle(NotchStyle),
     /// "Monitor": the screen the notch shows on (Tampilan → Notch).
     NotchMonitor(NotchMonitor),
     /// "Tandai": the island numbers every screen for two seconds.
@@ -407,6 +409,16 @@ fn folder_click(prefs: &RecordingPrefs, hit: Hit) -> Option<Vec<After>> {
     }
 }
 
+/// A click on a "Warna notch" segment: the island is told of a new choice,
+/// the current one again changes nothing.
+fn notch_style_click(v: NotchStyle, m: &Model) -> Vec<After> {
+    if v == m.notch_style {
+        Vec::new()
+    } else {
+        vec![After::Post(Action::NotchStyle(v))]
+    }
+}
+
 /// What a click on the "Pindah ke PC lain" card does, or `None` for a hit that
 /// is not on the card. The island owns the dialogs and the pending file.
 fn transfer_click(hit: Hit) -> Option<Vec<After>> {
@@ -541,6 +553,7 @@ pub struct Model {
     pub notch_height: u32,
     pub notch_fill: NotchFill,
     pub notch_opacity: u8,
+    pub notch_style: NotchStyle,
     /// The screen the notch shows on, and the screens connected now (the
     /// island fills `monitors`; `from_config` leaves it empty).
     pub notch_monitor: NotchMonitor,
@@ -646,6 +659,7 @@ impl Model {
             notch_height: cfg.notch_height,
             notch_fill: cfg.notch_fill,
             notch_opacity: cfg.notch_opacity,
+            notch_style: cfg.notch_style,
             notch_monitor: cfg.notch_monitor.clone(),
             monitors: Vec::new(),
             window: cfg.window_theme,
@@ -1800,6 +1814,7 @@ impl Settings {
             notch_height: m.notch_height,
             notch_fill: m.notch_fill,
             notch_opacity: m.notch_opacity,
+            notch_style: m.notch_style,
             notch_monitor: m.notch_monitor.clone(),
             monitors: &m.monitors,
             window: m.window,
@@ -2031,6 +2046,10 @@ impl Settings {
                     usize::from(m.notif.toast_style == ToastStyle::Full) as f32
                 }
                 Group::NotchFill => usize::from(m.notch_fill == NotchFill::Transparent) as f32,
+                Group::NotchStyle => NotchStyle::ALL
+                    .iter()
+                    .position(|v| *v == m.notch_style)
+                    .unwrap_or(0) as f32,
                 Group::Font => UiFont::ALL.iter().position(|v| *v == m.font).unwrap_or(0) as f32,
                 Group::WidgetLayer => usize::from(m.widgets.layer == WidgetLayer::Top) as f32,
                 Group::RecSources => crate::ui::settings_layout::REC_CHOICES
@@ -2054,6 +2073,7 @@ impl Settings {
         for group in [
             Group::Style,
             Group::NotchFill,
+            Group::NotchStyle,
             Group::Font,
             Group::Window,
             Group::Lang,
@@ -2228,15 +2248,23 @@ impl Settings {
         );
         let content = self.anims.content.map_or(1.0, |t| t.value(now));
         let p = theme::current_window();
+        let look = super::cat_style::CatLook {
+            mascot: self.model.mascot,
+            color: self.model.cat_color,
+            falk: self.model.falk_color,
+            octopus: self.model.octopus_color,
+            accessory: self.model.cat_accessory,
+        };
+        let island = theme::island(
+            self.model.accent,
+            self.model
+                .surface
+                .resolve(self.model.coat(), self.model.robot),
+        );
         let scene = Scene {
             layout: &self.layout,
             p,
-            island: theme::island(
-                self.model.accent,
-                self.model
-                    .surface
-                    .resolve(self.model.coat(), self.model.robot),
-            ),
+            island,
             style: self.model.style,
             notch: super::geometry::NotchSize::from_px(
                 self.model.notch_width,
@@ -2246,14 +2274,14 @@ impl Settings {
                 self.model.notch_fill,
                 self.model.notch_opacity,
             ),
+            notch_style: self.model.notch_style,
+            notch_tint: super::notch_colour::tint(
+                look,
+                self.model.robot,
+                island.accent,
+            ),
             robot: self.model.robot,
-            cat: super::cat_style::CatLook {
-                mascot: self.model.mascot,
-                color: self.model.cat_color,
-                falk: self.model.falk_color,
-                octopus: self.model.octopus_color,
-                accessory: self.model.cat_accessory,
-            },
+            cat: look,
             coat: self.model.coat(),
             cat_face: self.cat_face,
             lang: self.model.lang,
@@ -2945,6 +2973,7 @@ impl Settings {
             }
             Hit::NotchIdentify => post(Action::NotchIdentify),
             Hit::NotchFill(v) if v != m.notch_fill => post(Action::NotchFill(v)),
+            Hit::NotchStyle(v) => notch_style_click(v, &m),
             Hit::UiFont(v) if v != m.font => post(Action::Font(v)),
             Hit::ArrangeTemplateNew => {
                 if m.arrange.templates.len() >= arrange::MAX_TEMPLATES {
@@ -4903,6 +4932,7 @@ pub fn run_demo(args: &[String]) {
             Action::NotchSize { w, h, .. } => (m.notch_width, m.notch_height) = (w, h),
             Action::NotchOpacity { pct, .. } => m.notch_opacity = pct,
             Action::NotchFill(v) => m.notch_fill = v,
+            Action::NotchStyle(v) => m.notch_style = v,
             Action::NotchReset => {
                 m.notch_width = crate::ui::geometry::NOTCH_W_DEFAULT;
                 m.notch_height = crate::ui::geometry::NOTCH_H_DEFAULT;
@@ -5184,6 +5214,7 @@ pub fn run_demo(args: &[String]) {
         transcript,
         transfer: demo_transfer(&env("DI_TRANSFER"), lang),
         font,
+        notch_style: NotchStyle::from_name(&env("DI_NOTCH_STYLE")).unwrap_or_default(),
         monitors,
         notch_monitor,
         accent,
@@ -5333,6 +5364,24 @@ mod tests {
         assert_eq!(m.coat(), Coat::Octopus(OctopusColor::Red));
         m.apply(Action::Mascot(Mascot::Falk));
         assert_eq!(m.coat(), Coat::Falk(FalkColor::Grey));
+    }
+
+    #[test]
+    fn clicking_a_style_posts_the_action() {
+        let mut m = Model::from_config(&crate::config::Config::default());
+        assert_eq!(m.notch_style, NotchStyle::Plain);
+        assert_eq!(
+            notch_style_click(NotchStyle::Gradient, &m),
+            vec![After::Post(Action::NotchStyle(NotchStyle::Gradient))]
+        );
+        // The current one again posts nothing.
+        assert!(notch_style_click(NotchStyle::Plain, &m).is_empty());
+        m.notch_style = NotchStyle::Face;
+        assert!(notch_style_click(NotchStyle::Face, &m).is_empty());
+        assert_eq!(
+            notch_style_click(NotchStyle::Plain, &m),
+            vec![After::Post(Action::NotchStyle(NotchStyle::Plain))]
+        );
     }
 
     #[test]

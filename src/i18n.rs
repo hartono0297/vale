@@ -505,6 +505,14 @@ keys! {
     NotchFillDesc => "Panel tetap solid", "The open panel stays solid";
     NotchFillSolid => "Solid", "Solid";
     NotchFillTransparent => "Tembus", "See-through";
+    NotchStyle => "Warna notch", "Notch colour";
+    NotchStylePlain => "Polos", "Plain";
+    NotchStyleGradient => "Gradasi", "Gradient";
+    NotchStyleFace => "Jadi muka", "Face";
+    NotchStylePlainDesc => "Gelap seperti bezel", "Dark like the bezel";
+    NotchStyleFrom => "dari", "from";
+    NotchStyleNeedsMascot => "Nyalakan maskot dulu", "Turn the mascot on first";
+    NotchFillFaceDesc => "Jadi muka selalu solid", "Face is always solid";
     NotchOpacity => "Opasitas", "Opacity";
     SurfaceEspresso => "Espresso", "Espresso";
     SurfaceGraphite => "Grafit", "Graphite";
