@@ -67,7 +67,7 @@ use crate::clean::{self, CleanCat, CleanEvent, Cleaner, ScanResult};
 use crate::cli::{self, Builtin, CliEvent, History, HistoryCursor, RunHandle, Session};
 use crate::cli_folders::{self, FolderList, ListKind};
 use crate::cli_panel::{self, Echoes, MAX_SUGGESTIONS, RunClock};
-use crate::config::{self, Config, NotchMonitor, OnDisk, OpenMode, Repair, Style};
+use crate::config::{self, Config, NotchMonitor, NotchStyle, OnDisk, OpenMode, Repair, Style};
 use crate::data_dir;
 use crate::eq_audio::EqCapture;
 use crate::gestures;
@@ -114,7 +114,7 @@ use crate::ui::geometry::{
     island_contains, lerp_shape, lyric_box_w, lyric_cap, lyric_max_w, lyric_scroll_end_ms,
     lyric_scroll_offset, lyric_shape_sized, lyric_slot_width, lyric_target_w, lyric_width_min,
     panel_kind, shape_for, shape_sized, shape_with_robot_sized, toast_peek_reaches, typing_lead,
-    with_rec_caption, with_toast_slot,
+    with_face_extra, with_rec_caption, with_toast_slot,
 };
 use crate::ui::motion::{
     CloseFade, FadeStart, MorphCurve, PAGE_FADE_MS, Reveal, SlideStrip, Snap, StripDir,
@@ -2395,6 +2395,7 @@ impl App {
             has_story: has_ready(self.config.mascot, self.config.idle_clock),
             working: self.typing_shape(now),
             mascot_changed: self.play.as_ref().is_some_and(|a| a.shape.mascot != self.config.mascot),
+            face: self.notch_style() == NotchStyle::Face,
         }
     }
 
@@ -4247,7 +4248,8 @@ impl App {
             View::RecordCompact => self.state.rec_caption().is_some(),
             _ => false,
         };
-        let target = kind.map(|kind| match kind {
+        let face = self.notch_style();
+        let target = kind.map(|kind| face_shaped(face, kind, self.eyes, match kind {
             // Shrunk to the eyes (only ever on a compact view).
             _ if self.eyes => shape_sized(style, notch, ShapeKind::Eyes),
             ShapeKind::MediaLyric => lyric_shape_sized(style, notch, self.lyric_fit.width()),
@@ -4270,7 +4272,7 @@ impl App {
                 with_rec_caption(shape_with_robot_sized(style, notch, kind, robot))
             }
             _ => shape_with_robot_sized(style, notch, kind, robot),
-        });
+        }));
         // The logo's room in the target: a lyric line at its cap keeps the
         // notch's width and gives the room up from its box, so the slot
         // toggling there is a morph of its own.
@@ -4357,8 +4359,11 @@ impl App {
                 fill_to
             };
             self.fill = (fill_from, fill_to);
+            let reached = self.peek_mix_at(now);
+            // The view heading for the screen (`drawn` once not hiding).
+            let shown = if hiding { &View::Hidden } else { &self.drawn };
             self.peek_mix
-                .retarget(if self.eyes { 1.0 } else { 0.0 }, self.peek_mix_at(now));
+                .retarget(peek_mix_target(self.notch_style(), self.eyes, shown, reached), reached);
             // Hidden keeps the shape where it is and only fades it out.
             let (to, to_opacity) = target.map_or((shape, 0.0), |s| (s, 1.0));
             // The eyes alone (the view unchanged) morph slower and in and out;
@@ -4626,6 +4631,23 @@ impl App {
             .as_ref()
             .map_or(LYRIC_MAX_W, |w| lyric_max_w(w.screen_w()))
             .max(self.notch_size().w)
+    }
+
+    /// "Warna notch" as drawn: Jadi muka needs the mascot
+    /// (`notch_colour::effective_style`).
+    fn notch_style(&self) -> NotchStyle {
+        notch_colour::effective_style(self.config.notch_style, self.config.robot)
+    }
+
+    /// Aims the face mix at where it heads now (`peek_mix_target`) after the
+    /// style or the mascot changed: at rest it is there at once, during a
+    /// morph it carries on toward it.
+    fn sync_peek_mix(&mut self, now: Instant) {
+        let to = peek_mix_target(self.notch_style(), self.eyes, &self.drawn, self.peek_mix_at(now));
+        self.peek_mix.to = to;
+        if !self.anim.running {
+            self.peek_mix.from = to;
+        }
     }
 
     /// The closed island's size as set in Settings.
@@ -5284,10 +5306,11 @@ impl App {
 
     /// The idle shape at the user's size: grown on the left for the typing
     /// cat's laptop while the cat is on and `typing_wanted` (the hover's Happy
-    /// face does not count), else the plain one.
+    /// face does not count), else the plain one. Jadi muka has no laptop (the
+    /// face looks down instead): its idle island never grows.
     fn idle_shape(&self, now: Instant) -> ShapeRect {
         let (style, robot, notch) = (self.config.style, self.config.robot, self.notch_size());
-        if self.typing_shape(now) {
+        if self.typing_shape(now) && self.notch_style() != NotchStyle::Face {
             idle_shape_typing(style, notch, robot)
         } else {
             shape_with_robot_sized(style, notch, ShapeKind::Idle, robot)
@@ -5313,12 +5336,14 @@ impl App {
             View::Idle => return Some(self.idle_shape(Instant::now())),
             View::MediaCompact => ShapeKind::MediaCompact,
             View::MediaLyric => {
-                return Some(lyric_shape_sized(style, notch, self.lyric_fit.width()));
+                let s = lyric_shape_sized(style, notch, self.lyric_fit.width());
+                return Some(face_shaped(self.notch_style(), ShapeKind::MediaLyric, false, s));
             }
             View::PomodoroCompact => ShapeKind::PomodoroCompact,
             _ => return None,
         };
-        Some(shape_with_robot_sized(style, notch, kind, robot))
+        let s = shape_with_robot_sized(style, notch, kind, robot);
+        Some(face_shaped(self.notch_style(), kind, false, s))
     }
 
     /// The shrunk notch's eyes follow the pointer: it is shrunk, "Ikuti
@@ -7089,6 +7114,13 @@ impl App {
             SettingsAction::NotchStyle(v) => {
                 self.config.notch_style = v;
                 self.save_config();
+                // The narrow views widen or narrow for the face; the fill
+                // turns to or from the face where the shape stays.
+                self.refresh(now);
+                self.sync_peek_mix(now);
+                if !self.animating() {
+                    self.draw(now);
+                }
             }
             SettingsAction::NotchReset => {
                 self.set_notch_size(NOTCH_W_DEFAULT, NOTCH_H_DEFAULT, false);
@@ -7134,6 +7166,13 @@ impl App {
                 self.save_config();
                 // The compact shapes widen or narrow; its timers start or stop.
                 self.refresh(now);
+                // A stored Jadi muka comes and goes with the mascot.
+                if self.config.notch_style == NotchStyle::Face {
+                    self.sync_peek_mix(now);
+                    if !self.animating() {
+                        self.draw(now);
+                    }
+                }
             }
             SettingsAction::WidgetsShow(on) => self.widgets_show(on),
             SettingsAction::WidgetsLayer(layer) => self.widgets_layer(layer),
@@ -7744,7 +7783,7 @@ impl App {
             tiles: state.tiles(),
             palette,
             cat: look,
-            notch_style: notch_colour::effective_style(self.config.notch_style, self.config.robot),
+            notch_style: self.notch_style(),
             notch_tint: notch_colour::tint(look, self.config.robot, palette.accent),
             fill_alpha,
             legibility: notch_fill::legibility(fill_alpha),
@@ -8099,6 +8138,33 @@ fn progress_in_place(view: &View, drawn: &View) -> bool {
             if matches!(a.kind, NoticeKind::UpdateProgress { .. })
                 && matches!(b.kind, NoticeKind::UpdateProgress { .. })
     )
+}
+
+/// Where the island's face mix (`Frame::peek_mix`) heads for `view` under
+/// the drawn `style`: the face (1) shrunk to the eyes, and under Jadi muka on
+/// a face view too (its fill already is the face, so the shrink only changes
+/// the shape); hiding under Jadi muka keeps what shows (`reached`), so the
+/// island fades out as it is. Plain and Gradasi: the eyes alone.
+fn peek_mix_target(style: NotchStyle, eyes: bool, view: &View, reached: f32) -> f32 {
+    if eyes {
+        return 1.0;
+    }
+    match style {
+        NotchStyle::Face if *view == View::Hidden => reached,
+        _ if notch_colour::shows_face(style, view) => 1.0,
+        _ => 0.0,
+    }
+}
+
+/// A `kind` view's shape `s` as the island draws it under `style`: under
+/// Jadi muka the narrow closed views are `FACE_EXTRA` wider for the face
+/// (`with_face_extra`); never the eyes' pill, never Plain or Gradasi.
+fn face_shaped(style: NotchStyle, kind: ShapeKind, eyes: bool, s: ShapeRect) -> ShapeRect {
+    if style == NotchStyle::Face && !eyes {
+        with_face_extra(s, kind)
+    } else {
+        s
+    }
 }
 
 /// A pending press ends when the island hides, another view shows, or the
@@ -11274,6 +11340,62 @@ mod tests {
     }
 
     #[test]
+    fn peek_mix_stays_at_one_under_face() {
+        use crate::config::NotchStyle::{Face, Gradient, Plain};
+        // Jadi muka: a face view's fill already is the face, so shrinking to
+        // the eyes and coming back only changes the shape.
+        for view in [
+            View::Idle,
+            View::MediaCompact,
+            View::MediaLyric,
+            View::PomodoroCompact,
+            View::RecordCompact,
+            View::CaptionCompact,
+            View::ScreenCountdown(2),
+        ] {
+            assert_eq!(peek_mix_target(Face, false, &view, 1.0), 1.0, "{view:?} before");
+            assert_eq!(peek_mix_target(Face, true, &view, 1.0), 1.0, "{view:?} shrunk");
+            assert_eq!(peek_mix_target(Face, false, &view, 1.0), 1.0, "{view:?} after");
+        }
+        // A Gradasi view under Face turns the fill back from the face.
+        assert_eq!(peek_mix_target(Face, false, &View::Panel(Page::ALL[0]), 1.0), 0.0);
+        // Hiding fades out what shows.
+        assert_eq!(peek_mix_target(Face, false, &View::Hidden, 1.0), 1.0);
+        assert_eq!(peek_mix_target(Face, false, &View::Hidden, 0.0), 0.0);
+        // Plain and Gradasi as ever: the eyes alone decide.
+        for style in [Plain, Gradient] {
+            for view in [View::Idle, View::Hidden, View::MediaCompact] {
+                assert_eq!(peek_mix_target(style, false, &view, 0.7), 0.0, "{style:?} {view:?}");
+                assert_eq!(peek_mix_target(style, true, &view, 0.7), 1.0, "{style:?} {view:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn only_the_face_notch_widens_the_narrow_views() {
+        use crate::config::NotchStyle::{Face, Gradient, Plain};
+        use crate::ui::geometry::{FACE_EXTRA, with_face_extra};
+        let s = shape_for(Style::Notch, ShapeKind::MediaCompact);
+        for kind in [
+            ShapeKind::MediaCompact,
+            ShapeKind::MediaLyric,
+            ShapeKind::PomodoroCompact,
+            ShapeKind::RecordCompact,
+        ] {
+            assert_eq!(face_shaped(Face, kind, false, s), with_face_extra(s, kind));
+            assert_eq!(face_shaped(Face, kind, false, s).w, s.w + FACE_EXTRA);
+            // Shrunk to the eyes: the pill as ever.
+            assert_eq!(face_shaped(Face, kind, true, s), s);
+            for style in [Plain, Gradient] {
+                assert_eq!(face_shaped(style, kind, false, s), s, "{style:?} {kind:?}");
+            }
+        }
+        for kind in [ShapeKind::Idle, ShapeKind::Notice, ShapeKind::Panel] {
+            assert_eq!(face_shaped(Face, kind, false, s), s, "{kind:?}");
+        }
+    }
+
+    #[test]
     fn the_lyric_moves_only_while_its_view_shows_unshrunk() {
         assert!(lyric_moves(&View::MediaLyric, false));
         // Shrunk to the eyes: no crossfade, no scroll, no frame clock.
@@ -11914,7 +12036,7 @@ mod tests {
         assert_eq!(TIMER_MASCOT_PLAY, 19);
     }
 
-    /// An `Env` from 17 bits, one per field, in declaration order.
+    /// An `Env` from 18 bits, one per field, in declaration order.
     fn env_from_bits(bits: u32) -> crate::ui::play::gate::Env {
         let b = |i: u32| bits & (1 << i) != 0;
         crate::ui::play::gate::Env {
@@ -11935,6 +12057,7 @@ mod tests {
             has_story: b(14),
             working: b(15),
             mascot_changed: b(16),
+            face: b(17),
         }
     }
 
@@ -11946,7 +12069,7 @@ mod tests {
         let (since_input, since_last) = (Duration::from_secs(60), Duration::from_secs(3600));
         let mut armed = 0u32;
         for preset in [Sesekali, Sering, Jarang, Sapaan, Mati] {
-            for bits in 0..(1u32 << 17) {
+            for bits in 0..(1u32 << 18) {
                 let env = env_from_bits(bits);
                 for playing in [false, true] {
                     // Written out, not read from the gates: the timer's own rule.
@@ -11967,7 +12090,8 @@ mod tests {
                         && !env.recording
                         && env.has_story
                         && !env.working
-                        && !env.mascot_changed;
+                        && !env.mascot_changed
+                        && !env.face;
                     let got = mascot_timer_wanted(&env, preset, playing);
                     assert_eq!(got, expected, "{preset:?} playing={playing} env={env:?}");
                     // It also agrees with the gate the fire re-checks, with the

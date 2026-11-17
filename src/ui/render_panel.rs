@@ -5409,10 +5409,12 @@ impl Renderer {
     /// Small ring, `mm:ss`, then "Fokus 2/4", "Istirahat" or "Siap · klik".
     pub(super) fn paint_pomodoro_compact(&mut self, shape: ShapeRect, frame: &Frame) -> Result<()> {
         let pomo = frame.pomodoro;
+        // Jadi muka: laid out without the face's room, the face left of the ring.
+        let shape = self.face_content(shape);
         let (center, radius, text) = match frame.robot {
             Some(robot) => {
                 let (slot, center, radius, text) = pomodoro_compact_layout_robot(shape);
-                self.paint_robot(slot, robot);
+                self.paint_mascot(slot, robot, center.0 - radius);
                 (center, radius, text)
             }
             None => pomodoro_compact_layout(shape),
@@ -5443,9 +5445,11 @@ impl Renderer {
         // The newest caption line shares the clock's row while the recording
         // runs; paused, the REC view says "dijeda" alone.
         let caption = frame.caption.filter(|_| !rec.paused);
+        // Jadi muka: laid out without the face's room, the face left of the dot.
+        let shape = self.face_content(shape);
         let l = record_compact_layout(shape, frame.robot.is_some(), caption.is_some());
         if let (Some(slot), Some(robot)) = (l.robot, frame.robot) {
-            self.paint_robot(slot, robot);
+            self.paint_mascot(slot, robot, l.dot.0.0 - l.dot.1);
         }
         let tint = if rec.paused {
             self.palette.ochre
@@ -5476,6 +5480,7 @@ impl Renderer {
         );
         // Gradasi: a dot under 3:1 on the fill under it (its lowest point,
         // where the fill is nearest the tint) gets a ring in the text colour.
+        // Jadi muka's solid face is judged the same way.
         if self.mark_needs_ring(tint, cy + r) {
             self.stroke_circle((cx, cy), r + 0.75, 1.5, self.palette.text, 1.0);
         }
@@ -5521,7 +5526,9 @@ impl Renderer {
             } else if rec.muted[0] {
                 self.rec_muted_glyph(mic_at, Icon::MicOff);
             } else {
-                self.rec_meter(mic_at, &rec_meter_heights(rec.mic), REC_MIC_TINT);
+                // Jadi muka: the face's ink where the cream tint melts in.
+                let tint = self.level_tint(REC_MIC_TINT, mic_at.y + mic_at.h / 2.0);
+                self.rec_meter(mic_at, &rec_meter_heights(rec.mic), tint);
             }
         }
         if sources.system {
@@ -5531,7 +5538,8 @@ impl Renderer {
             } else if rec.muted[1] {
                 self.rec_muted_glyph(system_at, Icon::VolumeMute);
             } else {
-                self.rec_meter(system_at, &rec_meter_heights(rec.system), self.palette.sage);
+                let tint = self.level_tint(self.palette.sage, system_at.y + system_at.h / 2.0);
+                self.rec_meter(system_at, &rec_meter_heights(rec.system), tint);
             }
         }
         // The groups take the click, and the pointer resting on one opens no
@@ -5549,9 +5557,10 @@ impl Renderer {
         let Some(line) = frame.caption else {
             return Ok(());
         };
+        let shape = self.face_content(shape);
         let l = caption_compact_layout(shape, frame.robot.is_some());
         if let (Some(slot), Some(robot)) = (l.robot, frame.robot) {
-            self.paint_robot(slot, robot);
+            self.paint_mascot(slot, robot, l.mark.x);
         }
         let ink = self.palette.secondary;
         self.stroke_round(inset(l.mark, 0.5, 0.5), 3.0, ink);
@@ -5613,9 +5622,10 @@ impl Renderer {
     /// number in the clock's place and "Esc untuk batal" after it. Nothing
     /// in it takes a click.
     pub(super) fn paint_screen_countdown(&mut self, shape: ShapeRect, frame: &Frame, n: u8) {
+        let shape = self.face_content(shape);
         let l = record_compact_layout(shape, frame.robot.is_some(), false);
         if let (Some(slot), Some(robot)) = (l.robot, frame.robot) {
-            self.paint_robot(slot, robot);
+            self.paint_mascot(slot, robot, l.dot.0.0 - l.dot.1);
         }
         let (centre, r) = l.dot;
         // Both are strokes, so the middle stays the island's own fill: the
@@ -5624,6 +5634,11 @@ impl Renderer {
         self.stroke_circle(centre, r + halo / 2.0, halo, theme::REC_RED, 0.25);
         let ring = COUNTDOWN_RING;
         self.stroke_circle(centre, r - ring / 2.0, ring, theme::REC_RED, 1.0);
+        // As the REC dot: a ring in the text colour where the red would
+        // melt into the fill under it (Gradasi, Jadi muka).
+        if self.mark_needs_ring(theme::REC_RED, centre.1 + r) {
+            self.stroke_circle(centre, r + 0.75, 1.5, self.palette.text, 1.0);
+        }
         let numeral = n.to_string();
         self.text(&numeral, &self.fonts.title, l.time, 1.0);
         let hint = rec_word_slot(&l, self.text_width(&numeral, &self.fonts.title));
@@ -5635,7 +5650,14 @@ impl Renderer {
     }
 
     /// A circle's outline, `stroke` wide, centred on radius `r`.
-    fn stroke_circle(&self, (cx, cy): (f32, f32), r: f32, stroke: f32, rgb: u32, alpha: f32) {
+    pub(super) fn stroke_circle(
+        &self,
+        (cx, cy): (f32, f32),
+        r: f32,
+        stroke: f32,
+        rgb: u32,
+        alpha: f32,
+    ) {
         let target = self.target.as_ref().expect("target ensured by paint");
         let ellipse = D2D1_ELLIPSE {
             point: Vector2::new(cx, cy),
@@ -6098,7 +6120,7 @@ fn centred_square(r: Rect, side: f32) -> Rect {
 }
 
 /// The mic meter's cream tint (`.lv.mic` in docs/design/rekaman.html).
-const REC_MIC_TINT: u32 = 0xEBCFB8;
+pub(super) const REC_MIC_TINT: u32 = 0xEBCFB8;
 /// The crossed glyph that stands in for a muted source's meter in the REC
 /// view.
 const REC_MUTED_GLYPH: f32 = 14.0;

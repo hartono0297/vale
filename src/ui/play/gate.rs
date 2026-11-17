@@ -32,6 +32,9 @@ pub struct Env {
     pub working: bool,
     /// The mascot is not the one the running story started with.
     pub mascot_changed: bool,
+    /// "Warna notch" is drawn as Jadi muka: the notch is the mascot's face,
+    /// and a story needs the head it moves round the island.
+    pub face: bool,
 }
 
 /// The gates that bind every play, a `Manual` one included. The typing face
@@ -51,6 +54,7 @@ fn permanent_ok(env: &Env) -> bool {
         && env.has_story
         && !env.working
         && !env.mascot_changed
+        && !env.face
 }
 
 /// The gates that asking for a play by hand switches on (reaching the island to
@@ -122,7 +126,7 @@ mod tests {
         flips!(
             mascot_on, motion_full, energy_saver, win_anim, idle_view, panel_open, menu_open,
             fullscreen, screen_away, shrunk, pointer_near, asleep, recording, clock_on, has_story,
-            working, mascot_changed,
+            working, mascot_changed, face,
         )
         .into_iter()
         .filter(|(name, _)| *name != "clock_on")
@@ -131,7 +135,7 @@ mod tests {
 
     #[test]
     fn the_flips_cover_every_gate_but_the_clock() {
-        assert_eq!(off_by_one_envs().len(), 16);
+        assert_eq!(off_by_one_envs().len(), 17);
     }
 
     #[test]
@@ -143,6 +147,20 @@ mod tests {
             assert!(!may_start(&env, moment, MascotPlay::Sesekali, input, last), "{moment:?}");
             assert!(must_stop(&env, Story::MalingAngka, false, false), "{moment:?}");
         }
+        assert!(!instant_stop(&env), "it eases home");
+    }
+
+    #[test]
+    fn plays_are_off_under_face() {
+        // Jadi muka: the notch is the face, a story has no head to move.
+        let mut env = ok_env();
+        env.face = true;
+        assert!(env.mascot_on, "with the mascot on");
+        let (input, last) = (Duration::from_secs(60), Duration::from_secs(3600));
+        for moment in [Moment::Idle, Moment::Hour, Moment::Greeting, Moment::Manual] {
+            assert!(!may_start(&env, moment, MascotPlay::Sering, input, last), "{moment:?}");
+        }
+        assert!(must_stop(&env, Story::Kelelawar, false, false), "a running one ends");
         assert!(!instant_stop(&env), "it eases home");
     }
 

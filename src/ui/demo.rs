@@ -295,7 +295,7 @@ use super::geometry::{
     ANIM_MS, IdleLayout, NOTCH_OPACITY_DEFAULT, NotchSize, ShapeKind, ShapeRect, TOAST_SLOT_EXTRA, Under,
     ease_out_back, idle_layout_lead, idle_shape_typing, lerp_shape, lyric_box_w, lyric_max_w, lyric_scroll_offset,
     lyric_shape_sized, lyric_slot_width, lyric_width_min, shape_with_robot_sized, typing_lead,
-    with_rec_caption, with_toast_slot,
+    with_face_extra, with_rec_caption, with_toast_slot, FACE_EXTRA,
 };
 use super::motion::{
     CloseFade, PAGE_FADE_MS, REVEAL_MS, RevealDir, Transit, close_fade_ms, content_alpha,
@@ -3110,13 +3110,14 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
         let now = Instant::now();
         let at = lyric_at.unwrap_or(scene.lyric_at);
         let lyric_state = demo_lyrics(at, lyric_fade, now);
-        let to = scene_shape(&renderer, &win, style, notch, &scene, at);
+        let to = scene_shape(&renderer, &win, (style, notch_style), notch, &scene, at);
         // How far a long line has scrolled: frozen, or live from the step's start.
         let scroll = match scene.view {
             View0::MediaLyric => {
                 let text = lyric_state.shown(now).map_or("", |l| l.text);
                 let slot_w = if scene.slot { TOAST_SLOT_EXTRA } else { 0.0 };
-                let box_w = lyric_box_w(to.w - slot_w, scene.robot.is_some());
+                let face_w = if scene_face(notch_style, &scene) { FACE_EXTRA } else { 0.0 };
+                let box_w = lyric_box_w(to.w - slot_w - face_w, scene.robot.is_some());
                 renderer.lyric_text_width(text).map_or(0.0, |text_w| {
                     lyric_scroll_offset(text_w, box_w, lyric_scroll.unwrap_or(into as u64))
                 })
@@ -3149,7 +3150,8 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
             }
             let (prev_style, prev) = self::scene(scenes, (step + steps - 1) % steps);
             let prev_at = lyric_at.unwrap_or(prev.lyric_at);
-            let from = scene_shape(&renderer, &win, prev_style, notch, &prev, prev_at);
+            let from =
+                scene_shape(&renderer, &win, (prev_style, notch_style), notch, &prev, prev_at);
             let shape = lerp_shape(from, to, ease_out_back(t));
             // The fill follows the morph as the island does (`App::fill_at`).
             let fill_alpha =
@@ -3537,7 +3539,13 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                     },
                 }),
                 eyes: scene.kind == ShapeKind::Eyes,
-                peek_mix: if scene.kind == ShapeKind::Eyes { 1.0 } else { 0.0 },
+                // The face is the fill of the eyes' pill and, under Jadi
+                // muka, of the closed compact views.
+                peek_mix: if scene.kind == ShapeKind::Eyes || scene_face(notch_style, &scene) {
+                    1.0
+                } else {
+                    0.0
+                },
                 eyes_pose: {
                     let (dx_dip, dy_dip) =
                         crate::pointer_watch::eyes_offset_dip(scene.eyes_look.0, scene.eyes_look.1);
@@ -4633,14 +4641,51 @@ fn demo_folder_menu() -> FolderMenuView {
 fn scene_shape(
     renderer: &Renderer,
     win: &IslandWindow,
-    style: Style,
+    (style, notch_style): (Style, NotchStyle),
     notch: NotchSize,
     scene: &Scene,
     lyric_at: u64,
 ) -> ShapeRect {
+    let s = scene_shape_plain(renderer, win, style, notch, scene, lyric_at, notch_style);
+    // Jadi muka widens the narrow views for the face, as in the app.
+    if scene_face(notch_style, scene) {
+        with_face_extra(s, scene.kind)
+    } else {
+        s
+    }
+}
+
+/// The scene is drawn as Jadi muka's face (`notch_colour::shows_face`'s
+/// views; never the eyes' pill).
+fn scene_face(notch_style: NotchStyle, scene: &Scene) -> bool {
+    notch_colour::effective_style(notch_style, scene.robot.is_some()) == NotchStyle::Face
+        && matches!(
+            scene.kind,
+            ShapeKind::Idle
+                | ShapeKind::MediaCompact
+                | ShapeKind::MediaLyric
+                | ShapeKind::PomodoroCompact
+                | ShapeKind::RecordCompact
+        )
+}
+
+/// `scene_shape` before Jadi muka's widening.
+fn scene_shape_plain(
+    renderer: &Renderer,
+    win: &IslandWindow,
+    style: Style,
+    notch: NotchSize,
+    scene: &Scene,
+    lyric_at: u64,
+    notch_style: NotchStyle,
+) -> ShapeRect {
     let robot = scene.robot.is_some();
-    // The typing cat's idle island is wider on the left, as in the app.
-    if scene.kind == ShapeKind::Idle && scene.robot == Some(Expr::Typing) {
+    // The typing cat's idle island is wider on the left, as in the app (not
+    // the face's: no laptop).
+    if scene.kind == ShapeKind::Idle
+        && scene.robot == Some(Expr::Typing)
+        && !scene_face(notch_style, scene)
+    {
         return idle_shape_typing(style, notch, robot);
     }
     if scene.kind != ShapeKind::MediaLyric {

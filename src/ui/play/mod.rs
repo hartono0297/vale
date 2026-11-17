@@ -50,6 +50,7 @@ pub(crate) mod testing {
             has_story: true,
             working: false,
             mascot_changed: false,
+            face: false,
         }
     }
 

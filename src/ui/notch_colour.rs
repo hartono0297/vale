@@ -5,8 +5,10 @@
 
 use super::cat_style::CatLook;
 use super::mascot::{mix, octopus_rgb};
+use super::geometry::ShapeKind;
 use super::peek_face::peek_face;
 use crate::config::NotchStyle;
+use crate::model::View;
 use crate::theme::{CatColor, FalkColor, Mascot, Palette};
 
 /// Where the gradient leaves the surface colour (0 and this stop are both the
@@ -124,6 +126,49 @@ pub fn gradient_palette(base: Palette, bottom: u32) -> Palette {
         },
         ..base
     }
+}
+
+/// The shape kind a closed compact view is laid out as on the face notch
+/// (the caption view and the screen countdown take the REC view's), `None`
+/// for the views Jadi muka leaves to Gradasi (notices, the panel, hidden).
+pub fn face_kind(view: &View) -> Option<ShapeKind> {
+    match view {
+        View::Idle => Some(ShapeKind::Idle),
+        View::MediaCompact => Some(ShapeKind::MediaCompact),
+        View::MediaLyric => Some(ShapeKind::MediaLyric),
+        View::PomodoroCompact => Some(ShapeKind::PomodoroCompact),
+        View::RecordCompact | View::CaptionCompact | View::ScreenCountdown(_) => {
+            Some(ShapeKind::RecordCompact)
+        }
+        View::Hidden | View::Panel(_) | View::Notice(_) => None,
+    }
+}
+
+/// Whether `view` is drawn as the face under `style` (the effective one):
+/// Jadi muka on a closed compact view.
+pub fn shows_face(style: NotchStyle, view: &View) -> bool {
+    style == NotchStyle::Face && face_kind(view).is_some()
+}
+
+/// The closed content's palette while the fill turns between the face
+/// (`share` 1) and Gradasi with the bottom colour `closed` (0): the face's
+/// ink (`face_palette`) until cream holds 4.5:1 on the blended bottom
+/// (`mix(closed, face, share)`), Gradasi's (`gradient_palette`) from there.
+pub fn crossfade_palette(base: Palette, face: u32, closed: u32, share: f32) -> Palette {
+    if share >= 1.0 {
+        return face_palette(base, face);
+    }
+    if share <= 0.0 || contrast(CREAM, mix(closed, face, share)) >= 4.5 {
+        gradient_palette(base, closed)
+    } else {
+        face_palette(base, face)
+    }
+}
+
+/// A non-text mark (a REC level meter) on `fill`: as it is where it holds
+/// 3:1, else in `ink` (the face's text colour).
+pub fn readable_mark(mark: u32, fill: u32, ink: u32) -> u32 {
+    if contrast(mark, fill) >= 3.0 { mark } else { ink }
 }
 
 /// Whether a mark (the REC dot) needs a ring in the text colour on `fill`.
@@ -318,6 +363,72 @@ mod tests {
         assert!(needs_halo(0xE2683C, 0xE2683C, false));
         assert!(!needs_halo(0xE2683C, 0xE2683C, true));
         assert!(!needs_halo(0xE2683C, 0x17120F, false));
+    }
+
+    #[test]
+    fn only_the_closed_compact_views_show_the_face() {
+        use crate::model::{Notice, NoticeKind, Page, View};
+        use crate::ui::geometry::ShapeKind;
+        let faces = [
+            (View::Idle, ShapeKind::Idle),
+            (View::MediaCompact, ShapeKind::MediaCompact),
+            (View::MediaLyric, ShapeKind::MediaLyric),
+            (View::PomodoroCompact, ShapeKind::PomodoroCompact),
+            (View::RecordCompact, ShapeKind::RecordCompact),
+            (View::CaptionCompact, ShapeKind::RecordCompact),
+            (View::ScreenCountdown(3), ShapeKind::RecordCompact),
+        ];
+        for (view, kind) in &faces {
+            assert!(shows_face(NotchStyle::Face, view), "{view:?}");
+            assert_eq!(face_kind(view), Some(*kind), "{view:?}");
+            for style in [NotchStyle::Plain, NotchStyle::Gradient] {
+                assert!(!shows_face(style, view), "{style:?} {view:?}");
+            }
+        }
+        let notice = View::Notice(Notice {
+            key: "n".into(),
+            source: "Vale".into(),
+            title: "T".into(),
+            body: "B".into(),
+            kind: NoticeKind::ClaudeWaiting { session_id: "s".into() },
+        });
+        for view in [notice, View::Panel(Page::ALL[0]), View::Hidden] {
+            assert!(!shows_face(NotchStyle::Face, &view), "{view:?}");
+            assert_eq!(face_kind(&view), None, "{view:?}");
+        }
+    }
+
+    #[test]
+    fn the_ink_turns_cream_once_cream_reads_on_the_blended_fill() {
+        let base = island(Accent::Terracotta, Surface::Espresso);
+        let lutino = CatLook {
+            mascot: Mascot::Falk,
+            falk: FalkColor::Lutino,
+            ..CatLook::default()
+        };
+        let face = face_fill(lutino, base.surface);
+        let closed = bottom(base.surface, tint(lutino, true, base.accent), CLOSED_T, None);
+        // All face: the face's dark ink; all Gradasi: Gradasi's cream.
+        assert_eq!(crossfade_palette(base, face, closed, 1.0), face_palette(base, face));
+        assert_eq!(crossfade_palette(base, face, closed, 0.0), gradient_palette(base, closed));
+        // In between, cream exactly where it holds 4.5:1 on the blend.
+        let mut seen = (false, false);
+        for n in 1..100 {
+            let share = n as f32 / 100.0;
+            let p = crossfade_palette(base, face, closed, share);
+            let reads = contrast(CREAM, mix(closed, face, share)) >= 4.5;
+            assert_eq!(p.text == CREAM, reads, "{share}");
+            if reads {
+                seen.0 = true;
+            } else {
+                seen.1 = true;
+                assert_eq!(p, face_palette(base, face), "{share}");
+            }
+        }
+        assert!(seen.0 && seen.1, "the switch happens inside the morph");
+        // A dark face keeps the face's palette all the way (its ink is cream).
+        let black = face_fill(cat(CatColor::Black), base.surface);
+        assert_eq!(crossfade_palette(base, black, closed, 1.0).text, CREAM);
     }
 
     #[test]
