@@ -25,6 +25,7 @@ pub mod mascot;
 pub mod menu_pop;
 pub mod month_grid;
 pub mod motion;
+pub mod notch_colour;
 pub mod notch_fill;
 pub mod panel_layout;
 pub mod panel_tips;

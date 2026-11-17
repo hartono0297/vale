@@ -57,6 +57,9 @@ pub struct Config {
     /// "Isi notch": a solid black closed island or a see-through one (a typo
     /// reads as Solid). The open panel is always solid.
     pub notch_fill: NotchFill,
+    /// "Warna notch": plain, gradient or the mascot's face (a typo reads as
+    /// Plain). Island-owned.
+    pub notch_style: NotchStyle,
     /// How opaque the see-through fill is, in percent (0..=100, default 30).
     #[serde(deserialize_with = "notch_opacity")]
     pub notch_opacity: u8,
@@ -557,6 +560,13 @@ crate::theme::named_enum! {
 }
 
 crate::theme::named_enum! {
+    /// "Warna notch": Plain is the dark notch as always, Gradient fades the
+    /// bottom toward the mascot's colour, Face turns the closed notch into
+    /// the mascot's face. Any other name reads as `Plain`.
+    NotchStyle { Plain, Gradient, Face }
+}
+
+crate::theme::named_enum! {
     /// "Mode buka": Hover opens the panel under the pointer and closes it when
     /// the pointer leaves (the default, as always); HoverStay opens on hover
     /// and keeps it open until a click outside; Click opens on a click on the
@@ -804,6 +814,7 @@ impl Default for Config {
             notch_width: NOTCH_W_DEFAULT,
             notch_height: NOTCH_H_DEFAULT,
             notch_fill: NotchFill::Solid,
+            notch_style: NotchStyle::Plain,
             notch_opacity: NOTCH_OPACITY_DEFAULT,
             window_theme: WindowTheme::System,
             idle_clock: true,
@@ -964,6 +975,7 @@ pub fn merge_owned(disk: Config, mem: &Config) -> Config {
         notch_width: mem.notch_width,
         notch_height: mem.notch_height,
         notch_fill: mem.notch_fill,
+        notch_style: mem.notch_style,
         notch_opacity: mem.notch_opacity,
         window_theme: mem.window_theme,
         idle_clock: mem.idle_clock,
@@ -1356,6 +1368,7 @@ mod tests {
             notch_width: 250,
             notch_height: 40,
             notch_fill: NotchFill::Transparent,
+            notch_style: NotchStyle::Face,
             notch_opacity: 65,
             window_theme: WindowTheme::Light,
             idle_clock: false,
@@ -3073,6 +3086,41 @@ mod tests {
             parse(r#"{"notch_fill":"Glass"}"#).notch_fill,
             NotchFill::Solid
         );
+    }
+
+    #[test]
+    fn a_missing_notch_style_reads_as_plain() {
+        assert_eq!(parse("{}").notch_style, NotchStyle::Plain);
+    }
+
+    #[test]
+    fn a_typo_notch_style_reads_as_plain() {
+        assert_eq!(
+            parse(r#"{"notch_style":"Glow"}"#).notch_style,
+            NotchStyle::Plain
+        );
+    }
+
+    #[test]
+    fn notch_style_round_trips() {
+        let c = Config {
+            notch_style: NotchStyle::Face,
+            ..Config::default()
+        };
+        assert_eq!(
+            parse(&serde_json::to_string(&c).unwrap()).notch_style,
+            NotchStyle::Face
+        );
+    }
+
+    #[test]
+    fn merge_owned_keeps_notch_style() {
+        let mem = Config {
+            notch_style: NotchStyle::Gradient,
+            ..Config::default()
+        };
+        let merged = merge_owned(Config::default(), &mem);
+        assert_eq!(merged.notch_style, NotchStyle::Gradient);
     }
 
     #[test]

@@ -43,6 +43,7 @@ pub const EXPORTED: &[&str] = &[
     "notch_width",
     "notch_height",
     "notch_fill",
+    "notch_style",
     "notch_opacity",
     "idle_clock",
     "stay_behind",
