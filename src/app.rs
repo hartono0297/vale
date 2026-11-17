@@ -122,6 +122,7 @@ use crate::ui::motion::{
     ease_in_out_cubic, fade_floor, mole_code, morph_timing, page_fade_frame, panel_fade, strip_dir,
     transition,
 };
+use crate::ui::notch_colour;
 use crate::ui::notch_fill;
 use crate::ui::panel_layout::{CliHead, STRIP_H, cli_layout};
 use crate::ui::panel_tips::{self, TipCtx};
@@ -7527,6 +7528,8 @@ impl App {
             fade_floor_h: self.fade_floor_h,
         };
         let fill_alpha = self.fill_at(now);
+        let palette = theme::island_palette(&self.config);
+        let look = CatLook::of(&self.config);
         let state = &self.state;
         let cwd = self.cli_cwd.to_string_lossy();
         let input = self.cli_input.as_ref();
@@ -7735,8 +7738,10 @@ impl App {
             pages: state.pages().visible(),
             dock: self.dock.frame(),
             tiles: state.tiles(),
-            palette: theme::island_palette(&self.config),
-            cat: CatLook::of(&self.config),
+            palette,
+            cat: look,
+            notch_style: notch_colour::effective_style(self.config.notch_style, self.config.robot),
+            notch_tint: notch_colour::tint(look, self.config.robot, palette.accent),
             fill_alpha,
             legibility: notch_fill::legibility(fill_alpha),
             clock,
@@ -7894,6 +7899,8 @@ fn eq_key(draw_gen: u64, frame: &Frame, shape: ShapeRect, opacity: f32) -> EqKey
             .map(|l| (hash(l.text), l.prev.map(hash), l.fade.to_bits())),
         lyric_scroll: [frame.lyric_scroll, frame.lyric_prev_scroll].map(f32::to_bits),
         fill_alpha: frame.fill_alpha.to_bits(),
+        notch_style: frame.notch_style,
+        notch_tint: frame.notch_tint,
         toast_slot_w: frame.toast_slot_w.to_bits(),
         toast_dot: frame.toast_dot,
         volume: frame.volume.map(f32::to_bits),

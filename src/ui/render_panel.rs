@@ -5474,6 +5474,13 @@ impl Renderer {
             },
             r,
         );
+        // Gradasi: a dot under 3:1 on the fill under it (its lowest point,
+        // where the fill is nearest the tint) gets a ring in the text colour.
+        if let Some(fill) = self.notch_grad.get().map(|g| g.at(cy + r))
+            && super::notch_colour::needs_ring(tint, fill)
+        {
+            self.stroke_circle((cx, cy), r + 0.75, 1.5, self.palette.text, 1.0);
+        }
         let clock = rec_clock(rec.elapsed);
         if rec.paused {
             self.text_colored(&clock, &self.fonts.title, l.time, self.palette.ochre, 1.0);

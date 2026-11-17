@@ -69,6 +69,8 @@ use super::geometry::{
 };
 use super::icons::{Icon, IconSet};
 use super::motion::{StripFrame, Transit};
+use super::geometry::{panel_kind, shape_for};
+use super::notch_colour::{self, CLOSED_T, PANEL_T, TOP_STOP};
 use super::panel_layout::Region;
 use super::peek_face::{peek_face, peek_fill};
 use super::play::shape::{Deform, outline, rigid, top_corners, turn_about};
@@ -89,7 +91,7 @@ use crate::cli::{Output, Shell};
 use crate::cli_panel::{Echoes, RunState};
 use crate::clipboard::Clip;
 use crate::clipboard::image::Thumb;
-use crate::config::{Style, UiFont};
+use crate::config::{NotchStyle, Style, UiFont};
 use crate::devices::{Device, Veto};
 use crate::i18n::{self, Key};
 use crate::lyrics::{self, ShownLine};
@@ -228,6 +230,12 @@ pub struct Frame<'a> {
     pub palette: Palette,
     /// The notch cat's colour and accessory (Settings -> Kucing).
     pub cat: CatLook,
+    /// "Warna notch" as drawn (`notch_colour::effective_style`): Plain is
+    /// the solid surface as always, Gradient fades toward `notch_tint` at
+    /// the bottom.
+    pub notch_style: NotchStyle,
+    /// The colour a Gradient fill leans toward (`notch_colour::tint`).
+    pub notch_tint: u32,
     /// The surface fill's alpha this frame (`notch_fill`): 1 for a solid
     /// island and always for the open panel; less for a see-through closed
     /// island, blended with the morph.
@@ -1035,6 +1043,10 @@ pub struct Renderer {
     legible: std::cell::Cell<f32>,
     /// The cat's colour and accessory for this frame (`Frame::cat`).
     cat: std::cell::Cell<CatLook>,
+    /// The closed island's Gradasi while its content is painted, for the
+    /// marks that check their contrast against it (the mascot's halo, the
+    /// REC dot's ring); `None` on a plain fill and outside that content.
+    notch_grad: std::cell::Cell<Option<NotchGrad>>,
     /// The Notifikasi time column's width (`notif_time_w`) for the language
     /// and year it was measured for; `set_ui_font` clears it.
     notif_time_cache: std::cell::Cell<Option<(crate::i18n::Lang, i32, f32)>>,
@@ -1307,6 +1319,7 @@ impl Renderer {
                 video_thumb: std::cell::RefCell::new(None),
                 robot_later: std::cell::Cell::new(None),
                 legible: std::cell::Cell::new(0.0),
+                notch_grad: std::cell::Cell::new(None),
                 cat: std::cell::Cell::new(CatLook::default()),
                 notif_time_cache: std::cell::Cell::new(None),
                 pomo_time_cache: std::cell::Cell::new(None),
@@ -1451,6 +1464,8 @@ impl Renderer {
             palette: frame.palette,
             ui_font: self.ui_font,
             cat: frame.cat,
+            notch_style: frame.notch_style,
+            notch_tint: frame.notch_tint,
             style,
             halo: self.halo,
             force_full,
@@ -2446,7 +2461,119 @@ impl Renderer {
         Ok(())
     }
 
+    /// How the island's shape is filled for `frame` at rest: the open
+    /// panel's fill for the panel, the closed island's for every other view.
+    /// `paint_island` asks `island_fill_at` with the morph's share instead.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn island_fill(&self, frame: &Frame) -> IslandFill {
+        let panel = if matches!(frame.view, View::Panel(_)) {
+            1.0
+        } else {
+            0.0
+        };
+        self.island_fill_at(frame, panel)
+    }
+
+    /// `island_fill` with a gradient's bottom `panel` of the way from the
+    /// closed island's to the open panel's (`panel_share`, while one morphs
+    /// into the other).
+    fn island_fill_at(&self, frame: &Frame, panel: f32) -> IslandFill {
+        let surface = self.palette.surface;
+        let alpha = frame.fill_alpha.clamp(0.0, 1.0);
+        // Shrunk (or shrinking) to the eyes, the fill blends to the face
+        // colour (`peek_fill`); 1.0 alpha unless the island is see-through.
+        let face = (frame.peek_mix > 0.0).then(|| peek_face(frame.cat, surface).fill);
+        match frame.notch_style {
+            NotchStyle::Plain => {
+                let (rgb, alpha) = match face {
+                    Some(face) => peek_fill(surface, alpha, face, frame.peek_mix),
+                    None => (surface, alpha),
+                };
+                IslandFill::Solid { rgb, alpha }
+            }
+            // Jadi muka draws Gradasi until its face is painted (Task 5): its
+            // solid face fill on the closed compact views goes in here.
+            NotchStyle::Gradient | NotchStyle::Face => {
+                let closed = self.closed_bottom(frame);
+                let bottom = if panel > 0.0 {
+                    mix(closed, self.panel_bottom(frame), panel.min(1.0))
+                } else {
+                    closed
+                };
+                match face {
+                    Some(face) => {
+                        let (top, alpha) = peek_fill(surface, alpha, face, frame.peek_mix);
+                        let bottom = mix(bottom, face, frame.peek_mix.clamp(0.0, 1.0));
+                        IslandFill::Gradient { top, bottom, alpha }
+                    }
+                    None => IslandFill::Gradient {
+                        top: surface,
+                        bottom,
+                        alpha,
+                    },
+                }
+            }
+        }
+    }
+
+    /// The gradient's bottom colour on the closed island: a notice's also
+    /// keeps the accent at 3:1.
+    fn closed_bottom(&self, frame: &Frame) -> u32 {
+        let accent = matches!(frame.view, View::Notice(_)).then_some(self.palette.accent);
+        notch_colour::bottom(self.palette.surface, frame.notch_tint, CLOSED_T, accent)
+    }
+
+    /// The gradient's bottom colour on the open panel.
+    fn panel_bottom(&self, frame: &Frame) -> u32 {
+        notch_colour::bottom(
+            self.palette.surface,
+            frame.notch_tint,
+            PANEL_T,
+            Some(self.palette.accent),
+        )
+    }
+
+    /// The palette the closed island's content is drawn with: under Gradasi
+    /// an accent under 3:1 on the bottom colour takes the text colour.
+    fn content_palette(&self, frame: &Frame) -> Palette {
+        match frame.notch_style {
+            NotchStyle::Plain => self.palette,
+            NotchStyle::Gradient | NotchStyle::Face => {
+                notch_colour::gradient_palette(self.palette, self.closed_bottom(frame))
+            }
+        }
+    }
+
+    /// Gradasi's brush over `r`'s height: `top` down to `TOP_STOP`, then to
+    /// `bottom` at the bottom edge, every stop at `alpha`.
+    fn island_gradient(&self, r: Rect, top: u32, bottom: u32, alpha: f32) -> Result<ID2D1Brush> {
+        let target = self.target.as_ref().expect("target ensured by paint");
+        let stops = [(0.0, top), (TOP_STOP, top), (1.0, bottom)].map(|(position, rgb)| {
+            D2D1_GRADIENT_STOP {
+                position,
+                color: color(rgb, alpha),
+            }
+        });
+        unsafe {
+            let stops = target.rt.CreateGradientStopCollection(
+                &stops,
+                D2D1_GAMMA_2_2,
+                D2D1_EXTEND_MODE_CLAMP,
+            )?;
+            let brush = target.rt.CreateLinearGradientBrush(
+                &D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES {
+                    startPoint: Vector2::new(0.0, r.y),
+                    endPoint: Vector2::new(0.0, r.bottom()),
+                },
+                None,
+                &stops,
+            )?;
+            brush.cast()
+        }
+    }
+
     fn paint_island(&mut self, style: Style, shape: ShapeRect, frame: &Frame) -> Result<()> {
+        self.notch_grad.set(None);
         let view = frame.view;
         let radius = corner_radius(style, shape);
         // A play draws the island from its deformed outline. Built before
@@ -2482,38 +2609,38 @@ impl Renderer {
                 self.paint_parts(pass, island, shape, frame, p, alpha);
             }
         }
+        let fill = self.island_fill_at(frame, panel_share(style, shape, frame));
+        let gradient;
         unsafe {
-            // 1.0 (the same call as ever) unless the closed island is see-through
-            // or shrunk (`peek_fill` blends to the face colour).
-            let (rgb, alpha) = if frame.peek_mix > 0.0 {
-                let face = peek_face(frame.cat, self.palette.surface);
-                peek_fill(
-                    self.palette.surface,
-                    frame.fill_alpha.clamp(0.0, 1.0),
-                    face.fill,
-                    frame.peek_mix,
-                )
-            } else {
-                (self.palette.surface, frame.fill_alpha.clamp(0.0, 1.0))
+            // Plain: the one solid brush, as ever. Gradasi: a vertical
+            // gradient over the shape's height, made for this frame.
+            let brush: &ID2D1Brush = match fill {
+                IslandFill::Solid { rgb, alpha } => {
+                    target.brush.SetColor(&color(rgb, alpha));
+                    &target.brush
+                }
+                IslandFill::Gradient { top, bottom, alpha } => {
+                    gradient = self.island_gradient(shape_rect(shape), top, bottom, alpha)?;
+                    &gradient
+                }
             };
-            target.brush.SetColor(&color(rgb, alpha));
             // The fill goes down first and the content over it, play or not.
             // Nothing a story draws leans on this fill being opaque, since it
             // can be see-through: behind is clipped to `outside_island`,
             // inside to the island's own geometry.
             match (&played, style) {
-                (Some(island), _) => target.rt.FillGeometry(island, &target.brush, None),
+                (Some(island), _) => target.rt.FillGeometry(island, brush, None),
                 (None, Style::Pill) => target.rt.FillRoundedRectangle(
                     &D2D1_ROUNDED_RECT {
                         rect: d2d_rect(shape_rect(shape)),
                         radiusX: radius,
                         radiusY: radius,
                     },
-                    &target.brush,
+                    brush,
                 ),
                 (None, Style::Notch) => {
                     let path = self.notch_path(shape, radius)?;
-                    target.rt.FillGeometry(&path, &target.brush, None);
+                    target.rt.FillGeometry(&path, brush, None);
                 }
             }
         }
@@ -2549,6 +2676,21 @@ impl Renderer {
             Some(page) => self.paint_leaving_panel(style, shape, frame, page),
             None => Ok(()),
         };
+        // Gradasi: the view's marks are checked against the closed bottom
+        // colour (an accent under 3:1 turns to the text colour, a mascot
+        // under 3:1 gets its halo, the REC dot its ring). Restored once the
+        // content is drawn; the panel closing above keeps its own palette.
+        let base = self.palette;
+        if frame.notch_style != NotchStyle::Plain {
+            let r = shape_rect(shape);
+            self.notch_grad.set(Some(NotchGrad {
+                y: r.y,
+                h: r.h,
+                top: base.surface,
+                bottom: self.closed_bottom(frame),
+            }));
+            self.palette = self.content_palette(frame);
+        }
         // Only the compact views and notices carry the shadow, never the
         // panel that is closing out of them.
         self.legible.set(frame.legibility.clamp(0.0, 1.0));
@@ -2657,6 +2799,8 @@ impl Renderer {
                 self.paint_robot(area, r);
             }
         }
+        self.palette = base;
+        self.notch_grad.set(None);
         // The busy toast's logo, at the slot's alpha, over the island's own
         // fill: no shadow on it.
         self.legible.set(0.0);
@@ -3223,8 +3367,13 @@ impl Renderer {
         let target = self.target.as_ref().expect("target ensured by paint");
         // On a see-through island: a soft dark halo round the mascot (the
         // cat's head, the falk's egg and crest, the octopus's mantle and
-        // arms), so the face reads on a light wallpaper.
-        let strength = self.legible.get();
+        // arms), so the face reads on a light wallpaper. Gradasi gives it at
+        // full strength to a coat under 3:1 on the bottom colour.
+        let look = self.cat.get();
+        let on_tint = self.notch_grad.get().is_some_and(|g| {
+            notch_colour::needs_halo(look.head_rgb(), g.bottom, look.rim().is_some())
+        });
+        let strength = if on_tint { 1.0 } else { self.legible.get() };
         if strength > 0.0 {
             // The halo follows the dance's nod.
             let (head, radius) = super::mascot::mascot_box(
@@ -4982,6 +5131,66 @@ fn mix(a: u32, b: u32, t: f32) -> u32 {
     channel(16) | channel(8) | channel(0)
 }
 
+/// How the island's shape is filled (`Renderer::island_fill`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum IslandFill {
+    /// One colour: Polos, as ever.
+    Solid { rgb: u32, alpha: f32 },
+    /// Gradasi: `top` from the top edge to `TOP_STOP` of the height, then
+    /// blending to `bottom` at the bottom edge, every stop at `alpha`.
+    Gradient { top: u32, bottom: u32, alpha: f32 },
+}
+
+/// The closed island's Gradasi, in logical px: the shape's top `y` and
+/// height `h`, and its two colours.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct NotchGrad {
+    y: f32,
+    h: f32,
+    top: u32,
+    bottom: u32,
+}
+
+impl NotchGrad {
+    /// The fill's colour at `y`, as the brush paints it.
+    fn at(&self, y: f32) -> u32 {
+        let p = if self.h > 0.0 {
+            ((y - self.y) / self.h).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        if p <= TOP_STOP {
+            self.top
+        } else {
+            mix(self.top, self.bottom, (p - TOP_STOP) / (1.0 - TOP_STOP))
+        }
+    }
+}
+
+/// How far the island's fill is the open panel's (0 a closed view, 1 the
+/// panel): settled panel 1, and while the panel opens or closes the shape's
+/// height between the closed view's (`fade_floor_h`) and the panel's, which
+/// the morph eases as it does the fill.
+fn panel_share(style: Style, shape: ShapeRect, frame: &Frame) -> f32 {
+    let page = match (frame.view, frame.transit.leaving) {
+        (View::Panel(_), _) => frame.page,
+        (_, Some(page)) => page,
+        _ => return 0.0,
+    };
+    let rest = shape_for(
+        style,
+        panel_kind(page, frame.cli.tall, frame.cleaner.is_some()),
+    );
+    let floor = frame.transit.fade_floor_h;
+    if shape == rest {
+        return 1.0;
+    }
+    if rest.h <= floor {
+        return if matches!(frame.view, View::Panel(_)) { 1.0 } else { 0.0 };
+    }
+    ((shape.h - floor) / (rest.h - floor)).clamp(0.0, 1.0)
+}
+
 /// 0xRRGGBB plus alpha as a Direct2D color (straight alpha; Direct2D premultiplies).
 fn color(rgb: u32, alpha: f32) -> D2D1_COLOR_F {
     let channel = |shift: u32| ((rgb >> shift) & 0xFF) as f32 / 255.0;
@@ -5579,6 +5788,18 @@ mod tests {
         fill_alpha: f32,
         f: impl FnOnce(&Frame) -> R,
     ) -> R {
+        with_frame_tweaked(play, clock, robot, fill_alpha, |_| {}, f)
+    }
+
+    /// `with_frame_all` with `tweak` applied to the frame before `f` sees it.
+    fn with_frame_tweaked<R>(
+        play: Option<PlayFrame>,
+        clock: Option<String>,
+        robot: Option<RobotFrame>,
+        fill_alpha: f32,
+        tweak: impl FnOnce(&mut Frame),
+        f: impl FnOnce(&Frame) -> R,
+    ) -> R {
         use crate::calendar::CalStatus;
         let today = NaiveDate::from_ymd_opt(2026, 11, 14).unwrap();
         let now = today.and_hms_opt(12, 0, 0).unwrap();
@@ -5586,7 +5807,7 @@ mod tests {
         let (set, vetoes) = (Default::default(), Default::default());
         let rec_devices = [String::new(), String::new()];
         let (details, logos) = (Default::default(), Default::default());
-        let frame = Frame {
+        let mut frame = Frame {
             view: &View::Idle,
             media: None,
             pomodoro: &Pomodoro::new(Default::default()),
@@ -5642,6 +5863,8 @@ mod tests {
             tiles: Vec::new(),
             palette: theme::island(Accent::default(), theme::Surface::Espresso),
             cat: CatLook::default(),
+            notch_style: NotchStyle::Plain,
+            notch_tint: Accent::default().rgb(),
             fill_alpha,
             legibility: 0.0,
             clock,
@@ -5714,7 +5937,247 @@ mod tests {
             full_redraw: false,
             play,
         };
+        tweak(&mut frame);
         f(&frame)
+    }
+
+    /// Terracotta on Espresso, the terracotta cat's tint, drawn in `style`
+    /// as `view`.
+    fn notch_styled(style: NotchStyle, view: &'static View) -> impl FnOnce(&mut Frame) {
+        move |frame| {
+            frame.view = view;
+            frame.palette = theme::island(Accent::Terracotta, theme::Surface::Espresso);
+            frame.notch_style = style;
+            frame.notch_tint = 0xE2683C;
+        }
+    }
+
+    /// `view` for a `&'static` frame field.
+    fn leak(view: View) -> &'static View {
+        Box::leak(Box::new(view))
+    }
+
+    /// What `island_fill` gives for `frame`, with the renderer on the
+    /// frame's palette (as `draw` sets it).
+    fn fill_of(r: &mut Renderer, frame: &Frame) -> IslandFill {
+        r.palette = frame.palette;
+        r.island_fill(frame)
+    }
+
+    fn a_notice() -> View {
+        View::Notice(Notice {
+            key: "n".into(),
+            source: "Vale".into(),
+            title: "Title".into(),
+            body: "Body".into(),
+            kind: NoticeKind::ClaudeWaiting {
+                session_id: "s".into(),
+            },
+        })
+    }
+
+    #[test]
+    fn a_plain_frame_fills_exactly_as_before() {
+        let mut r = renderer();
+        for fill in [1.0, 0.42] {
+            let got = with_frame_all(None, None, None, fill, |frame| fill_of(&mut r, frame));
+            let surface = r.palette.surface;
+            assert_eq!(got, IslandFill::Solid { rgb: surface, alpha: fill });
+        }
+        // The shrunk pill still blends to the face as `peek_fill` says.
+        let got = with_frame_tweaked(None, None, None, 0.42, |f| f.peek_mix = 0.5, |frame| {
+            fill_of(&mut r, frame)
+        });
+        let face = peek_face(CatLook::default(), r.palette.surface).fill;
+        let (rgb, alpha) = peek_fill(r.palette.surface, 0.42, face, 0.5);
+        assert_eq!(got, IslandFill::Solid { rgb, alpha });
+    }
+
+    #[test]
+    fn gradient_fill_uses_the_surface_on_top_and_the_capped_bottom() {
+        use super::super::notch_colour::{CLOSED_T, PANEL_T, bottom};
+        let mut r = renderer();
+        let (surface, tint) = (0x17120F, 0xE2683C);
+        let accent = Accent::Terracotta.rgb();
+        let fill = |r: &mut Renderer, style, view| {
+            with_frame_tweaked(None, None, None, 1.0, notch_styled(style, view), |frame| {
+                fill_of(r, frame)
+            })
+        };
+        assert_eq!(
+            fill(&mut r, NotchStyle::Gradient, leak(View::Idle)),
+            IslandFill::Gradient {
+                top: surface,
+                bottom: bottom(surface, tint, CLOSED_T, None),
+                alpha: 1.0,
+            }
+        );
+        assert_eq!(
+            fill(&mut r, NotchStyle::Gradient, leak(View::Panel(Page::Media))),
+            IslandFill::Gradient {
+                top: surface,
+                bottom: bottom(surface, tint, PANEL_T, Some(accent)),
+                alpha: 1.0,
+            }
+        );
+        assert_eq!(
+            fill(&mut r, NotchStyle::Gradient, leak(a_notice())),
+            IslandFill::Gradient {
+                top: surface,
+                bottom: bottom(surface, tint, CLOSED_T, Some(accent)),
+                alpha: 1.0,
+            }
+        );
+        // Until Jadi muka is painted (Task 5), Face draws Gradasi.
+        assert_eq!(
+            fill(&mut r, NotchStyle::Face, leak(View::Idle)),
+            fill(&mut r, NotchStyle::Gradient, leak(View::Idle))
+        );
+    }
+
+    #[test]
+    fn gradient_stops_carry_the_see_through_alpha() {
+        let mut r = renderer();
+        let see_through =
+            crate::ui::notch_fill::fill_alpha(crate::config::NotchFill::Transparent, 30);
+        assert!(see_through < 1.0);
+        let got = with_frame_tweaked(
+            None,
+            None,
+            None,
+            see_through,
+            notch_styled(NotchStyle::Gradient, leak(View::Idle)),
+            |frame| fill_of(&mut r, frame),
+        );
+        let IslandFill::Gradient { alpha, .. } = got else {
+            panic!("{got:?}");
+        };
+        assert_eq!(alpha, see_through);
+    }
+
+    #[test]
+    fn a_gradient_shrinking_to_the_eyes_ends_on_the_face() {
+        let mut r = renderer();
+        let got = with_frame_tweaked(
+            None,
+            None,
+            None,
+            1.0,
+            |f| {
+                notch_styled(NotchStyle::Gradient, leak(View::Idle))(f);
+                f.peek_mix = 1.0;
+            },
+            |frame| fill_of(&mut r, frame),
+        );
+        let face = peek_face(CatLook::default(), 0x17120F).fill;
+        assert_eq!(got, IslandFill::Gradient { top: face, bottom: face, alpha: 1.0 });
+    }
+
+    #[test]
+    fn the_gradient_is_painted_from_the_surface_down_to_the_bottom() {
+        let mut r = renderer();
+        let s = shape(Style::Notch, 190.0, 34.0);
+        let dip = (crate::ui::geometry::WINDOW_W, s.y + s.h + 4.0);
+        let (px, want) = with_frame_tweaked(
+            None,
+            None,
+            None,
+            1.0,
+            notch_styled(NotchStyle::Gradient, leak(View::Idle)),
+            |frame| {
+                let want = fill_of(&mut r, frame);
+                let px = painted(&mut r, dip, |r| r.paint_island(Style::Notch, s, frame).unwrap());
+                (px, want)
+            },
+        );
+        let IslandFill::Gradient { top, bottom, .. } = want else {
+            panic!("{want:?}");
+        };
+        let x = ((s.x + s.w / 2.0) * r.scale) as usize;
+        let rgb_at = |y: usize| {
+            let i = (y * px.w + x) * 4;
+            let b = &px.bgra[i..i + 4];
+            (b[3], u32::from(b[2]) << 16 | u32::from(b[1]) << 8 | u32::from(b[0]))
+        };
+        let near = |a: u32, b: u32| {
+            [16, 8, 0]
+                .iter()
+                .all(|sh| ((a >> sh) & 0xFF).abs_diff((b >> sh) & 0xFF) <= 2)
+        };
+        let first = (0..px.h).find(|&y| rgb_at(y).0 == 255).expect("an opaque top row");
+        let last = (0..px.h).rev().find(|&y| rgb_at(y).0 == 255).expect("an opaque bottom row");
+        assert!(near(rgb_at(first).1, top), "{:06X} vs {top:06X}", rgb_at(first).1);
+        assert!(near(rgb_at(last).1, bottom), "{:06X} vs {bottom:06X}", rgb_at(last).1);
+    }
+
+    #[test]
+    fn the_gradient_colour_at_a_height_is_the_brush_s() {
+        let g = NotchGrad { y: 10.0, h: 40.0, top: 0x000000, bottom: 0xC8C8C8 };
+        assert_eq!(g.at(0.0), 0x000000);
+        assert_eq!(g.at(10.0 + 40.0 * TOP_STOP), 0x000000);
+        assert_eq!(g.at(10.0 + 40.0 * (TOP_STOP + 1.0) / 2.0), 0x646464);
+        assert_eq!(g.at(50.0), 0xC8C8C8);
+        assert_eq!(g.at(90.0), 0xC8C8C8);
+    }
+
+    #[test]
+    fn the_fill_turns_into_the_panel_s_with_the_shape() {
+        use super::super::geometry::ShapeKind;
+        let rest = shape_for(Style::Notch, panel_kind(Page::ALL[0], false, false));
+        let floor = 34.0;
+        let at = |view: &'static View, leaving: Option<Page>, h: f32| {
+            with_frame_tweaked(
+                None,
+                None,
+                None,
+                1.0,
+                |f| {
+                    f.view = view;
+                    f.transit.leaving = leaving;
+                    f.transit.fade_floor_h = floor;
+                },
+                |frame| panel_share(Style::Notch, ShapeRect { h, ..rest }, frame),
+            )
+        };
+        let panel = leak(View::Panel(Page::ALL[0]));
+        assert_eq!(at(panel, None, rest.h), 1.0);
+        assert_eq!(at(panel, None, floor), 0.0);
+        let half = floor + (rest.h - floor) / 2.0;
+        assert!((at(panel, None, half) - 0.5).abs() < 1e-4);
+        // Closing: the same share on the way down.
+        let idle = leak(View::Idle);
+        assert_eq!(at(idle, Some(Page::ALL[0]), rest.h), 1.0);
+        assert!((at(idle, Some(Page::ALL[0]), half) - 0.5).abs() < 1e-4);
+        assert_eq!(at(idle, None, half), 0.0);
+        let compact = shape_for(Style::Notch, ShapeKind::MediaCompact);
+        assert_eq!(at(idle, None, compact.h), 0.0);
+    }
+
+    #[test]
+    fn gradient_marks_switch_to_text_under_3_to_1() {
+        let mut r = renderer();
+        let accent = Accent::Terracotta.rgb();
+        let palette = with_frame_tweaked(
+            None,
+            None,
+            None,
+            1.0,
+            |f| {
+                notch_styled(NotchStyle::Gradient, leak(View::MediaCompact))(f);
+                f.notch_tint = accent;
+            },
+            |frame| {
+                r.palette = frame.palette;
+                r.content_palette(frame)
+            },
+        );
+        assert_eq!(palette.accent, palette.text);
+        // Plain keeps the palette as it is.
+        let plain = with_frame_all(None, None, None, 1.0, |frame| {
+            r.palette = frame.palette;
+            r.content_palette(frame)
+        });
+        assert_eq!(plain, r.palette);
     }
 
     #[test]

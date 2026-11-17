@@ -51,6 +51,9 @@
 //! - `DI_ACCENT=orange` and `DI_SURFACE=graphite` pick the island theme
 //!   (`espresso`, `graphite`, `sea`, `night`, `plum`; without it, or `auto`,
 //!   the surface follows the cat's colour as in the app).
+//! - `DI_NOTCH_STYLE=gradient` ("Warna notch": `plain`, `gradient`, `face`)
+//!   fills the island as that setting does in every scene; a scene without
+//!   the mascot draws `face` as `gradient`, as the app does with it off.
 //! - `DI_CAT_COLOR=calico` (`terracotta`, `calico`, `white`, `black`) and
 //!   `DI_CAT_ACCESSORY=crown` (`none`, `glasses`, `bow`, `nightcap`, `scarf`,
 //!   `flower`, `crown`) dress the cat in every scene, like `DI_NOTCH`; the
@@ -298,6 +301,7 @@ use super::motion::{
     CloseFade, PAGE_FADE_MS, REVEAL_MS, RevealDir, Transit, close_fade_ms, content_alpha,
     page_fade_frame, reveal_frame,
 };
+use super::notch_colour;
 use super::notch_fill::{self, fill_alpha};
 use super::render::{
     CleanerView, CliView, ClipNoticeView, ClipView, DevicesView, FolderMenuView, Frame, MoleView, RecFrame, RecordView, VideoThumbView,
@@ -325,7 +329,7 @@ use crate::cli_panel::{Echoes, RunState};
 use crate::clipboard::image::Thumb;
 use crate::clipboard::store::{ClipImage, PackState};
 use crate::clipboard::{Clip, ClipData, ClipKind};
-use crate::config::{NotchFill, Style, UiFont};
+use crate::config::{NotchFill, NotchStyle, Style, UiFont};
 use crate::devices::{self, Bus, Device, DeviceKind, Partition, Veto, VetoKind};
 use crate::i18n::{Key, tr};
 use crate::lyrics::{self, FADE, LyricsFound, LyricsState, Query};
@@ -2962,6 +2966,7 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
     // coat, as in the app.
     let cat = demo_look(name);
     let chosen_surface = Surface::from_name(&name("DI_SURFACE")).unwrap_or_default();
+    let notch_style = NotchStyle::from_name(&name("DI_NOTCH_STYLE")).unwrap_or_default();
     let palette = theme::island(
         Accent::from_name(&name("DI_ACCENT")).unwrap_or_default(),
         chosen_surface.resolve(
@@ -3480,6 +3485,8 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                     },
                     _ => cat,
                 },
+                notch_style: notch_colour::effective_style(notch_style, scene.robot.is_some()),
+                notch_tint: notch_colour::tint(cat, scene.robot.is_some(), palette.accent),
                 fill_alpha,
                 legibility: notch_fill::legibility(fill_alpha),
                 clock: match scene.clock {

@@ -10,7 +10,7 @@
 use super::geometry::{BAR_COUNT, Rect, ShapeRect, shoulder_depth};
 use super::render::{NoticeCloseView, Progress, RobotFrame};
 use super::cat_style::CatLook;
-use crate::config::{Style, UiFont};
+use crate::config::{NotchStyle, Style, UiFont};
 use crate::model::View;
 use crate::theme::Palette;
 
@@ -174,6 +174,9 @@ pub struct Drawn {
     pub palette: Palette,
     pub ui_font: UiFont,
     pub cat: CatLook,
+    /// "Warna notch" as drawn and the colour a gradient leans toward.
+    pub notch_style: NotchStyle,
+    pub notch_tint: u32,
     pub style: Style,
     pub halo: bool,
     /// The frame moves content outside its bounds (a morph, a slide, a fade)
@@ -221,6 +224,8 @@ pub fn plan(prev: Option<&Drawn>, cur: &Drawn) -> Plan {
         && prev.palette == cur.palette
         && prev.ui_font == cur.ui_font
         && prev.cat == cur.cat
+        && prev.notch_style == cur.notch_style
+        && prev.notch_tint == cur.notch_tint
         && prev.style == cur.style
         && prev.halo == cur.halo;
     if !same {
@@ -253,6 +258,8 @@ pub struct EqKey {
     pub lyric: Option<(u64, Option<u64>, u32)>,
     pub lyric_scroll: [u32; 2],
     pub fill_alpha: u32,
+    pub notch_style: NotchStyle,
+    pub notch_tint: u32,
     pub toast_slot_w: u32,
     pub toast_dot: bool,
     pub volume: Option<u32>,
@@ -273,6 +280,7 @@ pub fn eq_draw_needed(last: Option<&EqKey>, cur: &EqKey) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::NotchStyle;
     use crate::model::Page;
 
     const SCALES: [f32; 4] = [1.0, 1.25, 1.5, 2.0];
@@ -311,6 +319,8 @@ mod tests {
             ),
             ui_font: UiFont::Sans,
             cat: CatLook::default(),
+            notch_style: NotchStyle::Plain,
+            notch_tint: 0xD9A441,
             style: Style::Notch,
             halo: false,
             force_full: false,
@@ -492,6 +502,8 @@ mod tests {
             Box::new(|d| d.cat.mascot = crate::theme::Mascot::Falk),
             Box::new(|d| d.style = Style::Pill),
             Box::new(|d| d.halo = true),
+            Box::new(|d| d.notch_style = NotchStyle::Gradient),
+            Box::new(|d| d.notch_tint = 0xE2683C),
         ];
         for (i, change) in changed.iter().enumerate() {
             let mut cur = base.clone();
@@ -557,6 +569,8 @@ mod tests {
             lyric: None,
             lyric_scroll: [0, 0],
             fill_alpha: 1.0f32.to_bits(),
+            notch_style: NotchStyle::Plain,
+            notch_tint: 0xD9A441,
             toast_slot_w: 0,
             toast_dot: false,
             volume: None,
@@ -608,6 +622,8 @@ mod tests {
             Box::new(|k| k.lyric = Some((1, None, 0))),
             Box::new(|k| k.lyric_scroll = [1, 0]),
             Box::new(|k| k.fill_alpha = 0.5f32.to_bits()),
+            Box::new(|k| k.notch_style = NotchStyle::Gradient),
+            Box::new(|k| k.notch_tint = 0xE2683C),
             Box::new(|k| k.toast_slot_w = 1),
             Box::new(|k| k.toast_dot = true),
             Box::new(|k| k.volume = Some(0)),
