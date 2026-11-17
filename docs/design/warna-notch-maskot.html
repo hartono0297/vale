@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Notch ikut maskot</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&display=swap" rel="stylesheet">
+<style>
+  /* Same cream paper and DM Sans as the other Vale design sheets (warna-notch.html, mata-maskot.html).
+     Mascots are drawn from maskot-pilihan-akhir.html's paths with the app's coat colours
+     (cat_style.rs, mascot.rs). */
+  :root {
+    --paper: #F4EDE4; --card: #FFFBF5; --ink: #231C18; --ink-2: #5E5045;
+    --line: #D9CBBB; --edge: #8C7B6C; --pick: #A8451F; --bad: #9C2F14;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--paper); color: var(--ink); font: 16px/1.5 "DM Sans", system-ui, sans-serif; }
+  main { max-width: 1160px; margin: 0 auto; padding: 32px 16px 80px; }
+  h1 { font-size: 34px; line-height: 1.15; margin: 0 0 8px; letter-spacing: -0.01em; }
+  h2 { font-size: 22px; margin: 48px 0 4px; }
+  p { margin: 0 0 12px; max-width: 74ch; }
+  a { color: #7A2E10; }
+  a:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+  .lead { color: var(--ink-2); font-size: 17px; }
+  .muted { color: var(--ink-2); }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  button:focus-visible { outline: 3px solid var(--ink); outline-offset: 3px; }
+
+  .bar { display: flex; flex-wrap: wrap; gap: 14px 24px; align-items: flex-end; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin-top: 20px; position: sticky; top: 8px; z-index: 2; }
+  .bar .g { display: flex; flex-direction: column; gap: 6px; }
+  .bar .l { font-size: 13px; font-weight: 500; color: var(--ink-2); }
+  .seg { display: flex; gap: 6px; flex-wrap: wrap; }
+  .seg button { border: 1px solid var(--edge); background: var(--card); border-radius: 8px; padding: 6px 12px; min-height: 36px; font-size: 14px; display: inline-flex; align-items: center; gap: 6px; }
+  .seg button[aria-pressed="true"] { border-color: var(--pick); background: #F6E2D6; color: #7A2E10; font-weight: 500; }
+  .sw { width: 14px; height: 14px; border-radius: 50%; border: 1px solid rgba(0,0,0,.35); flex: none; }
+
+  .ways { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 14px; }
+  .ways button { text-align: left; border: 1px solid var(--line); background: var(--card); border-radius: 12px; padding: 10px 12px; min-height: 44px; }
+  .ways button[aria-pressed="true"] { border-color: var(--pick); box-shadow: inset 0 0 0 1px var(--pick); }
+  .ways b { display: block; font-size: 15px; }
+  .ways span { display: block; font-size: 13px; color: var(--ink-2); margin-top: 2px; }
+
+  .grid { display: grid; gap: 14px; margin-top: 16px; }
+  .lineup { grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); }
+  .g2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .group { font-size: 15px; font-weight: 700; margin: 22px 0 -4px; }
+  .cell { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .cap { font-size: 15px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+  .reads { font-size: 13px; color: var(--ink-2); display: flex; flex-wrap: wrap; gap: 2px 12px; }
+  .reads b { font-weight: 500; color: var(--ink); }
+  .reads .no { color: var(--bad); font-weight: 700; }
+
+  .screen { position: relative; border-radius: 8px; overflow: hidden; min-height: 112px; }
+  .screen.tall { min-height: 300px; }
+  .screen .bezel { height: 12px; background: #050505; }
+  .screen .area { position: relative; min-height: inherit; }
+  .screen svg.n { position: absolute; left: 50%; top: 0; transform: translateX(-50%); max-width: 100%; height: auto; display: block; }
+  .bg-dark  .area { background: linear-gradient(170deg, #26303D 0%, #3B4552 55%, #4A4237 100%); }
+  .bg-light .area { background: linear-gradient(170deg, #E6ECF1 0%, #D3DCE3 55%, #E9DFD2 100%); }
+  .bg-winl  .area { background: #F9F9F9; }
+  .bg-wind  .area { background: #1C1C1C; }
+  .tabs { position: absolute; left: 0; right: 0; top: 0; height: 40px; display: flex; align-items: flex-end; gap: 4px; padding: 0 8px; }
+  .bg-winl .tabs { background: #E8EAED; }
+  .bg-wind .tabs { background: #2B2B2B; }
+  .tabs i { display: block; height: 30px; flex: 0 0 22%; border-radius: 8px 8px 0 0; }
+  .bg-winl .tabs i { background: #F9F9F9; } .bg-winl .tabs i + i { background: #DADCE0; }
+  .bg-wind .tabs i { background: #1C1C1C; } .bg-wind .tabs i + i { background: #3A3A3A; }
+  .tabs .x { margin-left: auto; align-self: center; font-size: 13px; padding: 0 6px; }
+  .bg-winl .tabs .x { color: #333; } .bg-wind .tabs .x { color: #ddd; }
+
+  .pickrow { display: flex; flex-wrap: wrap; gap: 14px 24px; margin-top: 14px; }
+  .pickrow .g { display: flex; flex-direction: column; gap: 6px; }
+  .pickrow .l { font-size: 13px; font-weight: 500; }
+  .note { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin-top: 14px; }
+  .note ul { margin: 6px 0 0; padding-left: 20px; }
+  .note li { margin: 4px 0; max-width: 80ch; }
+
+  @media (max-width: 900px) { .ways { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 640px) {
+    .g2, .ways { grid-template-columns: 1fr; }
+    .bar { position: static; }
+    h1 { font-size: 28px; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Notch yang ikut warna maskot</h1>
+  <p class="lead">Semua maskot dan warna bulu yang ada di Vale: kucing (4), falk (3), gurita (4). Pilih cara pewarnaannya di bawah, lalu lihat semuanya berjejer, atau satu maskot di semua keadaan. Perbandingan lima arah umum ada di <a href="warna-notch.html">warna-notch.html</a>.</p>
+
+  <div class="ways" id="waySeg" role="group" aria-label="Cara pewarnaan"></div>
+
+  <div class="bar" role="group" aria-label="Pengaturan pratinjau">
+    <div class="g"><span class="l" id="lAcc">Warna aksen (equalizer, progres)</span><div class="seg" id="accSeg" aria-labelledby="lAcc"></div></div>
+    <div class="g"><span class="l" id="lBg">Di belakang notch</span><div class="seg" id="bgSeg" aria-labelledby="lBg"></div></div>
+    <div class="g"><span class="l" id="lBz">Bezel</span><div class="seg" id="bzSeg" aria-labelledby="lBz"></div></div>
+  </div>
+
+  <h2>Semua maskot, notch diam</h2>
+  <p class="muted">Ukuran asli 190 x 34 diperbesar 1,6x. "Warna dari" bilang bagian maskot mana yang jadi warna notch. "Sekarang" itu Warna dasar Auto yang dipakai hari ini.</p>
+  <div id="lineup"></div>
+
+  <h2>Satu maskot di semua keadaan</h2>
+  <div class="pickrow">
+    <div class="g"><span class="l muted" id="lM">Maskot</span><div class="seg" id="mSeg" aria-labelledby="lM"></div></div>
+    <div class="g"><span class="l muted" id="lC">Warna bulu</span><div class="seg" id="cSeg" aria-labelledby="lC"></div></div>
+  </div>
+  <div class="grid g2" id="states"></div>
+
+  <h2>Catatan</h2>
+  <div class="note">
+    <ul>
+      <li><b>Warna dari bulu, dengan batas.</b> Bulu pucat (kucing putih, calico, falk lutino) kalau dicampur penuh bikin notch abu terang dan teks krem nggak kebaca. Campurannya otomatis dikurangi sampai teks krem minimal 5:1, makanya bulu pucat hasilnya lebih kalem.</li>
+      <li><b>Pilihan warna yang gw tentuin sendiri</b>, silakan dikoreksi: calico ambil oranye tambalannya (bulunya krem), kucing hitam ambil garis ungunya (bulunya hampir hitam), falk abu-abu dan muka putih ambil abu badannya, falk lutino ambil kuning mukanya.</li>
+      <li><b>Maskot di atas warnanya sendiri</b> bisa tenggelam. Kalau kontras kepala ke notch di bawah 3:1, kepala dapat lingkar gelap yang sudah dipakai mode Tembus. Kucing hitam nggak perlu, dia punya garis ungu.</li>
+      <li><b>"Notch jadi muka"</b> itu versi besar dari pill "mengecil jadi mata" yang lo pilih kemarin: notch tertutup berubah jadi muka maskot, teks dan ikon jadi gelap. Notifikasi dan panel tetap pakai gradasi supaya teks panjang tetap kebaca.</li>
+    </ul>
+  </div>
+</main>
+
+<script>
+(() => {
+  const D = '#17120F', CREAM = '#F4EDE4', ESP = '#17120F', BEZEL = '#050505', DEEP = '#0B0908', REC = '#E5484D';
+  const ACC = { Terracotta: '#E2683C', Sage: '#9DB59A', Ochre: '#D9A441', Clay: '#C9826B', Olive: '#A3A55A', Plum: '#B07A9A' };
+  const SURF = { Espresso: '#17120F', Graphite: '#221B17', Laut: '#132321', Malam: '#151C2E', Ungu: '#2A2140' };
+  // Coats from src/ui/cat_style.rs and src/ui/mascot.rs. tint = what colours the notch, auto = Warna dasar Auto today.
+  const MASCOTS = {
+    cat: { name: 'Kucing', coats: [
+      { k: 'terracotta', label: 'Terracotta', head: '#E2683C', face: '#E2683C', eye: D, tint: '#E2683C', from: 'bulu', auto: 'Espresso' },
+      { k: 'calico', label: 'Calico', head: '#F4EDE4', face: '#F4EDE4', eye: D, tint: '#E2683C', from: 'tambalan oranye', auto: 'Laut', calico: true, pale: true },
+      { k: 'white', label: 'Putih', head: '#F6F1EA', face: '#F6F1EA', eye: D, tint: '#F6F1EA', from: 'bulu putih', auto: 'Malam', pale: true },
+      { k: 'black', label: 'Hitam', head: '#1E1B22', face: '#1E1B22', eye: '#F2B33D', rim: '#8E7CB8', tint: '#8E7CB8', from: 'garis ungu', auto: 'Ungu' },
+    ] },
+    falk: { name: 'Falk', coats: [
+      { k: 'lutino', label: 'Lutino', body: '#F1E4A2', face: '#F6D04A', crest: '#F6D04A', cheek: '#EC6B3A', eye: D, tint: '#F6D04A', from: 'muka kuning', auto: 'Espresso', pale: true },
+      { k: 'grey', label: 'Abu-abu', body: '#9A959C', face: '#F2D35A', crest: '#E9CF62', cheek: '#EC6B3A', eye: D, tint: '#9A959C', from: 'badan abu', auto: 'Malam' },
+      { k: 'whiteface', label: 'Muka putih', body: '#9A959C', face: '#F4EFE6', crest: '#E4DED6', cheek: null, eye: D, tint: '#9A959C', from: 'badan abu', auto: 'Ungu', pale: true },
+    ] },
+    oct: { name: 'Gurita', coats: [
+      { k: 'coral', label: 'Koral', col: '#E87C8E', eye: D, tint: '#E87C8E', from: 'badan', auto: 'Espresso' },
+      { k: 'red', label: 'Merah', col: '#D9505F', eye: D, tint: '#D9505F', from: 'badan', auto: 'Graphite' },
+      { k: 'purple', label: 'Ungu', col: '#A98BD6', eye: D, tint: '#A98BD6', from: 'badan', auto: 'Malam' },
+      { k: 'blue', label: 'Biru laut', col: '#5FA8C9', eye: D, tint: '#5FA8C9', from: 'badan', auto: 'Laut' },
+    ] },
+  };
+  for (const m of Object.values(MASCOTS)) for (const c of m.coats) {
+    if (c.col) { c.head = c.col; c.face = c.col; }
+    if (c.body) c.head = c.body;
+  }
+  const WAYS = {
+    grad:  { name: 'Gradasi dari bezel', why: 'Atas hitam, bawah warna maskot. Saran gw.' },
+    solid: { name: 'Gelap warna maskot', why: 'Satu warna gelap rata dari warna maskot.' },
+    face:  { name: 'Notch jadi muka', why: 'Notch tertutup pakai warna muka maskot, seperti pill mata.' },
+    now:   { name: 'Sekarang (Auto)', why: 'Warna dasar Auto hari ini, buat pembanding.' },
+  };
+  const BGS = { light: 'Wallpaper terang', dark: 'Wallpaper gelap', winl: 'Jendela terang', wind: 'Jendela gelap' };
+  const STATES = [
+    { k: 'idle', name: 'Diam', w: 190, h: 34, r: 12 },
+    { k: 'music', name: 'Musik', w: 236, h: 34, r: 12 },
+    { k: 'rec', name: 'Rekam', w: 236, h: 34, r: 12 },
+    { k: 'notif', name: 'Notifikasi', w: 340, h: 76, r: 26 },
+    { k: 'eyes', name: 'Mengecil jadi mata', w: 34, h: 14, r: 7 },
+    { k: 'panel', name: 'Panel terbuka', w: 520, h: 250, r: 30 },
+  ];
+  const state = { way: 'grad', acc: 'Terracotta', bg: 'light', bezel: true, m: 'cat', c: 'terracotta' };
+
+  // ---- colour maths (WCAG 2.x) ----
+  const rgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+  const hex = a => '#' + a.map(v => Math.round(Math.max(0, Math.min(255, v))).toString(16).padStart(2, '0')).join('').toUpperCase();
+  const mix = (a, b, t) => { const x = rgb(a), y = rgb(b); return hex(x.map((v, i) => v + (y[i] - v) * t)); };
+  const lum = h => { const [r, g, b] = rgb(h).map(v => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }); return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
+  const ratio = (a, b) => { const x = lum(a), y = lum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
+  const fmt = v => (Math.floor(v * 100) / 100).toFixed(2).replace('.', ',');
+  // The strongest blend of the tint, up to `max`, that keeps cream text at 5:1 or more
+  // and the small caption colour (cream 15% toward the fill) at 4.5:1 or more.
+  function tinted(from, tint, max) {
+    for (let t = max; t > 0.05; t -= 0.01) { const c = mix(from, tint, t); if (ratio(CREAM, c) >= 5 && ratio(mix(CREAM, c, 0.15), c) >= 4.5) return c; }
+    return from;
+  }
+
+  // ---- how a way colours a state for a coat ----
+  function look(way, st, coat) {
+    const acc = ACC[state.acc];
+    let L;
+    const grad = () => { const bot = tinted(DEEP, coat.tint, st === 'panel' ? 0.32 : 0.45); return { grad: [DEEP, bot], fill: bot, top: DEEP, worst: bot, ink: CREAM }; };
+    if (way === 'now') { const f = SURF[coat.auto]; L = { fill: f, top: f, worst: f, ink: CREAM }; }
+    else if (way === 'solid') { const f = tinted(ESP, coat.tint, 0.30); L = { fill: f, top: f, worst: f, ink: CREAM }; }
+    else if (way === 'face' && st !== 'notif' && st !== 'panel') {
+      const f = coat.face; const ink = ratio(ESP, f) >= 4.5 ? ESP : CREAM;
+      L = { fill: f, top: f, worst: f, ink, isFace: true };
+    } else L = grad();
+    L.sec = mix(L.ink, L.worst, 0.30);
+    if (ratio(L.sec, L.worst) < 4.5) L.sec = mix(L.ink, L.worst, 0.15);
+    L.mark = acc; L.markSwapped = false;
+    if (ratio(acc, L.worst) < 3) { L.mark = L.ink; L.markSwapped = true; }
+    L.track = mix(L.ink, L.worst, 0.78);
+    return L;
+  }
+
+  // ---- mascot heads, 64-unit grid (paths from maskot-pilihan-akhir.html) ----
+  let uid = 0;
+  const pill = (x, y, w, h, c) => `<rect x="${x - w / 2}" y="${y - h / 2}" width="${w}" height="${h}" rx="${Math.min(w, h) / 2}" fill="${c}"/>`;
+  const dot = (x, y, r, c) => `<circle cx="${x}" cy="${y}" r="${r}" fill="${c}"/>`;
+  const HEAD = 'M7 50V41Q7 24 32 24Q57 24 57 41V50Q57 54 53 54H11Q7 54 7 50Z';
+  const FALK = 'M9 43Q9 22 32 22Q55 22 55 43Q55 57 32 57Q9 57 9 43Z';
+  const MANTLE = 'M32 9C50 9 55 25 50 37Q47 45 40 46H24Q17 45 14 37C9 25 14 9 32 9Z';
+  const CREST = [[28, 27, 27, 11, 2.8, -3.5], [30.5, 26, 35, 3, 3.2, -5], [33, 26, 42, 6, 3.2, -5], [35.5, 27, 46, 14, 2.6, -3.5]];
+  function feather(bx, by, tx, ty, w, bend, c) {
+    const dx = tx - bx, dy = ty - by, l = Math.hypot(dx, dy), nx = -dy / l, ny = dx / l;
+    const mx = (bx + tx) / 2 + nx * bend, my = (by + ty) / 2 + ny * bend;
+    return `<path d="M${bx} ${by}Q${mx + nx * w} ${my + ny * w} ${tx} ${ty}Q${mx - nx * w} ${my - ny * w} ${bx} ${by}Z" fill="${c}"/>`;
+  }
+  const eyes = (y, c) => pill(24, y, 5.6, 10, c) + pill(40, y, 5.6, 10, c);
+  function head(m, c) {
+    const id = 'h' + (++uid);
+    if (m === 'cat') {
+      const earL = c.calico ? '#E2683C' : c.head, earR = c.calico ? '#2B2420' : c.head;
+      const rim = c.rim ? ` stroke="${c.rim}" stroke-width="1.6"` : '';
+      const ear = (pts, col) => `<path d="M${pts[0]}L${pts[1]}L${pts[2]}Z" fill="${col}" stroke="${c.rim || col}" stroke-width="${c.rim ? 5 + 3.2 : 5}" stroke-linejoin="round"/>` + (c.rim ? `<path d="M${pts[0]}L${pts[1]}L${pts[2]}Z" fill="${col}" stroke="${col}" stroke-width="5" stroke-linejoin="round"/>` : '');
+      let s = ear([[9, 37], [12, 10], [27, 26]], earL) + ear([[55, 37], [52, 10], [37, 26]], earR) + `<path d="${HEAD}" fill="${c.head}"${rim}/>`;
+      if (c.calico) s += `<defs><clipPath id="${id}"><path d="${HEAD}"/></clipPath></defs><g clip-path="url(#${id})">${dot(15, 31, 9, '#E2683C')}${dot(50, 50, 9, '#2B2420')}</g>`;
+      return s + eyes(40, c.eye);
+    }
+    if (m === 'falk') {
+      const crest = `<g transform="rotate(10 32 27)"><ellipse cx="32" cy="26" rx="5.5" ry="4" fill="${c.crest}"/>${CREST.map(f => feather(...f, c.crest)).join('')}</g>`;
+      const cheeks = c.cheek ? dot(15.5, 44.5, 4.4, c.cheek) + dot(48.5, 44.5, 4.4, c.cheek) : '';
+      return crest + `<defs><clipPath id="${id}"><path d="${FALK}"/></clipPath></defs><path d="${FALK}" fill="${c.body}"/><ellipse cx="32" cy="33" rx="22" ry="17" fill="${c.face}" clip-path="url(#${id})"/>` + cheeks + eyes(40, c.eye) +
+        `<path d="M29.4 44.2Q32 42.4 34.6 44.2Q34.4 48.4 32 49.8Q29.6 48.4 29.4 44.2Z" fill="#D9978F"/>`;
+    }
+    const col = c.col, shade = mix(col, '#000000', 0.18), sucker = mix(col, '#FFFFFF', 0.55);
+    const L = [[19, 42, 8, 51, 3, 54], [24, 45, 15, 57, 9.5, 57.5], [29, 46, 27, 58, 21, 58.5]];
+    let arms = '';
+    [-1, 1].forEach(side => L.forEach(([sx, sy, cx, cy, ex, ey], i) => {
+      const X = v => side < 0 ? v : 64 - v;
+      let dir = side < 0 ? -1 : 1; if (i === 2) dir = -dir;
+      arms += `<path d="M${X(sx)} ${sy}Q${X(cx)} ${cy} ${X(ex)} ${ey}q${dir * 3.4} 0.2 ${dir * 3.2} -3.2q-0.2 -2.4 ${-dir * 2.4} -2.2" fill="none" stroke="${col}" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>`;
+    }));
+    return arms + `<path d="${MANTLE}" fill="${col}"/>` + dot(22, 20, 2.2, shade) + dot(40, 15, 1.6, shade) + dot(45, 24, 1.3, shade) + eyes(37, c.eye);
+  }
+  // Place a head about 26 dip tall, centred at (x, y) in notch dip.
+  const FIT = { cat: { k: 0.55, cy: 31 }, falk: { k: 0.47, cy: 30 }, oct: { k: 0.5, cy: 34 } };
+  function placed(m, c, x, y, L) {
+    const f = FIT[m];
+    const halo = !c.rim && ratio(c.head, L.worst) < 3 && !L.isFace ? `<ellipse cx="${x}" cy="${y}" rx="15" ry="13.5" fill="${ESP}" opacity="0.8"/>` : '';
+    return halo + `<g transform="translate(${x} ${y}) scale(${f.k}) translate(-32 ${-f.cy})">${head(m, c)}</g>`;
+  }
+
+  // ---- the face itself (way "face" and the peek pill) ----
+  function faceMarks(m, c, cx, cy, s, ink) {
+    // eyes 4.48 x 8 at +-6.4 (the pill's eye_pills()), scaled by s
+    const ex = 6.4 * s, ew = 4.48 * s, eh = 8 * s;
+    let out = '';
+    if (m === 'cat' && c.calico && s <= 1.3) out += dot(cx - 13 * s, cy - 3 * s, 3.2 * s, '#E2683C') + dot(cx + 13 * s, cy + 4 * s, 3.2 * s, '#2B2420');
+    if (m === 'oct') { const sh = mix(c.col, '#000000', 0.18); out += dot(cx + 10.5 * s, cy - 3 * s, 1.4 * s, sh) + dot(cx - 11 * s, cy - 3.6 * s, 1 * s, sh); }
+    if (m === 'falk' && c.cheek) out += dot(cx - 10.6 * s, cy + 3.2 * s, 1.9 * s, c.cheek) + dot(cx + 10.6 * s, cy + 3.2 * s, 1.9 * s, c.cheek);
+    out += pill(cx - ex, cy, ew, eh, c.eye) + pill(cx + ex, cy, ew, eh, c.eye);
+    if (m === 'falk') out += `<path d="M${cx - 1.3 * s} ${cy + 2.4 * s}Q${cx} ${cy + 1.6 * s} ${cx + 1.3 * s} ${cy + 2.4 * s}Q${cx + 1.2 * s} ${cy + 4.4 * s} ${cx} ${cy + 5.1 * s}Q${cx - 1.2 * s} ${cy + 4.4 * s} ${cx - 1.3 * s} ${cy + 2.4 * s}Z" fill="#D9978F"/>`;
+    return out;
+  }
+
+  // ---- notch shape ----
+  const notchPath = (w, h, r, s) => `M${-s} 0Q0 0 0 ${s}L0 ${h - r}Q0 ${h} ${r} ${h}L${w - r} ${h}Q${w} ${h} ${w} ${h - r}L${w} ${s}Q${w} 0 ${w + s} 0Z`;
+  const T = (x, y, txt, size, fill, o = {}) => `<text x="${x}" y="${y}" font-size="${size}" fill="${fill}" font-weight="${o.w || 500}" text-anchor="${o.a || 'start'}" font-family="DM Sans, system-ui, sans-serif">${txt}</text>`;
+  const eq = (x, y, c) => [6, 12, 9, 14].map((hh, i) => `<rect x="${x + i * 5}" y="${y - hh}" width="3" height="${hh}" rx="1.5" fill="${c}"/>`).join('');
+  const ART = '#3F8A8F', ART_HI = '#9CCFD2';
+
+  function content(m, c, st, L, s) {
+    const { w } = s;
+    if (st === 'idle') {
+      if (L.isFace) {
+        // The calico's patches as big circles cut by the notch, like on its head.
+        const id = 'k' + (++uid), sh = 12;
+        const patches = m === 'cat' && c.calico ? `<defs><clipPath id="${id}"><path d="${notchPath(w, s.h, s.r, sh)}"/></clipPath></defs><g clip-path="url(#${id})">${dot(6, 2, 17, '#E2683C')}${dot(98, 40, 13, '#2B2420')}</g>` : '';
+        return patches + faceMarks(m, c, 58, 17, 1.6, L.ink) + T(w - 16, 22.5, '14.32', 14, L.ink, { w: 700, a: 'end' });
+      }
+      return placed(m, c, 26, 17, L) + T(w - 16, 22.5, '14.32', 14, L.ink, { w: 700, a: 'end' });
+    }
+    if (st === 'music') {
+      const lead = L.isFace ? faceMarks(m, c, 24, 17, 0.8, L.ink) : placed(m, c, 24, 17, L);
+      return lead + `<rect x="46" y="6" width="22" height="22" rx="6" fill="${ART}"/><circle cx="57" cy="17" r="5" fill="${ART_HI}"/>` + T(76, 21.5, 'Judul lagu', 12, L.ink) + eq(w - 32, 25, L.mark);
+    }
+    if (st === 'rec') {
+      const ring = ratio(REC, L.worst) < 3 ? ` stroke="${L.ink === ESP ? ESP : L.ink}" stroke-width="1.5"` : '';
+      return `<circle cx="20" cy="17" r="4.5" fill="${REC}"${ring}/>` + T(31, 21.5, '03:12', 13, L.ink, { w: 700 }) + T(72, 21.5, 'Mic', 11, L.sec) + eq(w - 64, 25, L.mark) + eq(w - 34, 25, L.mark);
+    }
+    if (st === 'notif') return `<circle cx="40" cy="38" r="19" fill="#9DB59A"/><rect x="31" y="30" width="18" height="16" rx="3" fill="none" stroke="${ESP}" stroke-width="2"/><path d="M31 35h18M36 27v5M44 27v5" stroke="${ESP}" stroke-width="2" stroke-linecap="round"/>` + T(72, 33, 'Kalender', 14, L.ink, { w: 700 }) + T(72, 53, 'Acara dimulai 10 menit lagi', 13, L.sec);
+    if (st === 'eyes') return faceMarks(m, c, 17, 7, 1, L.ink);
+    const dots = [0, 1, 2, 3].map(i => `<circle cx="${w / 2 - 15 + i * 10}" cy="20" r="3" fill="${i === 1 ? L.mark : L.track}"/>`).join('');
+    return dots + `<rect x="28" y="40" width="130" height="130" rx="22" fill="${ART}"/><circle cx="93" cy="105" r="30" fill="${ART_HI}"/>` +
+      T(178, 74, 'Judul lagu', 22, L.ink, { w: 700 }) + T(178, 98, 'Nama artis', 15, L.sec) +
+      `<rect x="178" y="126" width="310" height="5" rx="2.5" fill="${L.track}"/><rect x="178" y="126" width="124" height="5" rx="2.5" fill="${L.mark}"/>` +
+      T(178, 152, '1:12', 13, L.sec) + T(488, 152, '3:40', 13, L.sec, { a: 'end' }) +
+      `<path d="M286 196l14 -9v18zM284 187v18" fill="${L.ink}" stroke="${L.ink}" stroke-width="3" stroke-linejoin="round"/>` +
+      `<circle cx="333" cy="196" r="20" fill="${L.ink}"/><rect x="326" y="188" width="5" height="16" rx="1.5" fill="${L.worst}"/><rect x="335" y="188" width="5" height="16" rx="1.5" fill="${L.worst}"/>` +
+      `<path d="M380 196l-14 -9v18zM382 187v18" fill="${L.ink}" stroke="${L.ink}" stroke-width="3" stroke-linejoin="round"/>`;
+  }
+
+  function notchSvg(m, c, s, scale) {
+    let L = look(state.way, s.k, c);
+    const sh = Math.min(12, s.h / 2), id = 'g' + (++uid);
+    let fill = L.fill, defs = '', edge = '';
+    if (s.k === 'eyes') {
+      // The peek pill already turns into the mascot's face today; pale faces get a 1 dip edge.
+      L = { ...L, fill: c.face, worst: c.face, isFace: true };
+      fill = c.face;
+      if (c.pale) edge = `<path d="M0 0.5H34" stroke="none"/><rect x="0.5" y="-1" width="33" height="14.5" rx="7" fill="none" stroke="${state.way === 'now' ? SURF[c.auto] : DEEP}" stroke-width="1"/>`;
+      if (c.rim) edge = `<rect x="0.5" y="-1" width="33" height="14.5" rx="7" fill="none" stroke="${c.rim}" stroke-width="1"/>`;
+    } else if (L.grad) {
+      defs = `<defs><linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${L.grad[0]}"/><stop offset="0.28" stop-color="${L.grad[0]}"/><stop offset="1" stop-color="${L.grad[1]}"/></linearGradient></defs>`;
+      fill = `url(#${id})`;
+    }
+    let edgeFace = '';
+    if (L.isFace && s.k !== 'eyes' && c.pale) edgeFace = `<path d="M0 ${sh}L0 ${s.h - s.r}Q0 ${s.h} ${s.r} ${s.h}L${s.w - s.r} ${s.h}Q${s.w} ${s.h} ${s.w} ${s.h - s.r}L${s.w} ${sh}" fill="none" stroke="${DEEP}" stroke-width="1"/>`;
+    if (L.isFace && s.k !== 'eyes' && c.rim) edgeFace = `<path d="M0 ${sh}L0 ${s.h - s.r}Q0 ${s.h} ${s.r} ${s.h}L${s.w - s.r} ${s.h}Q${s.w} ${s.h} ${s.w} ${s.h - s.r}L${s.w} ${sh}" fill="none" stroke="${c.rim}" stroke-width="1.5"/>`;
+    const vbW = s.w + 2 * sh;
+    const label = `${MASCOTS[m].name} ${c.label}, ${s.name}, ${WAYS[state.way].name}`;
+    return { L, svg: `<svg class="n" viewBox="${-sh} 0 ${vbW} ${s.h}" width="${vbW * scale}" role="img" aria-label="${label}">${defs}<path d="${notchPath(s.w, s.h, s.r, sh)}" fill="${fill}"/>${edge}${edgeFace}${content(m, c, s.k, L, s)}</svg>` };
+  }
+
+  function screen(svg, tall) {
+    const win = state.bg === 'winl' || state.bg === 'wind';
+    return `<div class="screen bg-${state.bg}${tall ? ' tall' : ''}">${state.bezel ? '<div class="bezel"></div>' : ''}<div class="area">${win ? '<div class="tabs" aria-hidden="true"><i></i><i></i><span class="x">✕</span></div>' : ''}${svg}</div></div>`;
+  }
+
+  const pass = (v, min) => v >= min ? `${fmt(v)}:1` : `<span class="no">${fmt(v)}:1, kurang</span>`;
+  function reads(m, c, st, L) {
+    const out = [];
+    if (st === 'eyes') return '<span>Pill warna muka maskot, sudah begini hari ini</span>';
+    out.push(`<span><b>Teks</b> ${pass(ratio(L.ink, L.worst), 4.5)}</span>`);
+    out.push(`<span><b>Teks kecil</b> ${pass(ratio(L.sec, L.worst), 4.5)}</span>`);
+    if ((st === 'idle' || st === 'music') && !L.isFace) {
+      const hr = ratio(c.head, L.worst);
+      out.push(`<span><b>Maskot</b> ${c.rim ? 'garis ungu' : hr >= 3 ? fmt(hr) + ':1' : fmt(hr) + ':1, dapat lingkar gelap'}</span>`);
+    }
+    if (st === 'music' || st === 'rec' || st === 'panel') out.push(`<span><b>Tanda aksen</b> ${L.markSwapped ? 'jadi ' + (L.ink === ESP ? 'gelap' : 'krem') : pass(ratio(L.mark, L.worst), 3)}</span>`);
+    if (st === 'rec') { const rr = ratio(REC, L.worst); out.push(`<span><b>Titik REC</b> ${rr >= 3 ? fmt(rr) + ':1' : fmt(rr) + ':1, dapat cincin'}</span>`); }
+    out.push(`<span><b>Atas</b> ${ratio(L.top, BEZEL) < 1.3 ? 'nyambung ke bezel' : 'beda dari bezel'}</span>`);
+    return out.join('');
+  }
+
+  function renderLineup() {
+    document.getElementById('lineup').innerHTML = Object.entries(MASCOTS).map(([m, M]) =>
+      `<div class="group">${M.name}</div><div class="grid lineup">` + M.coats.map(c => {
+        const { L, svg } = notchSvg(m, c, STATES[0], 1.6);
+        return `<div class="cell"><div class="cap">${c.label}</div>${screen(svg)}<div class="reads"><span><b>Warna dari</b> ${state.way === 'now' ? 'Warna dasar ' + c.auto : state.way === 'face' ? 'muka' : c.from}</span>${reads(m, c, 'idle', L)}</div></div>`;
+      }).join('') + '</div>').join('');
+  }
+  function renderStates() {
+    const c = MASCOTS[state.m].coats.find(x => x.k === state.c);
+    document.getElementById('states').innerHTML = STATES.map(s => {
+      const scale = s.k === 'panel' ? 0.95 : s.k === 'eyes' ? 3 : 1.6;
+      const { L, svg } = notchSvg(state.m, c, s, scale);
+      return `<div class="cell"><div class="cap">${s.name}</div>${screen(svg, s.k === 'panel')}<div class="reads">${reads(state.m, c, s.k, L)}</div></div>`;
+    }).join('');
+  }
+  const renderAll = () => { renderLineup(); renderStates(); };
+
+  function seg(el, entries, get, set, after) {
+    el.innerHTML = entries.map(([v, label, sw]) => `<button type="button" data-v="${v}" aria-pressed="${get() === v}">${sw ? `<span class="sw" style="background:${sw}"></span>` : ''}${label}</button>`).join('');
+    el.onclick = e => {
+      const b = e.target.closest('button'); if (!b) return;
+      set(b.dataset.v);
+      el.querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+      (after || renderAll)();
+    };
+  }
+  const waySeg = document.getElementById('waySeg');
+  waySeg.innerHTML = Object.entries(WAYS).map(([k, w]) => `<button type="button" data-v="${k}" aria-pressed="${state.way === k}"><b>${w.name}</b><span>${w.why}</span></button>`).join('');
+  waySeg.onclick = e => { const b = e.target.closest('button'); if (!b) return; state.way = b.dataset.v; waySeg.querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', String(x === b))); renderAll(); };
+  seg(document.getElementById('accSeg'), Object.entries(ACC).map(([k, c]) => [k, k, c]), () => state.acc, v => state.acc = v);
+  seg(document.getElementById('bgSeg'), Object.entries(BGS), () => state.bg, v => state.bg = v);
+  seg(document.getElementById('bzSeg'), [['on', 'Laptop (bezel hitam)'], ['off', 'Monitor tipis']], () => state.bezel ? 'on' : 'off', v => state.bezel = v === 'on');
+  const coatSeg = () => seg(document.getElementById('cSeg'), MASCOTS[state.m].coats.map(c => [c.k, c.label, c.face || c.head]), () => state.c, v => state.c = v, renderStates);
+  seg(document.getElementById('mSeg'), Object.entries(MASCOTS).map(([k, M]) => [k, M.name]), () => state.m, v => { state.m = v; state.c = MASCOTS[v].coats[0].k; coatSeg(); }, renderStates);
+  coatSeg();
+  renderAll();
+})();
+</script>
+</body>
+</html>
