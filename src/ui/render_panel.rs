@@ -5526,7 +5526,9 @@ impl Renderer {
             } else if rec.muted[0] {
                 self.rec_muted_glyph(mic_at, Icon::MicOff);
             } else {
-                self.rec_meter(mic_at, &rec_meter_heights(rec.mic), REC_MIC_TINT);
+                // Jadi muka: the face's ink where the cream tint melts in.
+                let tint = self.level_tint(REC_MIC_TINT, mic_at.y + mic_at.h / 2.0);
+                self.rec_meter(mic_at, &rec_meter_heights(rec.mic), tint);
             }
         }
         if sources.system {
@@ -5536,7 +5538,8 @@ impl Renderer {
             } else if rec.muted[1] {
                 self.rec_muted_glyph(system_at, Icon::VolumeMute);
             } else {
-                self.rec_meter(system_at, &rec_meter_heights(rec.system), self.palette.sage);
+                let tint = self.level_tint(self.palette.sage, system_at.y + system_at.h / 2.0);
+                self.rec_meter(system_at, &rec_meter_heights(rec.system), tint);
             }
         }
         // The groups take the click, and the pointer resting on one opens no
@@ -5631,6 +5634,11 @@ impl Renderer {
         self.stroke_circle(centre, r + halo / 2.0, halo, theme::REC_RED, 0.25);
         let ring = COUNTDOWN_RING;
         self.stroke_circle(centre, r - ring / 2.0, ring, theme::REC_RED, 1.0);
+        // As the REC dot: a ring in the text colour where the red would
+        // melt into the fill under it (Gradasi, Jadi muka).
+        if self.mark_needs_ring(theme::REC_RED, centre.1 + r) {
+            self.stroke_circle(centre, r + 0.75, 1.5, self.palette.text, 1.0);
+        }
         let numeral = n.to_string();
         self.text(&numeral, &self.fonts.title, l.time, 1.0);
         let hint = rec_word_slot(&l, self.text_width(&numeral, &self.fonts.title));
@@ -6112,7 +6120,7 @@ fn centred_square(r: Rect, side: f32) -> Rect {
 }
 
 /// The mic meter's cream tint (`.lv.mic` in docs/design/rekaman.html).
-const REC_MIC_TINT: u32 = 0xEBCFB8;
+pub(super) const REC_MIC_TINT: u32 = 0xEBCFB8;
 /// The crossed glyph that stands in for a muted source's meter in the REC
 /// view.
 const REC_MUTED_GLYPH: f32 = 14.0;

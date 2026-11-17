@@ -1049,6 +1049,12 @@ pub struct Renderer {
     /// turns from the face into a Gradasi view (a notice, the panel); read
     /// only during that morph.
     face_last: std::cell::Cell<Option<FaceShot>>,
+    /// The idle face notch's clock box beside `face_last`, so the shrink to
+    /// the eyes fades it where it was.
+    face_clock: std::cell::Cell<Option<Rect>>,
+    /// The island's outline for the face's mask and edge, kept for the
+    /// (style, shape) it was built for.
+    face_outline: std::cell::RefCell<Option<(OutlineKey, ID2D1Geometry)>>,
     /// The dark shadow strength (0..1) the compact views' and notices'
     /// text, icons, equalizer, lyric and Bata are drawn with
     /// (`Frame::legibility`); 0 everywhere else, always for the panel.
@@ -1346,6 +1352,8 @@ impl Renderer {
                 robot_later: std::cell::Cell::new(None),
                 face: std::cell::Cell::new(None),
                 face_last: std::cell::Cell::new(None),
+                face_clock: std::cell::Cell::new(None),
+                face_outline: std::cell::RefCell::new(None),
                 legible: std::cell::Cell::new(0.0),
                 notch_grad: std::cell::Cell::new(None),
                 notch_halo: std::cell::Cell::new(false),
@@ -2663,6 +2671,17 @@ impl Renderer {
             .is_some_and(|g| notch_colour::needs_ring(mark, g.at(y)))
     }
 
+    /// A REC level group's colour at height `y` on Jadi muka's face: the
+    /// face's ink where it would be under 3:1 on the fill there
+    /// (`notch_colour::readable_mark`); as given on every other view and
+    /// style.
+    pub(super) fn level_tint(&self, rgb: u32, y: f32) -> u32 {
+        match (self.face.get(), self.notch_grad.get()) {
+            (Some(_), Some(g)) => notch_colour::readable_mark(rgb, g.at(y), self.palette.text),
+            _ => rgb,
+        }
+    }
+
     /// Paints the island; what it noted for the marks over its Gradasi goes
     /// with it, so nothing painted after it sees this frame's fill.
     fn paint_island(&mut self, style: Style, shape: ShapeRect, frame: &Frame) -> Result<()> {
@@ -2766,20 +2785,32 @@ impl Renderer {
                 }
             }
         }
+        let shows_face = notch_colour::shows_face(frame.notch_style, view);
+        // No face drawn this frame, none to fade out of it later: hidden,
+        // another style, or a Gradasi view settled.
+        if *view == View::Hidden
+            || !face_style
+            || (!shows_face && !frame.eyes && shares.face <= 0.0)
+        {
+            self.forget_face();
+        }
         if *view == View::Hidden {
             return Ok(());
         }
-        let shows_face = notch_colour::shows_face(frame.notch_style, view);
-        if face_style && shares.face > 0.0 && !frame.eyes {
-            // Jadi muka's edge on the island's outline (the eyes' pill draws
-            // its own), with the fill.
+        if face_style && shares.face > 0.0 {
+            // Jadi muka's edge on the island's outline, with the fill: the
+            // same line on the notch, through the shrink and on the pill.
             self.paint_face_edge(style, shape, played.as_ref(), shares.face);
             // Turning from the face into a Gradasi view: the face fades out
             // where it was as the fill leaves it.
             if !shows_face
+                && !frame.eyes
                 && let Some(last) = self.face_last.get()
             {
-                self.paint_face_shot(last, shares.face, style, shape);
+                let at = face_place(last, self.cat.get().accessory);
+                let pieces = (last.ctx.kind, shares.face);
+                let (clock, robot) = (last.clock_left, last.robot);
+                self.paint_face_placed(style, shape, at, clock, robot, shares.face, pieces);
             }
         }
         self.regions.shape = Some((style, shape));
@@ -2791,7 +2822,12 @@ impl Renderer {
         // pixels are all the island draws, so a click anywhere else reaches
         // the window below.
         if frame.eyes {
-            self.paint_eyes_pill(style, shape, frame.transit.content_alpha, frame.eyes_pose);
+            if face_style {
+                self.paint_face_to_pill(style, shape, frame);
+            } else {
+                let alpha = frame.transit.content_alpha;
+                self.paint_eyes_pill(style, shape, alpha, frame.eyes_pose, true);
+            }
             return Ok(());
         }
         // The content stays inside the island: a play's deformed outline cuts
@@ -2838,11 +2874,14 @@ impl Renderer {
         let crossing = face_style
             && !frame.eyes
             && if shows_face { shares.face < 1.0 } else { shares.face > 0.0 };
+        // Back from the eyes' pill: Jadi muka's face grows out of the pill's
+        // (`face_to_pill`, run backwards) instead of fading in.
+        let from_pill = face_style && shows_face && frame.robot_fades;
         if faded {
             self.push_opacity(content_alpha);
             // Bata shows in the view before and after: he stays, only what
             // pops in fades.
-            if !frame.robot_fades && !crossing {
+            if (!frame.robot_fades || from_pill) && !crossing {
                 self.robot_later.set(Some(None));
             }
         }
@@ -2907,6 +2946,8 @@ impl Renderer {
                 if let Some(r) = robot {
                     self.paint_face_at(area, clock.map(|c| c.x), r);
                 }
+                // Where the clock was, for the shrink to the eyes to fade it.
+                self.face_clock.set(clock);
                 // A play winding down paints its clock itself (`Pass::Clock`).
                 if let (None, Some(area), Some(time)) = (play, clock, &frame.clock) {
                     let asleep = robot.is_some_and(|r| r.expr == Expr::Sleep);
@@ -2954,9 +2995,10 @@ impl Renderer {
             unsafe { target.rt.PopLayer() };
             match self.robot_later.take() {
                 Some(Some(Held::Head(area, r))) => self.paint_robot(area, r),
-                Some(Some(Held::Face(shot))) => {
-                    self.paint_face_shot(shot, 1.0, shot.ctx.style, shot.ctx.shape)
+                Some(Some(Held::Face(shot))) if from_pill => {
+                    self.paint_face_from_pill(shot, content_alpha, frame);
                 }
+                Some(Some(Held::Face(shot))) => self.paint_face_shot(shot),
                 _ => {}
             }
         }
@@ -3014,8 +3056,9 @@ impl Renderer {
                 r,
             );
             if face_style && self.mark_needs_ring(super::robot::TERRACOTTA, cy + r) {
-                let fill = notch_colour::face_fill(frame.cat, self.palette.surface);
-                let ink = notch_colour::face_palette(self.palette, fill).text;
+                // The ink of the fill as painted, mid cross-fade too.
+                let closed = self.closed_bottom(frame, shares.notice);
+                let ink = self.content_palette_on(frame, closed, shares.face).text;
                 self.stroke_circle((cx, cy), r + 0.75, 1.5, ink, content_alpha);
             }
         }
@@ -3460,10 +3503,23 @@ impl Renderer {
     /// not over), then the eyes and the face marks sliding by `pose`'s look
     /// (cut back so all of them stay inside `shape`) and shutting for its
     /// blink, as the mascot's two level lines.
-    fn paint_eyes_pill(&self, style: Style, shape: ShapeRect, content_alpha: f32, pose: EyesPose) {
+    ///
+    /// `edge` false leaves the edge line to the island (Jadi muka draws it
+    /// with the fill, so it does not fade with the content).
+    fn paint_eyes_pill(
+        &self,
+        style: Style,
+        shape: ShapeRect,
+        content_alpha: f32,
+        pose: EyesPose,
+        edge: bool,
+    ) {
         let target = self.target.as_ref().expect("target ensured by paint");
         let alpha = content_alpha.clamp(0.0, 1.0);
-        let face = peek_face(self.cat.get(), self.palette.surface);
+        let mut face = peek_face(self.cat.get(), self.palette.surface);
+        if !edge {
+            face.edge = None;
+        }
         let (cx, cy) = eyes_centre(shape);
         if !face.coat_marks.is_empty() || face.edge.is_some() {
             if let Ok(outline) = self.shape_geometry(style, shape) {
@@ -3539,7 +3595,7 @@ impl Renderer {
         };
         let outline = match played {
             Some(g) => g.clone(),
-            None => match self.shape_geometry(style, shape) {
+            None => match self.island_outline(style, shape) {
                 Ok(g) => g,
                 Err(_) => return,
             },
@@ -3553,6 +3609,23 @@ impl Renderer {
             target.rt.DrawGeometry(&outline, &target.brush, 2.0 * width, None);
             target.rt.PopLayer();
         }
+    }
+
+    /// `shape_geometry`, kept while the (style, shape) stays: at rest the
+    /// face's mask and edge reuse one geometry frame after frame.
+    fn island_outline(&self, style: Style, shape: ShapeRect) -> Result<ID2D1Geometry> {
+        let key = (
+            style,
+            [shape.x, shape.y, shape.w, shape.h, shape.radius].map(f32::to_bits),
+        );
+        if let Some((k, g)) = self.face_outline.borrow().as_ref()
+            && *k == key
+        {
+            return Ok(g.clone());
+        }
+        let g = self.shape_geometry(style, shape)?;
+        *self.face_outline.borrow_mut() = Some((key, g.clone()));
+        Ok(g)
     }
 
     /// Jadi muka's face on the idle notch in `area` (`face_idle_layout`),
@@ -3575,12 +3648,15 @@ impl Renderer {
     /// shape leaves there (`face_area`); otherwise the head in `slot`.
     fn paint_mascot(&self, slot: Rect, robot: RobotFrame, content_left: f32) {
         match self.face.get() {
-            Some(ctx) => self.paint_face_held(FaceShot {
-                ctx,
-                area: face_area(shape_rect(ctx.shape), Some(content_left)),
-                clock_left: Some(content_left),
-                robot,
-            }),
+            Some(ctx) => {
+                self.face_clock.set(None);
+                self.paint_face_held(FaceShot {
+                    ctx,
+                    area: face_area(shape_rect(ctx.shape), Some(content_left)),
+                    clock_left: Some(content_left),
+                    robot,
+                });
+            }
             None => self.paint_robot(slot, robot),
         }
     }
@@ -3592,51 +3668,121 @@ impl Renderer {
             self.robot_later.set(Some(Some(Held::Face(shot))));
             return;
         }
-        self.paint_face_shot(shot, 1.0, shot.ctx.style, shot.ctx.shape);
+        self.paint_face_shot(shot);
     }
 
-    /// The face of `shot` at `alpha`, cut to the outline of `clip` (the
-    /// island this frame): its scale from its box (`face_scale`), its look
-    /// cut back inside the shape and left of what follows it
-    /// (`face_pose_in`), the coat and face marks (`paint_face`) and the
-    /// accessory as the face wears it in that view (`face_pieces`).
-    fn paint_face_shot(&self, shot: FaceShot, alpha: f32, style: Style, clip: ShapeRect) {
-        let FaceShot {
-            ctx,
-            area,
-            clock_left,
-            robot,
-        } = shot;
-        let look = self.cat.get();
-        let scale = face_scale(area, look.accessory);
-        if scale.is_nan() || scale <= 0.0 || alpha <= 0.0 {
+    /// The face of `shot` where its view puts it, in full; remembered as the
+    /// face a morph out of the view starts from (`face_last`).
+    fn paint_face_shot(&self, shot: FaceShot) {
+        let at = face_place(shot, self.cat.get().accessory);
+        let FaceShot { ctx, clock_left, robot, .. } = shot;
+        let pieces = (ctx.kind, 1.0);
+        self.paint_face_placed(ctx.style, ctx.shape, at, clock_left, robot, 1.0, pieces);
+        self.face_last.set(Some(shot));
+    }
+
+    /// One face centred on `at.0` at scale `at.1`, cut to the outline of
+    /// `clip` (the island this frame): its look cut back inside `clip` and
+    /// left of `clock_left` (`face_pose_in`), the coat and face marks
+    /// (`paint_face`) at `alpha`, and the accessory as the face wears it in a
+    /// `pieces.0` view (`face_pieces`) at `pieces.1`.
+    #[allow(clippy::too_many_arguments)]
+    fn paint_face_placed(
+        &self,
+        style: Style,
+        clip: ShapeRect,
+        (centre, scale): ((f32, f32), f32),
+        clock_left: Option<f32>,
+        robot: RobotFrame,
+        alpha: f32,
+        (kind, pieces_alpha): (ShapeKind, f32),
+    ) {
+        if scale.is_nan() || scale <= 0.0 || (alpha <= 0.0 && pieces_alpha <= 0.0) {
             return;
         }
-        let centre = (area.x + area.w / 2.0, area.y + area.h / 2.0);
-        let pose = face_pose_in(
-            ctx.style, ctx.shape, clock_left, centre, scale, robot.expr, look, robot.pose,
-        );
-        let Ok(outline) = self.shape_geometry(style, clip) else {
+        let look = self.cat.get();
+        let pose =
+            face_pose_in(style, clip, clock_left, centre, scale, robot.expr, look, robot.pose);
+        let Ok(outline) = self.island_outline(style, clip) else {
             return;
         };
         let target = self.target.as_ref().expect("target ensured by paint");
         // The calico's patches are larger than the notch.
         self.push_face_mask(&outline, Some(shape_rect(clip)));
-        let _ = self
-            .robot
-            .paint_face(&target.rt, centre, scale, robot.expr, &pose, look, alpha);
-        let pieces = super::cat_style::face_pieces(
-            look.accessory,
-            ctx.kind,
-            shape_rect(ctx.shape),
-            centre,
-            face_unit(scale),
-        );
-        let _ = self
-            .robot
-            .paint_face_pieces(&target.rt, &pieces, scale, &pose, look, alpha);
+        if alpha > 0.0 {
+            let _ = self
+                .robot
+                .paint_face(&target.rt, centre, scale, robot.expr, &pose, look, alpha);
+        }
+        if pieces_alpha > 0.0 {
+            let unit = face_unit(scale);
+            let rect = shape_rect(clip);
+            let pieces = super::cat_style::face_pieces(look.accessory, kind, rect, centre, unit);
+            let _ = self
+                .robot
+                .paint_face_pieces(&target.rt, &pieces, scale, &pose, look, pieces_alpha);
+        }
         unsafe { target.rt.PopLayer() };
+    }
+
+    /// Jadi muka shrinking to the eyes' pill, the content's fade `k` of the
+    /// way (`frame.transit.content_alpha`, the morph's own progress): the
+    /// face slides from where its view had it to the pill's centre and
+    /// scales to the pill's size, its accessory and the idle clock fading
+    /// out, then hands over to the pill's own marks (`face_to_pill`). With
+    /// no face to start from (a notice or the panel shrank), the pill fades
+    /// in as ever. Once there, nothing is left to fade out of it later.
+    fn paint_face_to_pill(&self, style: Style, shape: ShapeRect, frame: &Frame) {
+        let k = frame.transit.content_alpha.clamp(0.0, 1.0);
+        let from = self.face_last.get().filter(|_| k < 1.0);
+        let pill_alpha = match from {
+            Some(last) => {
+                let place = face_place(last, self.cat.get().accessory);
+                let m = face_to_pill(place, eyes_centre(shape), k);
+                if let (Some(area), Some(time)) = (self.face_clock.get(), &frame.clock) {
+                    let target = self.target.as_ref().expect("target ensured by paint");
+                    let r = d2d_rect(shape_rect(shape));
+                    unsafe { target.rt.PushAxisAlignedClip(&r, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE) };
+                    self.paint_clock(style, shape, None, time, area, m.pieces);
+                    unsafe { target.rt.PopAxisAlignedClip() };
+                }
+                let robot = RobotFrame {
+                    pose: Pose {
+                        blink: frame.eyes_pose.blink,
+                        ..last.robot.pose
+                    },
+                    ..last.robot
+                };
+                let pieces = (last.ctx.kind, m.pieces);
+                let at = (m.centre, m.scale);
+                self.paint_face_placed(style, shape, at, None, robot, m.marks, pieces);
+                m.pill
+            }
+            None => k,
+        };
+        self.paint_eyes_pill(style, shape, pill_alpha, frame.eyes_pose, false);
+        if k >= 1.0 {
+            self.forget_face();
+        }
+    }
+
+    /// Jadi muka coming back from the eyes' pill into `shot`'s view, the
+    /// content's fade `k` of the way: `paint_face_to_pill` run backwards, the
+    /// face growing out of the pill's place into its own.
+    fn paint_face_from_pill(&self, shot: FaceShot, k: f32, frame: &Frame) {
+        let FaceShot { ctx, clock_left, robot, .. } = shot;
+        let place = face_place(shot, self.cat.get().accessory);
+        let m = face_to_pill(place, eyes_centre(ctx.shape), 1.0 - k.clamp(0.0, 1.0));
+        self.paint_eyes_pill(ctx.style, ctx.shape, m.pill, frame.eyes_pose, false);
+        let (at, pieces) = ((m.centre, m.scale), (ctx.kind, m.pieces));
+        self.paint_face_placed(ctx.style, ctx.shape, at, clock_left, robot, m.marks, pieces);
         self.face_last.set(Some(shot));
+    }
+
+    /// No face drawn: nothing to fade out of this frame later.
+    fn forget_face(&self) {
+        self.face_last.set(None);
+        self.face_clock.set(None);
     }
 
     /// Everything drawn until `PopLayer` is cut to `outline`, on the
@@ -5536,6 +5682,9 @@ impl Shares {
     }
 }
 
+/// The (style, shape bits) an island outline was built for.
+type OutlineKey = (Style, [u32; 5]);
+
 /// What a closed compact view's content needs to draw Jadi muka's face in
 /// place of the head: the island's style and shape this frame (the Face-mode
 /// shape, `geometry::with_face_extra`) and the view's kind
@@ -5564,6 +5713,48 @@ struct FaceShot {
 enum Held {
     Head(Rect, RobotFrame),
     Face(FaceShot),
+}
+
+/// Where `shot`'s face sits: its box's centre (the eyes) and the scale its
+/// box gives a face wearing `accessory` (`face_scale`).
+fn face_place(shot: FaceShot, accessory: crate::theme::CatAccessory) -> ((f32, f32), f32) {
+    let a = shot.area;
+    ((a.x + a.w / 2.0, a.y + a.h / 2.0), face_scale(a, accessory))
+}
+
+/// The last share of the shrink to the eyes over which Jadi muka's face
+/// hands over to the pill's own marks (at the pill's place and size by
+/// then, so the two nearly coincide).
+const FACE_HANDOVER: f32 = 0.2;
+
+/// Jadi muka's face `k` of the way (0..=1) from its notch place `from`
+/// (centre, scale) to the eyes' pill centred on `pill` at scale 1. Run
+/// backwards (`1 - k`) for the way back.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct FaceMorph {
+    centre: (f32, f32),
+    scale: f32,
+    /// The face marks' alpha: full until the handover, then out.
+    marks: f32,
+    /// The accessory's (and the idle clock's) alpha: out with the morph.
+    pieces: f32,
+    /// The pill's own marks: in over the handover.
+    pill: f32,
+}
+
+fn face_to_pill(from: ((f32, f32), f32), pill: (f32, f32), k: f32) -> FaceMorph {
+    let k = if k.is_nan() { 0.0 } else { k.clamp(0.0, 1.0) };
+    let ((x, y), scale) = from;
+    let lerp = |a: f32, b: f32| a + (b - a) * k;
+    // The handover: the pill's marks come in exactly as the face's go.
+    let marks = ((1.0 - k) / FACE_HANDOVER).clamp(0.0, 1.0);
+    FaceMorph {
+        centre: (lerp(x, pill.0), lerp(y, pill.1)),
+        scale: lerp(scale, 1.0),
+        marks,
+        pieces: 1.0 - k,
+        pill: 1.0 - marks,
+    }
 }
 
 /// How far the island's fill is a notice's rather than a closed view's: the
@@ -6973,6 +7164,247 @@ mod tests {
         }
         assert!(checked > 100, "the slot was looked at");
         assert!(eye, "the face's eyes are drawn");
+    }
+
+    /// Every coat of every mascot.
+    fn every_coat() -> Vec<CatLook> {
+        use crate::theme::{Coat, Mascot};
+        Mascot::ALL
+            .iter()
+            .flat_map(|m| Coat::all_of(*m))
+            .map(|c| coat_look(c, CatLook::default()))
+            .collect()
+    }
+
+    /// A Face frame of `view` for `look`, as the app sends it on a face view
+    /// (`peek_mix` 1).
+    fn face_frame(view: View, look: CatLook) -> impl FnOnce(&mut Frame) {
+        move |f| {
+            notch_styled(NotchStyle::Face, leak(view))(f);
+            f.cat = look;
+            f.notch_tint = notch_colour::tint(look, true, f.palette.accent);
+            f.peek_mix = 1.0;
+        }
+    }
+
+    /// The pixel's colour at dip (x, y) and how opaque it is.
+    fn rgb_at(px: &Px, scale: f32, x: f32, y: f32) -> u32 {
+        let i = (((y * scale) as usize) * px.w + (x * scale) as usize) * 4;
+        let b = &px.bgra[i..i + 4];
+        u32::from(b[2]) << 16 | u32::from(b[1]) << 8 | u32::from(b[0])
+    }
+
+    fn near_rgb(a: u32, b: u32, within: u8) -> bool {
+        [16, 8, 0]
+            .iter()
+            .all(|sh| (((a >> sh) & 0xFF) as u8).abs_diff(((b >> sh) & 0xFF) as u8) <= within)
+    }
+
+    #[test]
+    fn the_face_slides_and_scales_into_the_pill() {
+        let (notch, pill) = (((100.0, 17.0), 1.6), (140.0, 7.0));
+        let at = |k| face_to_pill(notch, pill, k);
+        let start = FaceMorph {
+            centre: (100.0, 17.0),
+            scale: 1.6,
+            marks: 1.0,
+            pieces: 1.0,
+            pill: 0.0,
+        };
+        assert_eq!(at(0.0), start);
+        let end = FaceMorph {
+            centre: pill,
+            scale: 1.0,
+            marks: 0.0,
+            pieces: 0.0,
+            pill: 1.0,
+        };
+        assert_eq!(at(1.0), end);
+        let half = at(0.5);
+        assert_eq!((half.centre, half.marks, half.pill), ((120.0, 12.0), 1.0, 0.0));
+        assert!((half.scale - 1.3).abs() < 1e-5 && (half.pieces - 0.5).abs() < 1e-5);
+        // The handover: the face's marks out as the pill's come in, there.
+        let late = at(1.0 - FACE_HANDOVER / 2.0);
+        assert!((late.marks - 0.5).abs() < 1e-4 && (late.pill - 0.5).abs() < 1e-4, "{late:?}");
+        // Never past either end.
+        assert_eq!(at(-1.0), at(0.0));
+        assert_eq!(at(2.0), at(1.0));
+        assert_eq!(at(f32::NAN), at(0.0));
+    }
+
+    #[test]
+    fn the_face_shrinks_into_the_pill_and_leaves_nothing_once_there() {
+        use crate::ui::geometry::{NotchSize, shape_sized};
+        let look = CatLook::default();
+        let robot = RobotFrame { expr: Expr::Idle, pose: Pose::default() };
+        let idle = shape(Style::Notch, 190.0, 34.0);
+        let pill = shape_sized(Style::Notch, NotchSize::DEFAULT, ShapeKind::Eyes);
+        let mid = crate::ui::geometry::lerp_shape(idle, pill, 0.5);
+        let dip = (crate::ui::geometry::WINDOW_W, idle.y + idle.h + 4.0);
+        let paint = |r: &mut Renderer, view: View, s: ShapeRect, tweak: &dyn Fn(&mut Frame)| {
+            with_frame_tweaked(None, Some("12:34".into()), Some(robot), 1.0, |f| {
+                face_frame(view, look)(f);
+                tweak(f);
+            }, |frame| {
+                r.palette = frame.palette;
+                r.cat.set(frame.cat);
+                painted(r, dip, |r| r.paint_island(Style::Notch, s, frame).unwrap())
+            })
+        };
+        let shrinking = |k: f32| move |f: &mut Frame| {
+            f.eyes = true;
+            f.transit.content_alpha = k;
+        };
+        // From the notch: halfway, the face is drawn (not only the pill).
+        let mut r = renderer();
+        paint(&mut r, View::Idle, idle, &|_| {});
+        assert!(r.face_last.get().is_some());
+        let morphing = paint(&mut r, View::Idle, mid, &shrinking(0.5));
+        let mut fresh = renderer();
+        let pill_only = paint(&mut fresh, View::Idle, mid, &shrinking(0.5));
+        assert!(gap(&morphing, &pill_only).1 > 20, "the face slides in the shrink");
+        assert!(r.face_last.get().is_some(), "still on its way");
+        // There: only the pill, and nothing left to fade out later.
+        let there = paint(&mut r, View::Idle, pill, &shrinking(1.0));
+        assert!(r.face_last.get().is_none());
+        let pill_alone = paint(&mut fresh, View::Idle, pill, &shrinking(1.0));
+        assert_eq!(gap(&there, &pill_alone), (0, 0));
+    }
+
+    #[test]
+    fn the_face_edge_holds_through_the_shrink() {
+        use crate::theme::CatColor;
+        use crate::ui::geometry::{NotchSize, shape_sized};
+        // A pale face: its surface-colour edge is the fill's, so it does not
+        // dip while the pill's content fades in.
+        let look = CatLook { color: CatColor::White, ..CatLook::default() };
+        let pill = shape_sized(Style::Notch, NotchSize::DEFAULT, ShapeKind::Eyes);
+        let dip = (crate::ui::geometry::WINDOW_W, pill.y + pill.h + 4.0);
+        for k in [0.0, 0.5, 1.0] {
+            let mut r = renderer();
+            let (px, surface) = with_frame_tweaked(None, None, None, 1.0, |f| {
+                face_frame(View::Idle, look)(f);
+                f.eyes = true;
+                f.transit.content_alpha = k;
+            }, |frame| {
+                r.palette = frame.palette;
+                r.cat.set(frame.cat);
+                let px =
+                    painted(&mut r, dip, |r| r.paint_island(Style::Notch, pill, frame).unwrap());
+                (px, frame.palette.surface)
+            });
+            let c = rgb_at(&px, r.scale, pill.x + pill.w / 2.0, pill.y + pill.h - 0.5);
+            assert!(near_rgb(c, surface, 24), "k {k}: {c:06X} vs {surface:06X}");
+        }
+    }
+
+    #[test]
+    fn no_face_fades_out_of_a_pill_or_a_hidden_island() {
+        use crate::ui::geometry::{NotchSize, shape_sized};
+        let look = CatLook::default();
+        let robot = RobotFrame { expr: Expr::Idle, pose: Pose::default() };
+        let idle = shape(Style::Notch, 190.0, 34.0);
+        let pill = shape_sized(Style::Notch, NotchSize::DEFAULT, ShapeKind::Eyes);
+        let notice = shape_for(Style::Notch, ShapeKind::Notice);
+        let half = crate::ui::geometry::lerp_shape(pill, notice, 0.5);
+        let dip = (crate::ui::geometry::WINDOW_W, notice.y + notice.h + 4.0);
+        let paint = |r: &mut Renderer, view: View, s: ShapeRect, tweak: &dyn Fn(&mut Frame)| {
+            with_frame_tweaked(None, None, Some(robot), 1.0, |f| {
+                face_frame(view, look)(f);
+                tweak(f);
+            }, |frame| {
+                r.palette = frame.palette;
+                r.cat.set(frame.cat);
+                painted(r, dip, |r| r.paint_island(Style::Notch, s, frame).unwrap())
+            })
+        };
+        // Halfway into a notice, the fill half the face's.
+        let into_notice = |f: &mut Frame| {
+            f.peek_mix = 0.5;
+            f.transit.content_alpha = 0.5;
+        };
+        let mut fresh = renderer();
+        let clean = paint(&mut fresh, a_notice(), half, &into_notice);
+        // Straight from the face notch, its face does fade out there.
+        let mut r = renderer();
+        paint(&mut r, View::Idle, idle, &|_| {});
+        let from_face = paint(&mut r, a_notice(), half, &into_notice);
+        assert!(gap(&from_face, &clean).1 > 0, "the control: a face fades out");
+        // From the settled pill, or from hidden: nothing of the old face.
+        let settled_pill = |f: &mut Frame| f.eyes = true;
+        for (name, view, s, tweak) in [
+            ("eyes", View::Idle, pill, &settled_pill as &dyn Fn(&mut Frame)),
+            ("hidden", View::Hidden, idle, &|_: &mut Frame| {}),
+        ] {
+            let mut r = renderer();
+            paint(&mut r, View::Idle, idle, &|_| {});
+            paint(&mut r, view, s, tweak);
+            assert!(r.face_last.get().is_none(), "{name}");
+            let after = paint(&mut r, a_notice(), half, &into_notice);
+            assert_eq!(gap(&after, &clean), (0, 0), "{name}: a ghost face");
+        }
+    }
+
+    #[test]
+    fn rec_levels_read_on_every_face() {
+        let base = theme::island(Accent::Terracotta, theme::Surface::Espresso);
+        let mut swapped = 0;
+        for look in every_coat() {
+            let fill = notch_colour::face_fill(look, base.surface);
+            let p = notch_colour::face_palette(base, fill);
+            for level in [panel::REC_MIC_TINT, p.sage] {
+                let got = notch_colour::readable_mark(level, fill, p.text);
+                assert!(notch_colour::contrast(got, fill) >= 3.0, "{look:?} {level:06X}");
+                swapped += usize::from(got != level);
+            }
+        }
+        assert!(swapped > 0, "the cream mic tint melts into some face");
+        // The renderer asks only on Jadi muka's face views.
+        let mut r = renderer();
+        r.palette = base;
+        let white_cat = CatLook {
+            color: crate::theme::CatColor::White,
+            ..CatLook::default()
+        };
+        let white = notch_colour::face_fill(white_cat, base.surface);
+        r.notch_grad.set(Some(NotchGrad { y: 0.0, h: 34.0, top: white, bottom: white }));
+        assert_eq!(r.level_tint(panel::REC_MIC_TINT, 17.0), panel::REC_MIC_TINT, "not a face view");
+        r.face.set(Some(FaceCtx {
+            style: Style::Notch,
+            shape: shape(Style::Notch, 190.0, 34.0),
+            kind: ShapeKind::RecordCompact,
+        }));
+        assert_eq!(r.level_tint(panel::REC_MIC_TINT, 17.0), base.text);
+    }
+
+    #[test]
+    fn the_countdown_ring_is_ringed_where_the_face_hides_it() {
+        use crate::theme::{Mascot, OctopusColor};
+        use crate::ui::geometry::{face_content, shape_with_robot_sized, with_face_extra, NotchSize};
+        use crate::ui::panel_layout::record_compact_layout;
+        let red = CatLook {
+            mascot: Mascot::Octopus,
+            octopus: OctopusColor::Red,
+            ..CatLook::default()
+        };
+        let robot = RobotFrame { expr: Expr::Idle, pose: Pose::default() };
+        let kind = ShapeKind::RecordCompact;
+        let plain = shape_with_robot_sized(Style::Notch, NotchSize::DEFAULT, kind, true);
+        let s = with_face_extra(plain, ShapeKind::RecordCompact);
+        let l = record_compact_layout(face_content(s, ShapeKind::RecordCompact), true, false);
+        let ((cx, cy), rad) = l.dot;
+        let dip = (crate::ui::geometry::WINDOW_W, s.y + s.h + 4.0);
+        let mut r = renderer();
+        let tweak = face_frame(View::ScreenCountdown(3), red);
+        let px = with_frame_tweaked(None, None, Some(robot), 1.0, tweak, |frame| {
+            r.palette = frame.palette;
+            r.cat.set(frame.cat);
+            painted(&mut r, dip, |r| r.paint_island(Style::Notch, s, frame).unwrap())
+        });
+        let fill = notch_colour::face_fill(red, r.palette.surface);
+        let ink = notch_colour::face_palette(r.palette, fill).text;
+        let c = rgb_at(&px, r.scale, cx + rad + 0.75, cy);
+        assert!(near_rgb(c, ink, 40), "{c:06X} vs {ink:06X}");
     }
 
     #[test]

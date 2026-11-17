@@ -165,6 +165,12 @@ pub fn crossfade_palette(base: Palette, face: u32, closed: u32, share: f32) -> P
     }
 }
 
+/// A non-text mark (a REC level meter) on `fill`: as it is where it holds
+/// 3:1, else in `ink` (the face's text colour).
+pub fn readable_mark(mark: u32, fill: u32, ink: u32) -> u32 {
+    if contrast(mark, fill) >= 3.0 { mark } else { ink }
+}
+
 /// Whether a mark (the REC dot) needs a ring in the text colour on `fill`.
 pub fn needs_ring(mark: u32, fill: u32) -> bool {
     contrast(mark, fill) < 3.0
