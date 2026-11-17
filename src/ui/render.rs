@@ -1045,8 +1045,9 @@ pub struct Renderer {
     cat: std::cell::Cell<CatLook>,
     /// The Gradasi `paint_island` filled the island with this frame (the
     /// colours as painted: blended with the face and the panel's), for the
-    /// marks that check their contrast against it (the REC dots' rings, the
-    /// mascot's halo); `None` on a plain fill and outside `paint_island`.
+    /// marks drawn on the fill that check their contrast against it (the
+    /// compact REC dot's ring, the mascot's halo); `None` on a plain fill and
+    /// outside `paint_island`.
     notch_grad: std::cell::Cell<Option<NotchGrad>>,
     /// The closed island's content is being painted: the mascot's halo
     /// checks `notch_grad` (never the panel's mascot).
@@ -2624,13 +2625,12 @@ impl Renderer {
         }
     }
 
-    /// Whether a `mark` at `y` (`None`: anywhere, judged on the bottom
-    /// colour) needs a ring in the text colour on this frame's Gradasi.
-    fn mark_needs_ring(&self, mark: u32, y: Option<f32>) -> bool {
-        self.notch_grad.get().is_some_and(|g| {
-            let under = y.map_or(g.bottom, |y| g.at(y));
-            notch_colour::needs_ring(mark, under)
-        })
+    /// Whether a `mark` drawn on the island's fill at `y` (the compact REC
+    /// dot) needs a ring in the text colour on this frame's Gradasi.
+    fn mark_needs_ring(&self, mark: u32, y: f32) -> bool {
+        self.notch_grad
+            .get()
+            .is_some_and(|g| notch_colour::needs_ring(mark, g.at(y)))
     }
 
     /// Paints the island; what it noted for the marks over its Gradasi goes
@@ -6412,14 +6412,13 @@ mod tests {
     fn rec_marks_get_a_ring_only_where_the_gradasi_hides_them() {
         let r = renderer();
         let red = theme::REC_RED;
-        assert!(!r.mark_needs_ring(red, None), "plain");
+        assert!(!r.mark_needs_ring(red, 40.0), "plain");
         let grad = NotchGrad { y: 0.0, h: 40.0, top: 0x17120F, bottom: red };
         r.notch_grad.set(Some(grad));
-        assert!(r.mark_needs_ring(red, None));
-        assert!(r.mark_needs_ring(red, Some(40.0)));
-        assert!(!r.mark_needs_ring(red, Some(5.0)), "on the dark top");
+        assert!(r.mark_needs_ring(red, 40.0));
+        assert!(!r.mark_needs_ring(red, 5.0), "on the dark top");
         r.notch_grad.set(Some(NotchGrad { bottom: 0x17120F, ..grad }));
-        assert!(!r.mark_needs_ring(red, None));
+        assert!(!r.mark_needs_ring(red, 40.0));
     }
 
     #[test]

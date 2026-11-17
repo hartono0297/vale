@@ -1110,14 +1110,7 @@ impl Renderer {
                 (REC_DOT_BIG * 2.0, REC_DOT_BIG)
             };
             self.set_color(theme::REC_RED, 1.0);
-            let mark = centred_square(l.button, side);
-            self.fill_round(mark, corner);
-            // Gradasi: judged on the panel's bottom colour, a red under 3:1
-            // gets a ring in the text colour (`REC_MARK_RING`).
-            if self.mark_needs_ring(theme::REC_RED, None) {
-                let ring = inset(mark, -REC_MARK_RING / 2.0, -REC_MARK_RING / 2.0);
-                self.stroke_round_width(ring, corner + REC_MARK_RING / 2.0, p.text, REC_MARK_RING);
-            }
+            self.fill_round(centred_square(l.button, side), corner);
         }
         if let Some(label) = l.button_label {
             let name = text(lang, Key::RecRecordLabel);
@@ -1318,11 +1311,6 @@ impl Renderer {
             let dot = if r.paused { p.ochre } else { theme::REC_RED };
             self.set_color(dot, 1.0);
             self.fill_round(centred_square(well, REC_LIVE_DOT), REC_LIVE_DOT / 2.0);
-            if self.mark_needs_ring(dot, None) {
-                let r = REC_LIVE_DOT / 2.0;
-                let centre = (well.x + well.w / 2.0, well.y + well.h / 2.0);
-                self.stroke_circle(centre, r + REC_MARK_RING / 2.0, REC_MARK_RING, p.text, 1.0);
-            }
             let word = text(lang, Key::RecNow);
             let w = self.text_width(word, &self.fonts.title).ceil() + 1.0;
             let at = Rect {
@@ -5488,7 +5476,7 @@ impl Renderer {
         );
         // Gradasi: a dot under 3:1 on the fill under it (its lowest point,
         // where the fill is nearest the tint) gets a ring in the text colour.
-        if self.mark_needs_ring(tint, Some(cy + r)) {
+        if self.mark_needs_ring(tint, cy + r) {
             self.stroke_circle((cx, cy), r + 0.75, 1.5, self.palette.text, 1.0);
         }
         let clock = rec_clock(rec.elapsed);
@@ -6064,8 +6052,6 @@ const REC_ROW_GAP: f32 = 8.0;
 /// The round button's ring, the stop square (side and corner) and the
 /// idle dot's radius.
 const REC_RING_W: f32 = 3.0;
-/// The text-coloured ring round a REC mark under 3:1 on Gradasi.
-const REC_MARK_RING: f32 = 1.5;
 const REC_STOP_SIDE: f32 = 18.0;
 const REC_STOP_CORNER: f32 = 3.0;
 const REC_DOT_BIG: f32 = 11.0;
