@@ -877,11 +877,15 @@ const FACE_CUP_IN: f32 = 3.5;
 /// An earcup's width in grid units (before `FACE_CUP_K`).
 const FACE_CUP_W: f32 = 7.0;
 
-/// The left of the right earcup on the face notch `shape` with `unit` dip
-/// per grid unit, its edge included (`FacePiece::corners`): what the unread
-/// dot keeps clear of (`geometry::face_toast_dot`).
+/// The farthest left the right earcup reaches on the face notch `shape` with
+/// `unit` dip per grid unit, its edge included (`FacePiece::corners`): what
+/// the unread dot keeps clear of (`geometry::face_toast_dot`). The earcups
+/// move with the face, and `robot::face_pose_in` keeps the left one inside
+/// the notch, so the group slides left less than that cup's room to the
+/// notch's left end (`FACE_CUP_IN`, less its edge).
 pub fn face_cup_left(shape: Rect, unit: f32) -> f32 {
-    shape.right() - FACE_CUP_IN - FACE_CUP_W * FACE_CUP_K * unit - FACE_EDGE_DIP
+    let at_rest = shape.right() - FACE_CUP_IN - FACE_CUP_W * FACE_CUP_K * unit - FACE_EDGE_DIP;
+    at_rest - (FACE_CUP_IN - FACE_EDGE_DIP)
 }
 /// The scarf on the notch's bottom edge: band and tail height (grid units)
 /// and the room kept under the tail (dip), past its edge.
@@ -902,20 +906,22 @@ const RIM_GAP: f32 = 0.5;
 const RIM_PAST: f32 = 2.5;
 const RIM_DETAIL_MIN: f32 = 0.5;
 
-/// What a face piece moves with.
+/// Where a face piece is placed at rest. Whatever its anchor, every piece
+/// moves with the face, like a head: the look's slide and the nod
+/// (`FacePiece::place`, cut back as one group by `robot::face_pose_in`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FaceAnchor {
-    /// The eyes: slides with the look and nods with the face (the glasses).
+    /// On the eyes (the glasses).
     Eyes,
-    /// The face: nods with it (the bow tie).
+    /// On the face, under the eyes (the bow tie).
     Face,
-    /// The notch's left corner, left of the face: stays put (the bow, the
-    /// flower).
+    /// The notch's left corner, left of the face (the bow, the flower).
     Corner,
-    /// The notch's ends and bottom edge: stays put (the earcups, the scarf).
+    /// The notch's ends and bottom edge (the earcups, the scarf): they may
+    /// reach right of the clock.
     Notch,
-    /// The notch's top edge over the face: stays put (the hats' brims, the
-    /// rest of the hat past the screen edge).
+    /// The notch's top edge over the face (the hats' brims, the rest of the
+    /// hat past the screen edge).
     Rim,
 }
 
@@ -942,23 +948,14 @@ pub struct FacePiece {
 }
 
 impl FacePiece {
-    /// Its units to dip, slid by `slide` when on the eyes and nodded `nod`
-    /// down when on the eyes or the face.
+    /// Its units to dip, moved with the face as the eyes are: slid by the
+    /// look's `slide` and nodded `nod` down, whatever its anchor (a head
+    /// moves as one piece).
     pub fn place(&self, slide: (f32, f32), nod: f32) -> Matrix3x2 {
-        let (sx, sy) = if self.anchor == FaceAnchor::Eyes {
-            slide
-        } else {
-            (0.0, 0.0)
-        };
-        let nod = if matches!(self.anchor, FaceAnchor::Eyes | FaceAnchor::Face) {
-            nod
-        } else {
-            0.0
-        };
         Matrix3x2::translation(-self.origin.0, -self.origin.1)
             * Matrix3x2::scale(self.k, self.k)
             * Matrix3x2::rotation_around(self.turn, Vector2::new(0.0, 0.0))
-            * Matrix3x2::translation(self.at.0 + sx, self.at.1 + sy + nod)
+            * Matrix3x2::translation(self.at.0 + slide.0, self.at.1 + slide.1 + nod)
     }
 
     /// The four corners of its box as drawn, in dip, the edge included
@@ -1094,7 +1091,7 @@ pub fn face_wears(accessory: CatAccessory, kind: ShapeKind) -> bool {
 /// is the notch, `eyes` the eyes' centre (dip, before the look), `unit` dip
 /// per grid unit (`robot::face_unit`). Empty where `face_wears` says no.
 ///
-/// - Glasses: on the eyes, sliding with the look.
+/// - Glasses: on the eyes.
 /// - Headphone: two earcups at the notch's left and right ends (no band).
 /// - Bow tie: small, under the eyes.
 /// - Scarf: a band along the notch's bottom edge, its tail hanging from it.
@@ -1103,8 +1100,9 @@ pub fn face_wears(accessory: CatAccessory, kind: ShapeKind) -> bool {
 ///   only the brim shows along the notch's top edge over the face
 ///   ("pinggiran"), with one detail hanging left of the eyes (`rim_pieces`).
 ///
-/// A piece under 3:1 against what lies under it gets a 1 dip edge
-/// (`FacePiece::edge`); the crown always has its darker gold one.
+/// Every piece moves with the face (`FacePiece::place`). A piece under 3:1
+/// against what lies under it at rest gets a 1 dip edge (`FacePiece::edge`);
+/// the crown always has its darker gold one.
 pub fn face_pieces(
     accessory: CatAccessory,
     kind: ShapeKind,
@@ -1742,13 +1740,13 @@ impl RobotPainter {
         Ok(g)
     }
 
-    /// Paints `pieces` (`face_pieces`) on the face notch for `look`: the ones
-    /// on the eyes slid by the face's look (`robot::face_slide` of `pose` at
-    /// `scale`, cut back with `robot::face_pose_in`), all but the notch's
-    /// nodded with the face. Each piece's edge (`FacePiece::edge`) is drawn
-    /// under it, `FACE_EDGE_DIP` past its outline. Painted with the caller's
-    /// `brush` (its colour left changed). The render target's transform is
-    /// restored.
+    /// Paints `pieces` (`face_pieces`) on the face notch for `look`, every
+    /// one moved with the face as its eyes are: slid by the face's look
+    /// (`robot::face_slide` of `pose` at `scale`) and nodded `pose.nod_dip`
+    /// (cut back first, as one group, with `robot::face_pose_in`). Each
+    /// piece's edge (`FacePiece::edge`) is drawn under it, `FACE_EDGE_DIP`
+    /// past its outline. Painted with the caller's `brush` (its colour left
+    /// changed). The render target's transform is restored.
     #[allow(clippy::too_many_arguments)]
     pub fn paint_face_pieces(
         &self,

@@ -780,6 +780,9 @@ fn reach(want: f32, fits: &dyn Fn(f32) -> bool) -> f32 {
 pub const FACE_SCALE: f32 = 1.6;
 /// How far the typing face's focus eyes look down, in grid units.
 pub const TYPING_FACE_DOWN: f32 = 2.0;
+/// How far inside the outline a cut move of the face stops (dip,
+/// `face_pose_in`): far under a pixel, far over a rounding error.
+const FACE_CUT_MARGIN: f32 = 0.01;
 
 /// Dip per grid unit of a face drawn at `scale` (1 is the shrunk pill's).
 pub fn face_unit(scale: f32) -> f32 {
@@ -926,16 +929,21 @@ pub fn face_boxes(
     out
 }
 
-/// `pose` with the face's look (`face_slide`) cut back so that, open or
-/// shut, every mark that slides, and the glasses on them, stay inside
-/// `shape` and left of `clock_left` (what sits right of the face). The cut
-/// slide is in `eye_dx_dip` and `glance_y`; `glance_x` is 0. Like
-/// `eyes_offset_in`, a guard: where the face has its room the look's own
-/// extremes fit.
+/// `pose` with the face's nod and look (`face_slide`) cut back, as one
+/// group, so that, open or shut, every mark that slides and every piece of
+/// the accessory worn in a `kind` view (`face_pieces`, which move with the
+/// face: `FacePiece::place`) stay inside `shape`, and all but the notch's
+/// earcups and scarf stay left of `clock_left` (what sits right of the
+/// face). A piece that would leave cuts the whole group's move, so the face
+/// never goes further than what it wears. The nod is cut first (in
+/// `nod_dip`), then the slide down or up, then across; the cut slide is in
+/// `eye_dx_dip` and `glance_y`, `glance_x` is 0. Like `eyes_offset_in`, a
+/// guard: where the face has its room the look's own extremes fit.
 #[allow(clippy::too_many_arguments)]
 pub fn face_pose_in(
     style: Style,
     shape: ShapeRect,
+    kind: super::geometry::ShapeKind,
     clock_left: Option<f32>,
     centre: (f32, f32),
     scale: f32,
@@ -952,7 +960,7 @@ pub fn face_pose_in(
         glance_y: 0.0,
         ..pose
     };
-    if want_x == 0.0 && want_y == 0.0 {
+    if want_x == 0.0 && want_y == 0.0 && pose.nod_dip == 0.0 {
         return still;
     }
     let rect = Rect {
@@ -961,32 +969,48 @@ pub fn face_pose_in(
         w: shape.w,
         h: shape.h,
     };
-    // The glasses are worn in every view.
-    let glasses: Vec<_> = face_pieces(look.accessory, super::geometry::ShapeKind::Idle, rect, centre, u)
-        .into_iter()
-        .filter(|p| p.anchor == FaceAnchor::Eyes)
-        .collect();
+    let pieces = face_pieces(look.accessory, kind, rect, centre, u);
     // Open and shut: a blink never moves the eyes.
     let marks: Vec<FaceBox> = [false, true]
         .into_iter()
-        .flat_map(|blink| face_boxes(look, expr, blink, centre, scale, (0.0, 0.0), pose.nod_dip))
+        .flat_map(|blink| face_boxes(look, expr, blink, centre, scale, (0.0, 0.0), 0.0))
         .filter(|b| b.kind == FaceBoxKind::Mark)
         .collect();
-    let inside =
-        |x: f32, y: f32| shape_contains(style, shape, x, y) && clock_left.is_none_or(|c| x < c);
+    let inside = |x: f32, y: f32, clock: bool| {
+        shape_contains(style, shape, x, y) && (!clock || clock_left.is_none_or(|c| x < c))
+    };
+    // The marks and the pieces all move by (dx, dy): the slide plus the nod.
     let fits = |dx: f32, dy: f32| {
         marks.iter().all(|b| {
             let (l, t, r, b) = (b.l + dx, b.t + dy, b.r + dx, b.b + dy);
-            [(l, t), (r, t), (l, b), (r, b)].into_iter().all(|(x, y)| inside(x, y))
-        }) && glasses
-            .iter()
-            .all(|p| p.corners((dx, dy), pose.nod_dip).into_iter().all(|(x, y)| inside(x, y)))
+            [(l, t), (r, t), (l, b), (r, b)]
+                .into_iter()
+                .all(|(x, y)| inside(x, y, true))
+        }) && pieces.iter().all(|p| {
+            let clock = p.anchor != FaceAnchor::Notch;
+            p.corners((dx, dy), 0.0)
+                .into_iter()
+                .all(|(x, y)| inside(x, y, clock))
+        })
     };
-    let dy = reach(want_y, &|v| fits(0.0, v));
-    let dx = reach(want_x, &|v| fits(v, dy));
+    // A cut move ends right on the outline: keep a hair inside it, so the
+    // painter's own sums (the slide back from `glance_y`, the nod added
+    // last) never round out of it.
+    let reach = |want: f32, fits: &dyn Fn(f32) -> bool| {
+        let got = reach(want, fits);
+        if got == want {
+            got
+        } else {
+            got.signum() * (got.abs() - FACE_CUT_MARGIN).max(0.0)
+        }
+    };
+    let nod = reach(pose.nod_dip, &|v| fits(0.0, v));
+    let dy = reach(want_y, &|v| fits(0.0, nod + v));
+    let dx = reach(want_x, &|v| fits(v, nod + dy));
     Pose {
         eye_dx_dip: dx,
         glance_y: if u > 0.0 { dy / u } else { 0.0 },
+        nod_dip: nod,
         ..still
     }
 }

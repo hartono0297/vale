@@ -1821,7 +1821,9 @@ impl Painter<'_> {
             return;
         };
         let centre = (at.area.x + at.area.w / 2.0, at.area.y + at.area.h / 2.0);
-        let pose = face_pose_in(s.style, at.shape, at.clock_left, centre, scale, expr, look, pose);
+        let pose = face_pose_in(
+            s.style, at.shape, at.kind, at.clock_left, centre, scale, expr, look, pose,
+        );
         let params = D2D1_LAYER_PARAMETERS {
             contentBounds: D2D_RECT_F {
                 left: -f32::MAX,

@@ -930,8 +930,9 @@ pub fn toast_dot(shape: ShapeRect) -> ((f32, f32), f32) {
 pub const TOAST_DOT_RING: f32 = 1.5;
 
 /// The unread dot on Jadi muka's face notch wearing the earcups, the face
-/// at `unit` dip per grid unit: `toast_dot` moved in by the right earcup's
-/// width, so the dot and its ring keep 1 dip clear of the cup.
+/// at `unit` dip per grid unit: `toast_dot` moved in past the right earcup,
+/// so the dot and its ring keep 1 dip clear of the cup wherever it moves
+/// with the face (`cat_style::face_cup_left`).
 pub fn face_toast_dot(shape: ShapeRect, unit: f32) -> ((f32, f32), f32) {
     let ((cx, cy), r) = toast_dot(shape);
     let cup = super::cat_style::face_cup_left(
@@ -2509,7 +2510,7 @@ mod tests {
         for style in [Style::Pill, Style::Notch] {
             for size in notch_sizes() {
                 for view in face_views(style, size, CatAccessory::None) {
-                    let FaceView { name, shape: s, clock, area, .. } = view;
+                    let FaceView { name, kind, shape: s, clock, area } = view;
                     let scale = face_scale(area, CatAccessory::None);
                     let centre = centre_of(area);
                     // Never smaller than the shrunk pill's face.
@@ -2521,7 +2522,7 @@ mod tests {
                             for &v in vs {
                                 for nod in [0.0, NOD_MAX_DIP] {
                                     let pose = face_pose_in(
-                                        style, s, clock, centre, scale, expr, look,
+                                        style, s, kind, clock, centre, scale, expr, look,
                                         face_pose(expr, v, nod),
                                     );
                                     let slide = face_slide(&pose, scale);
@@ -2590,7 +2591,7 @@ mod tests {
             for look in face_looks() {
                 for v in [-1.0, 1.0] {
                     let want = face_pose(Expr::Idle, v, 0.0);
-                    let got = face_pose_in(style, s, clock, centre, FACE_SCALE, Expr::Idle, look, want);
+                    let got = face_pose_in(style, s, ShapeKind::Idle, clock, centre, FACE_SCALE, Expr::Idle, look, want);
                     assert_eq!(face_slide(&got, FACE_SCALE), face_slide(&want, FACE_SCALE), "{style:?} {look:?} v {v}");
                     assert!(face_slide(&got, FACE_SCALE).0.abs() > 0.0);
                 }
@@ -2632,9 +2633,8 @@ mod tests {
     #[test]
     fn every_face_accessory_stays_inside_the_notch() {
         use crate::theme::CatAccessory;
-        use crate::ui::cat_style::{CatLook, FACE_HALF_W, FaceAnchor, face_pieces, face_wears};
-        use crate::ui::robot::{Expr, NOD_MAX_DIP, face_pose_in, face_slide, face_unit};
-        let vs: Vec<f32> = (0..=8).map(|i| -1.0 + 0.25 * i as f32).collect();
+        use crate::ui::cat_style::{FACE_HALF_W, FaceAnchor, face_pieces, face_wears};
+        use crate::ui::robot::face_unit;
         let mut checked = 0usize;
         for style in [Style::Pill, Style::Notch] {
             for size in notch_sizes() {
@@ -2681,38 +2681,146 @@ mod tests {
                             assert!(hi < face_left, "{style:?} {size:?} {name} {accessory:?}: {hi} reaches the face at {face_left}");
                             assert!(hi - lo >= 8.0, "{style:?} {size:?} {name} {accessory:?}: {} dip wide", hi - lo);
                         }
-                        // Only the pieces on the eyes (the glasses) slide with the
-                        // look, which each mascot's marks and each face cut back.
-                        let slides = pieces.iter().any(|p| p.anchor == FaceAnchor::Eyes);
-                        let mascots: &[Mascot] = if slides { Mascot::ALL } else { &[Mascot::Cat] };
-                        for &mascot in mascots {
-                            let look = CatLook { mascot, accessory, ..CatLook::default() };
-                            for expr in Expr::ALL {
-                                let vs: &[f32] =
-                                    if slides && expr.follows() { &vs } else { &[0.0] };
-                                for &v in vs {
-                                    for nod in [0.0, NOD_MAX_DIP] {
-                                        let pose = face_pose_in(
-                                            style, s, clock, centre, scale, expr, look,
-                                            face_pose(expr, v, nod),
-                                        );
-                                        let slide = face_slide(&pose, scale);
-                                        for p in &pieces {
-                                            let what = format!(
-                                                "{style:?} {size:?} {name} {mascot:?} {accessory:?} {expr:?} v {v} nod {nod}: {p:?}"
+                        // At rest; moving with the face, see
+                        // `the_face_and_its_pieces_stay_inside_when_they_move`.
+                        for p in &pieces {
+                            let what = format!("{style:?} {size:?} {name} {accessory:?}: {p:?}");
+                            for (x, y) in p.corners((0.0, 0.0), 0.0) {
+                                assert!(shape_contains(style, s, x, y), "{what} leaves {s:?} at ({x}, {y})");
+                                // The earcups and the scarf belong to the
+                                // notch's ends and bottom edge, not the face.
+                                if let (Some(c), false) = (clock, p.anchor == FaceAnchor::Notch) {
+                                    assert!(x < c, "{what} reaches the clock at {c}");
+                                }
+                            }
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 20_000, "{checked} pieces checked");
+    }
+
+    /// The eyes' offset (dip) when the face slides `slide` and nods `nod`, as
+    /// `robot::face_boxes` draws them.
+    fn eyes_offset(centre: (f32, f32), scale: f32, slide: (f32, f32), nod: f32) -> (f32, f32) {
+        use crate::ui::robot::Expr;
+        let rest = eye_boxes(Expr::Idle, false, centre, scale, (0.0, 0.0), 0.0);
+        let moved = eye_boxes(Expr::Idle, false, centre, scale, slide, nod);
+        (moved[0].0 - rest[0].0, moved[0].1 - rest[0].1)
+    }
+
+    /// Jadi muka: the face and everything it wears move as one, like a head.
+    /// Every piece of every accessory, on every face view, moves by exactly
+    /// the eyes' offset: the look's slide plus the nod.
+    #[test]
+    fn every_worn_piece_moves_with_the_eyes() {
+        use crate::theme::CatAccessory;
+        use crate::ui::cat_style::{CatLook, face_pieces};
+        use crate::ui::robot::{Expr, NOD_MAX_DIP, face_pose_in, face_slide, face_unit};
+        let mut checked = 0usize;
+        for style in [Style::Pill, Style::Notch] {
+            for size in notch_sizes() {
+                for &accessory in CatAccessory::ALL {
+                    let look = CatLook { accessory, ..CatLook::default() };
+                    for view in face_views(style, size, accessory) {
+                        let FaceView { name, kind, shape: s, clock, area } = view;
+                        let scale = face_scale(area, accessory);
+                        let centre = centre_of(area);
+                        let pieces = face_pieces(accessory, kind, as_rect(s), centre, face_unit(scale));
+                        // The pose the island draws (cut back), and two raw ones.
+                        let pose = face_pose_in(
+                            style, s, kind, clock, centre, scale, Expr::Idle, look,
+                            face_pose(Expr::Idle, 0.5, NOD_MAX_DIP),
+                        );
+                        let moves = [
+                            (face_slide(&pose, scale), pose.nod_dip),
+                            ((1.5, -0.75), 0.0),
+                            ((-2.0, 1.0), NOD_MAX_DIP),
+                        ];
+                        for (slide, nod) in moves {
+                            let (ox, oy) = eyes_offset(centre, scale, slide, nod);
+                            for p in &pieces {
+                                let rest = p.corners((0.0, 0.0), 0.0);
+                                for (a, b) in rest.iter().zip(p.corners(slide, nod)) {
+                                    let (mx, my) = (b.0 - a.0, b.1 - a.1);
+                                    assert!(
+                                        (mx - ox).abs() < 1e-3 && (my - oy).abs() < 1e-3,
+                                        "{style:?} {size:?} {name} {accessory:?} slide {slide:?} nod {nod}: \
+                                         {p:?} moves ({mx}, {my}), the eyes ({ox}, {oy})"
+                                    );
+                                }
+                                checked += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 10_000, "{checked} pieces checked");
+    }
+
+    /// One clamp for the group: wherever the face looks and nods, cut back
+    /// by `face_pose_in`, every mark and every worn piece stays inside the
+    /// island and left of the clock / content (the earcups and the scarf
+    /// belong to the notch's ends and bottom edge, not the face).
+    #[test]
+    fn the_face_and_its_pieces_stay_inside_when_they_move() {
+        use crate::theme::CatAccessory;
+        use crate::ui::cat_style::{CatLook, FaceAnchor, face_pieces};
+        use crate::ui::robot::{
+            Expr, FaceBoxKind, NOD_MAX_DIP, face_boxes, face_pose_in, face_slide, face_unit,
+        };
+        let vs: Vec<f32> = (0..=8).map(|i| -1.0 + 0.25 * i as f32).collect();
+        let mut checked = 0usize;
+        for style in [Style::Pill, Style::Notch] {
+            for size in notch_sizes() {
+                for &accessory in CatAccessory::ALL {
+                    let look = CatLook { accessory, ..CatLook::default() };
+                    for view in face_views(style, size, accessory) {
+                        let FaceView { name, kind, shape: s, clock, area } = view;
+                        let scale = face_scale(area, accessory);
+                        let centre = centre_of(area);
+                        let pieces = face_pieces(accessory, kind, as_rect(s), centre, face_unit(scale));
+                        for expr in Expr::ALL {
+                            let vs: &[f32] = if expr.follows() { &vs } else { &[0.0] };
+                            for &v in vs {
+                                for nod in [0.0, NOD_MAX_DIP] {
+                                    let pose = face_pose_in(
+                                        style, s, kind, clock, centre, scale, expr, look,
+                                        face_pose(expr, v, nod),
+                                    );
+                                    let slide = face_slide(&pose, scale);
+                                    let what = format!(
+                                        "{style:?} {size:?} {name} {accessory:?} {expr:?} v {v} nod {nod}"
+                                    );
+                                    for p in &pieces {
+                                        for (x, y) in p.corners(slide, pose.nod_dip) {
+                                            assert!(
+                                                shape_contains(style, s, x, y),
+                                                "{what}: {p:?} leaves {s:?} at ({x}, {y})"
                                             );
-                                            for (x, y) in p.corners(slide, pose.nod_dip) {
+                                            if let (Some(c), false) = (clock, p.anchor == FaceAnchor::Notch) {
+                                                assert!(x < c, "{what}: {p:?} reaches the clock at {c}");
+                                            }
+                                        }
+                                        checked += 1;
+                                    }
+                                    for blink in [false, true] {
+                                        for b in face_boxes(look, expr, blink, centre, scale, slide, pose.nod_dip) {
+                                            if b.kind == FaceBoxKind::Patch {
+                                                continue;
+                                            }
+                                            if let Some(c) = clock {
+                                                assert!(b.r < c, "{what} blink {blink}: {b:?} reaches the clock at {c}");
+                                            }
+                                            for (x, y) in [(b.l, b.t), (b.r, b.t), (b.l, b.b), (b.r, b.b)] {
                                                 assert!(
                                                     shape_contains(style, s, x, y),
-                                                    "{what} leaves {s:?} at ({x}, {y})"
+                                                    "{what} blink {blink}: {b:?} leaves {s:?} at ({x}, {y})"
                                                 );
-                                                // The earcups and the scarf belong to the
-                                                // notch's ends and bottom edge, not the face.
-                                                if let (Some(c), false) = (clock, p.anchor == FaceAnchor::Notch) {
-                                                    assert!(x < c, "{what} reaches the clock at {c}");
-                                                }
                                             }
-                                            checked += 1;
                                         }
                                     }
                                 }
@@ -2722,7 +2830,7 @@ mod tests {
                 }
             }
         }
-        assert!(checked > 200_000, "{checked} pieces checked");
+        assert!(checked > 1_000_000, "{checked} pieces checked");
     }
 
     /// The eyes' boxes as drawn ("open and shut" by `blink`), without what
@@ -2794,10 +2902,20 @@ mod tests {
                             for &v in vs {
                                 for nod in [0.0, NOD_MAX_DIP] {
                                     let pose = face_pose_in(
-                                        style, s, clock, centre, scale, expr, look,
+                                        style, s, kind, clock, centre, scale, expr, look,
                                         face_pose(expr, v, nod),
                                     );
                                     let slide = face_slide(&pose, scale);
+                                    // The brim moves with the face.
+                                    let boxes: Vec<(f32, f32, f32, f32)> = pieces
+                                        .iter()
+                                        .map(|p| {
+                                            p.corners(slide, pose.nod_dip).iter().fold(
+                                                (f32::MAX, f32::MAX, f32::MIN, f32::MIN),
+                                                |a, &(x, y)| (a.0.min(x), a.1.min(y), a.2.max(x), a.3.max(y)),
+                                            )
+                                        })
+                                        .collect();
                                     for blink in [false, true] {
                                         for e in eye_boxes(expr, blink, centre, scale, slide, pose.nod_dip) {
                                             for b in &boxes {
@@ -4800,6 +4918,57 @@ mod tests {
             }
         }
         assert!(checked > 0);
+    }
+
+    /// The earcups move with the face (look and nod, cut back by
+    /// `face_pose_in`): the unread dot and its ring clear the right one
+    /// wherever it goes.
+    #[test]
+    fn the_toast_dot_clears_the_moving_earcup() {
+        use crate::theme::CatAccessory;
+        use crate::ui::cat_style::{CatLook, face_pieces};
+        use crate::ui::robot::{Expr, NOD_MAX_DIP, face_pose_in, face_slide, face_unit};
+        let look = CatLook { accessory: CatAccessory::Headphone, ..CatLook::default() };
+        let vs: Vec<f32> = (0..=8).map(|i| -1.0 + 0.25 * i as f32).collect();
+        let mut checked = 0;
+        for style in [Style::Pill, Style::Notch] {
+            for size in notch_sizes() {
+                for view in face_views(style, size, CatAccessory::Headphone) {
+                    let FaceView { name, kind, shape: s, clock, area } = view;
+                    let scale = face_scale(area, CatAccessory::Headphone);
+                    let unit = face_unit(scale);
+                    let centre = centre_of(area);
+                    let cups = face_pieces(CatAccessory::Headphone, kind, as_rect(s), centre, unit);
+                    let ((cx, cy), r) = face_toast_dot(s, unit);
+                    let reach = r + TOAST_DOT_RING;
+                    let (dl, dt, dr, db) = (cx - reach, cy - reach, cx + reach, cy + reach);
+                    for expr in Expr::ALL.into_iter().filter(|e| e.follows()) {
+                        for &v in &vs {
+                            for nod in [0.0, NOD_MAX_DIP] {
+                                let pose = face_pose_in(
+                                    style, s, kind, clock, centre, scale, expr, look,
+                                    face_pose(expr, v, nod),
+                                );
+                                let slide = face_slide(&pose, scale);
+                                for p in &cups {
+                                    let (l, t, rr, b) = p.corners(slide, pose.nod_dip).iter().fold(
+                                        (f32::MAX, f32::MAX, f32::MIN, f32::MIN),
+                                        |a, &(x, y)| (a.0.min(x), a.1.min(y), a.2.max(x), a.3.max(y)),
+                                    );
+                                    let apart = dr < l || dl > rr || db < t || dt > b;
+                                    assert!(
+                                        apart,
+                                        "{name} {style:?} {size:?} {expr:?} v {v} nod {nod}: dot {dl}..{dr} cup {l}..{rr}"
+                                    );
+                                    checked += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 10_000, "{checked} cups checked");
     }
 
     #[test]

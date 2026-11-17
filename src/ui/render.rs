@@ -3730,8 +3730,9 @@ impl Renderer {
             return;
         }
         let look = self.cat.get();
-        let pose =
-            face_pose_in(style, clip, clock_left, centre, scale, robot.expr, look, robot.pose);
+        let pose = face_pose_in(
+            style, clip, kind, clock_left, centre, scale, robot.expr, look, robot.pose,
+        );
         let Ok(outline) = self.island_outline(style, clip) else {
             return;
         };
