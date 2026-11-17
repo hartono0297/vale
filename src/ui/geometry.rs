@@ -925,6 +925,27 @@ pub fn toast_dot(shape: ShapeRect) -> ((f32, f32), f32) {
     )
 }
 
+/// The width of the ring round the unread dot where it reads under 3:1 on
+/// the fill, drawn just outside the dot: it reaches this far past it.
+pub const TOAST_DOT_RING: f32 = 1.5;
+
+/// The unread dot on Jadi muka's face notch wearing the earcups, the face
+/// at `unit` dip per grid unit: `toast_dot` moved in by the right earcup's
+/// width, so the dot and its ring keep 1 dip clear of the cup.
+pub fn face_toast_dot(shape: ShapeRect, unit: f32) -> ((f32, f32), f32) {
+    let ((cx, cy), r) = toast_dot(shape);
+    let cup = super::cat_style::face_cup_left(
+        Rect {
+            x: shape.x,
+            y: shape.y,
+            w: shape.w,
+            h: shape.h,
+        },
+        unit,
+    );
+    ((cx.min(cup - 1.0 - r - TOAST_DOT_RING), cy), r)
+}
+
 /// A toast's strip in the open panel: its 16 dip logo and the text box
 /// (`strip` is `panel_layout::waiting_strip`).
 pub fn toast_strip_parts(strip: Rect) -> (Rect, Rect) {
@@ -4738,6 +4759,47 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Jadi muka with the earcups: on every face view the unread dot and its
+    /// ring keep clear of the right earcup, inside the shape.
+    #[test]
+    fn the_unread_dot_clears_the_earcup_on_every_face_view() {
+        use crate::theme::CatAccessory;
+        use crate::ui::cat_style::face_pieces;
+        use crate::ui::robot::face_unit;
+        let mut checked = 0;
+        for style in [Style::Pill, Style::Notch] {
+            for size in notch_sizes() {
+                for v in face_views(style, size, CatAccessory::Headphone) {
+                    let scale = face_scale(v.area, CatAccessory::Headphone);
+                    let unit = face_unit(scale);
+                    let eyes = (v.area.x + v.area.w / 2.0, v.area.y + v.area.h / 2.0);
+                    let cups = face_pieces(CatAccessory::Headphone, v.kind, as_rect(v.shape), eyes, unit);
+                    assert!(!cups.is_empty(), "{}", v.name);
+                    let ((cx, cy), r) = face_toast_dot(v.shape, unit);
+                    let reach = r + TOAST_DOT_RING;
+                    let (dl, dt, dr, db) = (cx - reach, cy - reach, cx + reach, cy + reach);
+                    for p in &cups {
+                        let c = p.corners((0.0, 0.0), 0.0);
+                        let (l, t, rr, b) = c.iter().fold(
+                            (f32::MAX, f32::MAX, f32::MIN, f32::MIN),
+                            |a, &(x, y)| (a.0.min(x), a.1.min(y), a.2.max(x), a.3.max(y)),
+                        );
+                        let apart = dr < l || dl > rr || db < t || dt > b;
+                        assert!(apart, "{} {style:?} {size:?}: dot {dl}..{dr} cup {l}..{rr}", v.name);
+                    }
+                    // Inside the shape, its ring included.
+                    for (x, y) in [(dl, cy), (dr, cy), (cx, dt), (cx, db)] {
+                        assert!(shape_contains(style, v.shape, x, y), "{} ({x}, {y})", v.name);
+                    }
+                    // Only as far in as the cup needs.
+                    assert!(cx <= toast_dot(v.shape).0.0);
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 0);
     }
 
     #[test]

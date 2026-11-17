@@ -1627,11 +1627,13 @@ impl RobotPainter {
     /// dance's nod moves the whole face down `pose.nod_dip`; nothing else of
     /// the pose applies. The calico patches are larger than the notch: the
     /// caller clips to the island's outline, as it does for the shrunk
-    /// pill's. The render target's transform is restored.
+    /// pill's. Painted with the caller's `brush` (the target's own, its
+    /// colour left changed). The render target's transform is restored.
     #[allow(clippy::too_many_arguments)]
     pub fn paint_face(
         &self,
         rt: &ID2D1RenderTarget,
+        brush: &ID2D1SolidColorBrush,
         centre: (f32, f32),
         scale: f32,
         expr: Expr,
@@ -1664,15 +1666,15 @@ impl RobotPainter {
                 )
         };
         unsafe {
-            let brush = rt.CreateSolidColorBrush(&solid(face.eye, alpha), None)?;
+            brush.SetColor(&solid(face.eye, alpha));
             let mut previous = Matrix3x2::default();
             rt.GetTransform(&mut previous);
             rt.SetTransform(&(grid(0.0, 0.0) * previous));
             let coat: Vec<PeekMark> = face_coat(look).into_iter().map(|(m, _)| m).collect();
-            self.fill_marks(rt, &brush, alpha, &coat);
+            self.fill_marks(rt, brush, alpha, &coat);
             let marks = grid(sx, sy) * previous;
             rt.SetTransform(&marks);
-            self.fill_marks(rt, &brush, alpha, &face.face_marks);
+            self.fill_marks(rt, brush, alpha, &face.face_marks);
             for m in face_marks(expr, pose.blink) {
                 rt.SetTransform(
                     &(Matrix3x2::scale(m.k, m.k) * Matrix3x2::translation(m.at.0, m.at.1) * marks),
@@ -1693,7 +1695,7 @@ impl RobotPainter {
                                 radiusX: rx,
                                 radiusY: ry,
                             },
-                            &brush,
+                            brush,
                         );
                     }
                     Part::Dot { cx, cy, r, .. } => {
@@ -1704,19 +1706,19 @@ impl RobotPainter {
                                 radiusX: r,
                                 radiusY: r,
                             },
-                            &brush,
+                            brush,
                         );
                     }
                     Part::Stroke(line) => {
                         if let Some(g) = self.path(Shape::Line(line)) {
                             brush.SetColor(&solid(rgb, alpha * line.alpha()));
-                            rt.DrawGeometry(&g, &brush, line.width(), &self.round);
+                            rt.DrawGeometry(&g, brush, line.width(), &self.round);
                         }
                     }
                     Part::Heart { x, y } => {
                         if let Some(g) = self.path(Shape::Heart(x, y)) {
                             brush.SetColor(&solid(heart, alpha));
-                            rt.FillGeometry(&g, &brush, None);
+                            rt.FillGeometry(&g, brush, None);
                         }
                     }
                 }
@@ -3011,8 +3013,9 @@ mod tests {
             let rt = factory.CreateWicBitmapRenderTarget(&bitmap, &props).expect("target");
             rt.BeginDraw();
             rt.Clear(Some(&solid(fill, 1.0)));
+            let brush = rt.CreateSolidColorBrush(&solid(0, 1.0), None).expect("brush");
             painter
-                .paint_face(&rt, (64.0, 32.0), FACE_SCALE, expr, &pose, look, 1.0)
+                .paint_face(&rt, &brush, (64.0, 32.0), FACE_SCALE, expr, &pose, look, 1.0)
                 .expect("face");
             let shape = Rect { x: 0.0, y: 0.0, w: 128.0, h: 64.0 };
             let pieces = super::super::cat_style::face_pieces(
@@ -3023,7 +3026,7 @@ mod tests {
                 face_unit(FACE_SCALE),
             );
             painter
-                .paint_face_pieces(&rt, &pieces, FACE_SCALE, &pose, look, 1.0)
+                .paint_face_pieces(&rt, &brush, &pieces, FACE_SCALE, &pose, look, 1.0)
                 .expect("pieces");
             rt.EndDraw(None, None).expect("end draw");
             let mut out = vec![0u8; 128 * 64 * 4];

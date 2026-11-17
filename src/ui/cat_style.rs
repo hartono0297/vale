@@ -874,6 +874,15 @@ const FACE_TIE_DY: f32 = 7.5;
 /// ends (dip).
 const FACE_CUP_K: f32 = 0.7;
 const FACE_CUP_IN: f32 = 3.5;
+/// An earcup's width in grid units (before `FACE_CUP_K`).
+const FACE_CUP_W: f32 = 7.0;
+
+/// The left of the right earcup on the face notch `shape` with `unit` dip
+/// per grid unit, its edge included (`FacePiece::corners`): what the unread
+/// dot keeps clear of (`geometry::face_toast_dot`).
+pub fn face_cup_left(shape: Rect, unit: f32) -> f32 {
+    shape.right() - FACE_CUP_IN - FACE_CUP_W * FACE_CUP_K * unit - FACE_EDGE_DIP
+}
 /// The scarf on the notch's bottom edge: band and tail height (grid units)
 /// and the room kept under the tail (dip), past its edge.
 const FACE_BAND_H: f32 = 2.4;
@@ -1139,7 +1148,7 @@ pub fn face_pieces(
                 [
                     make(
                         Piece::Shape {
-                            segs: rrect(0.0, 0.0, 7.0, 12.0, 3.0),
+                            segs: rrect(0.0, 0.0, FACE_CUP_W, 12.0, 3.0),
                             fill: fixed(CREAM_PIECE),
                             edge: None,
                         },
@@ -1166,7 +1175,7 @@ pub fn face_pieces(
                 ]
             };
             let mut v = cup((0.0, 6.0), (shape.x + FACE_CUP_IN, mid)).to_vec();
-            v.extend(cup((7.0, 6.0), (shape.right() - FACE_CUP_IN, mid)));
+            v.extend(cup((FACE_CUP_W, 6.0), (shape.right() - FACE_CUP_IN, mid)));
             v
         }
         CatAccessory::Scarf => {
@@ -1737,11 +1746,14 @@ impl RobotPainter {
     /// on the eyes slid by the face's look (`robot::face_slide` of `pose` at
     /// `scale`, cut back with `robot::face_pose_in`), all but the notch's
     /// nodded with the face. Each piece's edge (`FacePiece::edge`) is drawn
-    /// under it, `FACE_EDGE_DIP` past its outline. The render target's
-    /// transform is restored.
+    /// under it, `FACE_EDGE_DIP` past its outline. Painted with the caller's
+    /// `brush` (its colour left changed). The render target's transform is
+    /// restored.
+    #[allow(clippy::too_many_arguments)]
     pub fn paint_face_pieces(
         &self,
         rt: &ID2D1RenderTarget,
+        brush: &ID2D1SolidColorBrush,
         pieces: &[FacePiece],
         scale: f32,
         pose: &super::robot::Pose,
@@ -1753,7 +1765,6 @@ impl RobotPainter {
         }
         let slide = super::robot::face_slide(pose, scale);
         unsafe {
-            let brush = rt.CreateSolidColorBrush(&solid(0, alpha), None)?;
             let mut previous = Matrix3x2::default();
             rt.GetTransform(&mut previous);
             for p in pieces {
@@ -1772,38 +1783,38 @@ impl RobotPainter {
                         let own = own.unwrap_or(0.0);
                         if let Some(rgb) = edge {
                             brush.SetColor(&solid(rgb, alpha));
-                            rt.DrawGeometry(&g, &brush, own + grow, &self.round);
+                            rt.DrawGeometry(&g, brush, own + grow, &self.round);
                         }
                         brush.SetColor(&main);
-                        rt.FillGeometry(&g, &brush, None);
+                        rt.FillGeometry(&g, brush, None);
                         if own > 0.0 {
-                            rt.DrawGeometry(&g, &brush, own, &self.round);
+                            rt.DrawGeometry(&g, brush, own, &self.round);
                         }
                     }
                     Piece::Stroke { segs, width, .. } => {
                         let g = self.face_path(segs)?;
                         if let Some(rgb) = edge {
                             brush.SetColor(&solid(rgb, alpha));
-                            rt.DrawGeometry(&g, &brush, width + grow, &self.round);
+                            rt.DrawGeometry(&g, brush, width + grow, &self.round);
                         }
                         brush.SetColor(&main);
-                        rt.DrawGeometry(&g, &brush, *width, &self.round);
+                        rt.DrawGeometry(&g, brush, *width, &self.round);
                     }
                     Piece::Dot { cx, cy, r, .. } => {
                         if let Some(rgb) = edge {
                             brush.SetColor(&solid(rgb, alpha));
-                            rt.FillEllipse(&circle(*cx, *cy, r + grow / 2.0), &brush);
+                            rt.FillEllipse(&circle(*cx, *cy, r + grow / 2.0), brush);
                         }
                         brush.SetColor(&main);
-                        rt.FillEllipse(&circle(*cx, *cy, *r), &brush);
+                        rt.FillEllipse(&circle(*cx, *cy, *r), brush);
                     }
                     Piece::Ring { cx, cy, r, width, .. } => {
                         if let Some(rgb) = edge {
                             brush.SetColor(&solid(rgb, alpha));
-                            rt.DrawEllipse(&circle(*cx, *cy, *r), &brush, width + grow, &self.round);
+                            rt.DrawEllipse(&circle(*cx, *cy, *r), brush, width + grow, &self.round);
                         }
                         brush.SetColor(&main);
-                        rt.DrawEllipse(&circle(*cx, *cy, *r), &brush, *width, &self.round);
+                        rt.DrawEllipse(&circle(*cx, *cy, *r), brush, *width, &self.round);
                     }
                 }
             }

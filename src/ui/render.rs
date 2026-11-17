@@ -64,7 +64,8 @@ use super::geometry::{
     idle_layout_lead, lyric_layout, lyric_layout_robot, lyric_overflow, notice_action,
     notice_action_w, notice_actions_layout, notice_actions_layout_with, notice_chip_widths,
     notice_close_rect, notice_close_regions, notice_layout_with, reminder_done_regions, shot_fit,
-    shot_layout, shot_regions, shoulder_depth, toast_dot, toast_eyebrow, toast_notice_layout_with,
+    TOAST_DOT_RING, face_toast_dot, shot_layout, shot_regions, shoulder_depth, toast_dot,
+    toast_eyebrow, toast_notice_layout_with,
     rec_saved_regions, sticky_reminder_regions, toast_slot_parts, update_offer_regions,
 };
 use super::icons::{Icon, IconSet};
@@ -2786,11 +2787,15 @@ impl Renderer {
             }
         }
         let shows_face = notch_colour::shows_face(frame.notch_style, view);
+        // Jadi muka just left (the mascot off, another style) where the
+        // island stays: its face fades out with the fill as `peek_mix` heads
+        // back to 0 (`face_last`, still there, is only ever set under it).
+        let leaving_face = !face_style && !frame.eyes && frame.peek_mix > 0.0;
         // No face drawn this frame, none to fade out of it later: hidden,
-        // another style, or a Gradasi view settled.
+        // another style settled, or a Gradasi view settled.
         if *view == View::Hidden
-            || !face_style
-            || (!shows_face && !frame.eyes && shares.face <= 0.0)
+            || (!face_style && !leaving_face)
+            || (face_style && !shows_face && !frame.eyes && shares.face <= 0.0)
         {
             self.forget_face();
         }
@@ -2812,6 +2817,14 @@ impl Renderer {
                 let (clock, robot) = (last.clock_left, last.robot);
                 self.paint_face_placed(style, shape, at, clock, robot, shares.face, pieces);
             }
+        } else if leaving_face && let Some(last) = self.face_last.get() {
+            // Out of Jadi muka where the island stays: the face fades out
+            // where it was, with the fill.
+            let share = frame.peek_mix.min(1.0);
+            let at = face_place(last, self.cat.get().accessory);
+            let pieces = (last.ctx.kind, share);
+            let (clock, robot) = (last.clock_left, last.robot);
+            self.paint_face_placed(style, shape, at, clock, robot, share, pieces);
         }
         self.regions.shape = Some((style, shape));
         // Never a robot in the panel.
@@ -3031,7 +3044,8 @@ impl Renderer {
             _ => false,
         };
         // The unread dot, in the brand terracotta, on the closed views only
-        // (ringed where Jadi muka's face would hide it).
+        // (ringed where Gradasi's bottom or Jadi muka's face would hide it;
+        // moved in past Jadi muka's right earcup).
         if frame.toast_dot
             && !slot_drawn
             && matches!(
@@ -3044,7 +3058,18 @@ impl Renderer {
                     | View::ScreenCountdown(_)
             )
         {
-            let ((cx, cy), r) = toast_dot(shape);
+            let cups = shows_face && self.cat.get().accessory == crate::theme::CatAccessory::Headphone;
+            let ((cx, cy), r) = if cups {
+                // At the face's own size where it was drawn, else its largest.
+                let accessory = self.cat.get().accessory;
+                let scale = self
+                    .face_last
+                    .get()
+                    .map_or(super::robot::FACE_SCALE, |s| face_place(s, accessory).1);
+                face_toast_dot(shape, face_unit(scale))
+            } else {
+                toast_dot(shape)
+            };
             self.set_color(super::robot::TERRACOTTA, content_alpha);
             self.fill_round(
                 Rect {
@@ -3055,11 +3080,15 @@ impl Renderer {
                 },
                 r,
             );
-            if face_style && self.mark_needs_ring(super::robot::TERRACOTTA, cy + r) {
+            // Polos has no gradient to check against (`mark_needs_ring`).
+            if frame.notch_style != NotchStyle::Plain
+                && self.mark_needs_ring(super::robot::TERRACOTTA, cy + r)
+            {
                 // The ink of the fill as painted, mid cross-fade too.
                 let closed = self.closed_bottom(frame, shares.notice);
                 let ink = self.content_palette_on(frame, closed, shares.face).text;
-                self.stroke_circle((cx, cy), r + 0.75, 1.5, ink, content_alpha);
+                let ring = TOAST_DOT_RING;
+                self.stroke_circle((cx, cy), r + ring / 2.0, ring, ink, content_alpha);
             }
         }
         // The volume plate is its own near-opaque surface.
@@ -3712,7 +3741,7 @@ impl Renderer {
         if alpha > 0.0 {
             let _ = self
                 .robot
-                .paint_face(&target.rt, centre, scale, robot.expr, &pose, look, alpha);
+                .paint_face(&target.rt, &target.brush, centre, scale, robot.expr, &pose, look, alpha);
         }
         if pieces_alpha > 0.0 {
             let unit = face_unit(scale);
@@ -3720,7 +3749,7 @@ impl Renderer {
             let pieces = super::cat_style::face_pieces(look.accessory, kind, rect, centre, unit);
             let _ = self
                 .robot
-                .paint_face_pieces(&target.rt, &pieces, scale, &pose, look, pieces_alpha);
+                .paint_face_pieces(&target.rt, &target.brush, &pieces, scale, &pose, look, pieces_alpha);
         }
         unsafe { target.rt.PopLayer() };
     }
@@ -7343,6 +7372,95 @@ mod tests {
             let after = paint(&mut r, a_notice(), half, &into_notice);
             assert_eq!(gap(&after, &clean), (0, 0), "{name}: a ghost face");
         }
+    }
+
+    /// Out of Jadi muka where the island stays (the mascot turned off, Polos
+    /// or Gradasi chosen): the face fades out with the fill over the morph,
+    /// then nothing of it is left.
+    #[test]
+    fn leaving_face_fades_the_face_out_with_the_fill() {
+        let look = CatLook::default();
+        let robot = RobotFrame { expr: Expr::Idle, pose: Pose::default() };
+        let idle = shape(Style::Notch, 190.0, 34.0);
+        let dip = (crate::ui::geometry::WINDOW_W, idle.y + idle.h + 4.0);
+        let paint = |r: &mut Renderer, style: NotchStyle, mix: f32| {
+            with_frame_tweaked(None, Some("12:34".into()), Some(robot), 1.0, |f| {
+                face_frame(View::Idle, look)(f);
+                f.notch_style = style;
+                f.peek_mix = mix;
+            }, |frame| {
+                r.palette = frame.palette;
+                r.cat.set(frame.cat);
+                painted(r, dip, |r| r.paint_island(Style::Notch, idle, frame).unwrap())
+            })
+        };
+        for style in [NotchStyle::Plain, NotchStyle::Gradient] {
+            let mut r = renderer();
+            paint(&mut r, NotchStyle::Face, 1.0);
+            assert!(r.face_last.get().is_some());
+            // Half way: the face is still there, fading.
+            let half = paint(&mut r, style, 0.5);
+            assert!(r.face_last.get().is_some(), "{style:?}: still fading");
+            let mut fresh = renderer();
+            let clean = paint(&mut fresh, style, 0.5);
+            assert!(gap(&half, &clean).1 > 0, "{style:?}: the face fades out");
+            // The fill back: nothing left, and no ghost later.
+            let done = paint(&mut r, style, 0.0);
+            assert!(r.face_last.get().is_none(), "{style:?}");
+            assert_eq!(gap(&done, &paint(&mut fresh, style, 0.0)), (0, 0), "{style:?}");
+            let later = paint(&mut r, style, 0.5);
+            assert_eq!(gap(&later, &paint(&mut fresh, style, 0.5)), (0, 0), "{style:?}");
+        }
+    }
+
+    /// The unread dot gets its ring where it would not read on Gradasi's
+    /// bottom, as on Jadi muka's face; never on Polos.
+    #[test]
+    fn the_unread_dot_is_ringed_on_gradasi_where_it_would_not_read() {
+        use crate::ui::robot::TERRACOTTA;
+        let s = shape(Style::Notch, 190.0, 34.0);
+        let dip = (crate::ui::geometry::WINDOW_W, s.y + s.h + 4.0);
+        let ((cx, cy), dot_r) = toast_dot(s);
+        // The shipped surfaces are too dark for this at the dot's height: a
+        // mid olive surface, where terracotta holds under 3:1.
+        let styled = |style: NotchStyle| {
+            move |f: &mut Frame| {
+                notch_styled(style, leak(View::Idle))(f);
+                f.palette.surface = 0x6E5C26;
+                f.notch_tint = 0xFFFFFF;
+            }
+        };
+        let paint = |style: NotchStyle, dot: bool| {
+            let mut r = renderer();
+            let px = with_frame_tweaked(None, None, None, 1.0, |f| {
+                styled(style)(f);
+                f.toast_dot = dot;
+            }, |frame| {
+                r.palette = frame.palette;
+                r.cat.set(frame.cat);
+                painted(&mut r, dip, |r| r.paint_island(Style::Notch, s, frame).unwrap())
+            });
+            (px, r.scale)
+        };
+        // The case: terracotta under 3:1 on this Gradasi's bottom.
+        let mut r = renderer();
+        let tweak = styled(NotchStyle::Gradient);
+        let fill = with_frame_tweaked(None, None, None, 1.0, tweak, |f| fill_of(&mut r, f));
+        let g = NotchGrad::of(fill, shape_rect(s)).expect("a gradient");
+        assert!(notch_colour::needs_ring(TERRACOTTA, g.at(cy + dot_r)));
+        let ink = notch_colour::gradient_palette(r.palette, g.bottom).text;
+        // On the ring, just outside the dot.
+        let (x, y) = (cx + dot_r + TOAST_DOT_RING / 2.0, cy);
+        let (ringed, k) = paint(NotchStyle::Gradient, true);
+        let (bare, _) = paint(NotchStyle::Gradient, false);
+        let c = rgb_at(&ringed, k, x, y);
+        assert!(near_rgb(c, ink, 48), "{c:06X} vs ink {ink:06X}");
+        assert!(!near_rgb(c, rgb_at(&bare, k, x, y), 48));
+        // Polos: no ring.
+        let (plain, _) = paint(NotchStyle::Plain, true);
+        let (plain_bare, _) = paint(NotchStyle::Plain, false);
+        let (c, under) = (rgb_at(&plain, k, x + 0.5, y), rgb_at(&plain_bare, k, x + 0.5, y));
+        assert!(near_rgb(c, under, 24), "{c:06X} vs {under:06X}");
     }
 
     #[test]

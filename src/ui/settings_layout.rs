@@ -2729,12 +2729,13 @@ pub fn notch_style_key(v: NotchStyle) -> Key {
 }
 
 /// Under "Warna notch": Polos says what it is; the others say where the
-/// colour comes from ("Gradasi · dari Terakota"). With the mascot off the
-/// description is just the note that Jadi muka needs it.
+/// colour comes from ("Gradasi · dari Terakota", or the accent name with
+/// the mascot off). Only a stored Jadi muka with the mascot off says that
+/// it needs the mascot.
 fn notch_style_desc(lang: Lang, s: &State) -> String {
     let name = text(lang, notch_style_key(s.notch_style));
     match s.notch_style {
-        _ if !s.robot => text(lang, Key::NotchStyleNeedsMascot).to_owned(),
+        NotchStyle::Face if !s.robot => text(lang, Key::NotchStyleNeedsMascot).to_owned(),
         NotchStyle::Plain => text(lang, Key::NotchStylePlainDesc).to_owned(),
         _ => {
             let from = if s.robot {
@@ -9960,6 +9961,7 @@ mod tests {
                 robot,
                 mascot: Mascot::Cat,
                 cat_color: CatColor::Terracotta,
+                accent: Accent::Ochre,
                 ..states()[0].clone()
             };
             let l = layout(Section::Appearance, &s, &Estimate);
@@ -9968,8 +9970,12 @@ mod tests {
                 "Dark like the bezel",
                 "Gradasi \u{b7} dari Terakota",
                 "Gradient \u{b7} from Terracotta",
+                "Gradasi \u{b7} dari Oker",
+                "Gradient \u{b7} from Ochre",
                 "Jadi muka \u{b7} dari Terakota",
                 "Face \u{b7} from Terracotta",
+                "Nyalakan maskot dulu",
+                "Turn the mascot on first",
             ];
             l.texts
                 .iter()
@@ -9984,6 +9990,15 @@ mod tests {
         let f = NotchStyle::Face;
         assert_eq!(desc(Lang::Id, f, true).unwrap(), "Jadi muka \u{b7} dari Terakota");
         assert_eq!(desc(Lang::En, f, true).unwrap(), "Face \u{b7} from Terracotta");
+        // Mascot off: Polos keeps its text, Gradasi names the accent, and only
+        // a stored Jadi muka asks for the mascot.
+        let p = NotchStyle::Plain;
+        assert_eq!(desc(Lang::Id, p, false).unwrap(), "Gelap seperti bezel");
+        assert_eq!(desc(Lang::En, p, false).unwrap(), "Dark like the bezel");
+        assert_eq!(desc(Lang::Id, g, false).unwrap(), "Gradasi \u{b7} dari Oker");
+        assert_eq!(desc(Lang::En, g, false).unwrap(), "Gradient \u{b7} from Ochre");
+        assert_eq!(desc(Lang::Id, f, false).unwrap(), "Nyalakan maskot dulu");
+        assert_eq!(desc(Lang::En, f, false).unwrap(), "Turn the mascot on first");
     }
 
     /// Jadi muka is the mascot's face: with the mascot off its segment is
@@ -10006,12 +10021,14 @@ mod tests {
                 let (_, segs, _) = l.segmented(Group::NotchStyle).expect("row");
                 let off: Vec<bool> = segs.iter().map(|s| !s.enabled).collect();
                 assert_eq!(off, [false, false, true]);
+                // Only a stored Jadi muka says it needs the mascot; Polos and
+                // Gradasi keep their own descriptions.
                 let note = text(lang, Key::NotchStyleNeedsMascot);
                 let has_note = l.texts.iter().any(|t| t.text == note);
-                assert!(has_note, "{style:?}");
-                // The note replaces the other descriptions.
+                assert_eq!(has_note, style == NotchStyle::Face, "{style:?}");
                 let plain = text(lang, Key::NotchStylePlainDesc);
-                assert!(!l.texts.iter().any(|t| t.text == plain), "{style:?}");
+                let has_plain = l.texts.iter().any(|t| t.text == plain);
+                assert_eq!(has_plain, style == NotchStyle::Plain, "{style:?}");
             }
         }
     }

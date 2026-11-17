@@ -76,6 +76,21 @@ impl PeekMix {
         *self = Self { from: reached, to };
     }
 
+    /// Heads for `to` from the eased progress `t` of the morph already
+    /// running, which carries on: the mix at `t` stays where it is and the
+    /// rest of the morph runs from there to `to`. At the morph's end (or
+    /// past it) both ends are `to`.
+    pub fn retarget_at(&mut self, to: f32, t: f32) {
+        let reached = self.at(t);
+        let left = 1.0 - t;
+        self.from = if left > 1e-3 && !t.is_nan() {
+            (reached - to * t) / left
+        } else {
+            to
+        };
+        self.to = to;
+    }
+
     /// No morph: both ends are the target.
     pub fn settle(&mut self) {
         self.from = self.to;
@@ -182,6 +197,32 @@ mod tests {
         assert_eq!(peek_fill(0x000000, 1.0, 0xFFFFFF, 0.5).0, 0x808080);
         assert_eq!(peek_fill(0x17120F, 0.4, 0xF6D04A, -1.0), (0x17120F, 0.4));
         assert_eq!(peek_fill(0x17120F, 0.4, 0xF6D04A, 2.0), (0xF6D04A, 1.0));
+    }
+
+    /// A new target mid-morph (the style or the mascot changed while the
+    /// island morphs): no jump at that moment, and the target by the end.
+    #[test]
+    fn a_new_target_mid_morph_carries_on_without_a_jump() {
+        for (from, to, next, t) in [
+            (0.0, 1.0, 0.0, 0.5),
+            (1.0, 1.0, 0.0, 0.3),
+            (1.0, 0.0, 1.0, 0.8),
+            (0.2, 0.6, 1.0, 0.0),
+        ] {
+            let mut mix = PeekMix { from, to };
+            let now = mix.at(t);
+            mix.retarget_at(next, t);
+            assert!((mix.at(t) - now).abs() < 1e-5, "{from} {to} {next} {t}");
+            assert!((mix.at(1.0) - next).abs() < 1e-5);
+            // Between now and the end it stays between the two.
+            let later = mix.at((t + 1.0) / 2.0);
+            let (lo, hi) = (now.min(next), now.max(next));
+            assert!(later >= lo - 1e-5 && later <= hi + 1e-5);
+        }
+        // At the morph's end: the target, both ends.
+        let mut mix = PeekMix { from: 0.0, to: 1.0 };
+        mix.retarget_at(0.0, 1.0);
+        assert_eq!(mix, PeekMix::at_rest(0.0));
     }
 
     #[test]

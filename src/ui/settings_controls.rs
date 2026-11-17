@@ -43,7 +43,9 @@ use super::geometry::{
     shape_with_robot_sized, with_face_extra,
 };
 use super::icons::{Icon, IconSet};
-use super::notch_colour::{CLOSED_T, TOP_STOP, bottom, effective_style, face_fill, face_palette};
+use super::notch_colour::{
+    CLOSED_T, TOP_STOP, bottom, effective_style, face_fill, face_palette, gradient_palette,
+};
 use super::notch_fill::legibility;
 use super::robot::{Expr, Pose, RobotPainter, face_pose_in, face_unit};
 use super::settings_layout::{
@@ -1842,11 +1844,11 @@ impl Painter<'_> {
             unsafe { self.rt.DrawGeometry(&outline, self.brush, 2.0 * width, None) };
         }
         let robot = &self.gfx.robot;
-        let _ = robot.paint_face(self.rt, centre, scale, expr, &pose, look, self.alpha);
+        let _ = robot.paint_face(self.rt, self.brush, centre, scale, expr, &pose, look, self.alpha);
         let r = Rect { x: at.shape.x, y: at.shape.y, w: at.shape.w, h: at.shape.h };
         let unit = face_unit(scale);
         let pieces = super::cat_style::face_pieces(look.accessory, at.kind, r, centre, unit);
-        let _ = robot.paint_face_pieces(self.rt, &pieces, scale, &pose, look, self.alpha);
+        let _ = robot.paint_face_pieces(self.rt, self.brush, &pieces, scale, &pose, look, self.alpha);
         unsafe { self.rt.PopLayer() };
     }
 
@@ -1990,12 +1992,19 @@ fn preview_alpha(s: &Scene) -> f32 {
     }
 }
 
-/// The island's palette in the preview: on the face colour the text turns to
-/// whichever ink reads there.
+/// The island's palette in the preview (`fill_palette`).
 fn preview_palette(s: &Scene) -> Palette {
-    match preview_fill(s) {
-        PreviewFill::Face(fill) => face_palette(s.island, fill),
-        _ => s.island,
+    fill_palette(s.island, &preview_fill(s))
+}
+
+/// `island` on the preview's `fill`, as the notch draws it: on the face
+/// colour the text turns to whichever ink reads there; on Gradasi an accent
+/// under 3:1 on the bottom colour takes the text colour.
+fn fill_palette(island: Palette, fill: &PreviewFill) -> Palette {
+    match *fill {
+        PreviewFill::Plain => island,
+        PreviewFill::Gradient(bottom) => gradient_palette(island, bottom),
+        PreviewFill::Face(fill) => face_palette(island, fill),
     }
 }
 
@@ -2368,6 +2377,26 @@ pub(super) fn line_format(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The preview's Gradasi checks the accent on the bottom colour as the
+    /// notch does (`gradient_palette`); Polos keeps the palette as it is.
+    #[test]
+    fn the_gradasi_preview_uses_the_gradient_palette() {
+        let mut swapped = 0;
+        for &accent in Accent::ALL {
+            for &surface in theme::Surface::ALL {
+                for &tint in Accent::ALL {
+                    let island = theme::island(accent, surface);
+                    let b = bottom(island.surface, tint.rgb(), CLOSED_T, None);
+                    let got = fill_palette(island, &PreviewFill::Gradient(b));
+                    assert_eq!(got, gradient_palette(island, b), "{accent:?} {surface:?} {tint:?}");
+                    swapped += usize::from(got.accent != island.accent);
+                    assert_eq!(fill_palette(island, &PreviewFill::Plain), island);
+                }
+            }
+        }
+        assert!(swapped > 0, "some accent turns to the text colour on its bottom");
+    }
 
     fn r(x: f32, w: f32) -> Rect {
         Rect {

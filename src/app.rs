@@ -4641,12 +4641,14 @@ impl App {
 
     /// Aims the face mix at where it heads now (`peek_mix_target`) after the
     /// style or the mascot changed: at rest it is there at once, during a
-    /// morph it carries on toward it.
+    /// morph it carries on toward it from where it is now, without a jump.
     fn sync_peek_mix(&mut self, now: Instant) {
         let to = peek_mix_target(self.notch_style(), self.eyes, &self.drawn, self.peek_mix_at(now));
-        self.peek_mix.to = to;
-        if !self.anim.running {
-            self.peek_mix.from = to;
+        if self.anim.running {
+            let t = self.anim.curve.ease(self.anim.progress(now));
+            self.peek_mix.retarget_at(to, t);
+        } else {
+            self.peek_mix = PeekMix::at_rest(to);
         }
     }
 
