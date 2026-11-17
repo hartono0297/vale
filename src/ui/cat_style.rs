@@ -861,8 +861,11 @@ pub const FACE_HALF_W: f32 = 23.5;
 pub const FACE_HALF_H: f32 = 8.0;
 /// The same down with the bow tie under the eyes (it reaches 9.8).
 pub const FACE_HALF_H_TIE: f32 = 10.5;
-/// The hats tilt this many degrees (counter-clockwise), "miring di pojok".
-pub const FACE_HAT_TURN: f32 = -16.0;
+/// The eyes alone, every expression open and shut, in grid units from the
+/// eyes' centre (32, 40): 13 across each way and 7 up (the thinking eyes look
+/// up). What the hats' brims keep clear of.
+pub const FACE_EYES_HALF_W: f32 = 13.0;
+pub const FACE_EYES_UP: f32 = 7.0;
 /// The bow tie under the eyes: its size against the head's and how far
 /// below the eye line its knot sits, in grid units.
 const FACE_TIE_K: f32 = 0.55;
@@ -876,12 +879,19 @@ const FACE_CUP_IN: f32 = 3.5;
 const FACE_BAND_H: f32 = 2.4;
 const FACE_TAIL_H: f32 = 1.6;
 const FACE_SCARF_LIFT: f32 = 2.25;
-/// The corner pieces (bow, flower, hats) in the notch's left corner: the
-/// room kept from the face's box and from the notch's top and bottom (dip),
-/// and where their centre sits down the notch (a share of its height).
+/// The corner pieces (bow, flower) in the notch's left corner: the room kept
+/// from the face's box and from the notch's top and bottom (dip), and where
+/// their centre sits down the notch (a share of its height).
 const CORNER_GAP: f32 = 1.0;
 const CORNER_PAD: f32 = 3.0;
 const CORNER_DOWN: f32 = 0.45;
+/// The hats' brims ("pinggiran"): the room kept above the eyes' box (dip);
+/// how far past the face's box they reach across (dip, well inside the gap to
+/// the clock); the least the hanging detail (the nightcap's tip, the sailor's
+/// tails) shrinks to, against the face's unit, before it is left off.
+const RIM_GAP: f32 = 0.5;
+const RIM_PAST: f32 = 2.5;
+const RIM_DETAIL_MIN: f32 = 0.5;
 
 /// What a face piece moves with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -891,10 +901,13 @@ pub enum FaceAnchor {
     /// The face: nods with it (the bow tie).
     Face,
     /// The notch's left corner, left of the face: stays put (the bow, the
-    /// flower, the hats).
+    /// flower).
     Corner,
     /// The notch's ends and bottom edge: stays put (the earcups, the scarf).
     Notch,
+    /// The notch's top edge over the face: stays put (the hats' brims, the
+    /// rest of the hat past the screen edge).
+    Rim,
 }
 
 /// One piece of an accessory on the face notch: `piece` in its own units
@@ -1051,14 +1064,20 @@ fn inside_both(shape: Rect, x: f32, y: f32) -> bool {
 }
 
 /// Whether `accessory` is drawn on the face notch of a `kind` view: every one
-/// on the idle notch; on the narrow views (media, lyric, pomodoro, REC) only
-/// the glasses, the bow tie and the earcups (no room left of the face for the
-/// corner pieces, and the scarf would run under the text).
+/// on the idle notch; on the narrow views (media, lyric, pomodoro, REC) the
+/// glasses, the bow tie, the earcups and the hats' brims (they hug the top
+/// edge over the face), not the bow, the flower (no room left of the face
+/// for the corner) or the scarf (it would run under the text).
 pub fn face_wears(accessory: CatAccessory, kind: ShapeKind) -> bool {
     kind == ShapeKind::Idle
         || matches!(
             accessory,
-            CatAccessory::Glasses | CatAccessory::Bowtie | CatAccessory::Headphone
+            CatAccessory::Glasses
+                | CatAccessory::Bowtie
+                | CatAccessory::Headphone
+                | CatAccessory::Nightcap
+                | CatAccessory::Crown
+                | CatAccessory::Sailor
         )
 }
 
@@ -1071,8 +1090,9 @@ pub fn face_wears(accessory: CatAccessory, kind: ShapeKind) -> bool {
 /// - Bow tie: small, under the eyes.
 /// - Scarf: a band along the notch's bottom edge, its tail hanging from it.
 /// - Bow, flower: in the notch's left corner, left of the face.
-/// - Nightcap, crown, sailor cap: the whole hat, small, turned -16 degrees,
-///   in that corner ("miring di pojok").
+/// - Nightcap, crown, sailor cap: worn, the top past the screen edge, so
+///   only the brim shows along the notch's top edge over the face
+///   ("pinggiran"), with one detail hanging left of the eyes (`rim_pieces`).
 ///
 /// A piece under 3:1 against what lies under it gets a 1 dip edge
 /// (`FacePiece::edge`); the crown always has its darker gold one.
@@ -1199,39 +1219,213 @@ pub fn face_pieces(
             let parts: Vec<Piece> = head(accessory).collect();
             // The knot, the flower's heart: the last piece, over the rest.
             let last = parts.len().saturating_sub(1);
-            corner_pieces(parts, |i| i == last, 0.6, 0.0, shape, eyes, unit)
+            corner_pieces(parts, |i| i == last, 0.6, shape, eyes, unit)
         }
         CatAccessory::Nightcap | CatAccessory::Crown | CatAccessory::Sailor => {
-            let parts: Vec<Piece> = head(accessory).collect();
-            // The crown's band and the cap's ribbon sit on the hat.
-            let inner = |i: usize| match accessory {
-                CatAccessory::Crown => i == 1,
-                CatAccessory::Sailor => i == 1,
-                _ => false,
-            };
-            let mut v = corner_pieces(parts, inner, 0.8, FACE_HAT_TURN, shape, eyes, unit);
-            if accessory == CatAccessory::Crown {
-                for p in v.iter_mut().filter(|p| !p.inner) {
-                    p.fixed_edge = Some(CROWN_EDGE);
-                }
-            }
-            v
+            rim_pieces(accessory, shape, eyes, unit)
         }
     }
+}
+
+/// A face piece's box as drawn at rest (left, top, right, bottom), its
+/// edge included.
+fn drawn_box(p: &FacePiece) -> (f32, f32, f32, f32) {
+    p.corners((0.0, 0.0), 0.0).iter().fold(
+        (f32::MAX, f32::MAX, f32::MIN, f32::MIN),
+        |a, &(x, y)| (a.0.min(x), a.1.min(y), a.2.max(x), a.3.max(y)),
+    )
+}
+
+/// How far in from a notch end a box from `top` down to `bottom` (dip) must
+/// start for its corners to stay inside either style: the Pill's rounded top
+/// and bottom (half the height) and the Notch's rounded bottom
+/// (`corner_in`).
+fn side_in(shape: Rect, top: f32, bottom: f32) -> f32 {
+    let r = shape.h / 2.0;
+    let d = (top - shape.y).clamp(0.0, r);
+    let pill_top = r - (r * r - (r - d) * (r - d)).max(0.0).sqrt();
+    pill_top.max(corner_in(shape, shape.bottom() - bottom))
+}
+
+/// A hat (`hat`: the nightcap, the crown, the sailor cap) worn on the face
+/// notch, its top past the screen edge ("pinggiran", `notch-muka.html`'s
+/// `hatOnNotch(acc, 'rim')`): only its lower part shows, along the notch's
+/// top edge over the face, plus one detail hanging on the left. The mockup's
+/// sizes are in grid units of the face (`unit` dip each, the mockup's 1.28),
+/// centred on the eyes' x.
+///
+/// - The brim starts `FACE_EDGE_DIP` below the top edge (its edge, when it
+///   has one, stays inside the notch) and keeps `RIM_GAP` above the eyes'
+///   box (`FACE_EYES_UP`), so it is shallower than the mockup where the eyes
+///   sit high.
+/// - It reaches across at most `RIM_PAST` past the face's box, short of the
+///   clock, and each end comes in to clear both styles' rounded corners.
+/// - The detail (the nightcap's tip and pompom, the sailor's two tails)
+///   hangs from the brim's left end. It shrinks until it is inside the notch
+///   and left of the eyes' reach (`FACE_EYES_HALF_W` and the look's slide),
+///   and is left off below `RIM_DETAIL_MIN` of the face's unit.
+fn rim_pieces(hat: CatAccessory, shape: Rect, eyes: (f32, f32), unit: f32) -> Vec<FacePiece> {
+    use super::geometry::FACE_MARGIN;
+    use super::robot::{GLANCE_X, LOOK_EYE_DIP};
+    use Seg::{Close, Line as To, Move, Quad};
+    let u = unit;
+    // The mockup's depth and half width of the brim, in grid units.
+    let (depth, half) = match hat {
+        CatAccessory::Nightcap => (6.25, 28.125),
+        CatAccessory::Crown => (5.86, 19.53),
+        _ => (6.72, 27.34),
+    };
+    let y0 = shape.y + FACE_EDGE_DIP;
+    let eye_top = eyes.1 - FACE_EYES_UP * u;
+    // Grid units down, shallower where the eyes sit high.
+    let v = ((eye_top - RIM_GAP - FACE_EDGE_DIP - y0) / depth).min(u);
+    if !(v > 0.0 && u > 0.0) {
+        return Vec::new();
+    }
+    let bottom = y0 + depth * v + FACE_EDGE_DIP;
+    let in_x = side_in(shape, shape.y, bottom) + FACE_EDGE_DIP + 0.05;
+    let reach = (half * u).min(FACE_HALF_W * u + FACE_MARGIN + RIM_PAST);
+    let left = (eyes.0 - reach).max(shape.x + in_x);
+    let right = (eyes.0 + reach).min(shape.right() - in_x);
+    if right - left < 2.0 * u {
+        return Vec::new();
+    }
+    let at = move |piece: Piece, inner: bool| FacePiece {
+        piece,
+        origin: (0.0, 0.0),
+        k: 1.0,
+        turn: 0.0,
+        at: (0.0, 0.0),
+        anchor: FaceAnchor::Rim,
+        inner,
+        fixed_edge: None,
+        face: (eyes, unit),
+    };
+    let shape_of = |segs: Vec<Seg>, rgb: u32| Piece::Shape {
+        segs,
+        fill: fixed(rgb),
+        edge: None,
+    };
+    let rect = |l: f32, t: f32, r: f32, b: f32| vec![Move(l, t), To(r, t), To(r, b), To(l, b), Close];
+    // The brim, in paint order, and the detail at a scale `k` (dip per grid
+    // unit), drawn under the brim.
+    let (brim, detail): (Vec<FacePiece>, Box<dyn Fn(f32) -> Vec<FacePiece>>) = match hat {
+        CatAccessory::Nightcap => {
+            // Navy band, cream fur over its lower edge (1.5625 wider each way).
+            let (bl, br) = (left + 1.5625 * u, right - 1.5625 * u);
+            let fur = (y0 + 2.75 * v, y0 + 6.25 * v);
+            let mid = y0 + 1.75 * v;
+            let brim = vec![
+                at(shape_of(rect(bl, y0, br, y0 + 3.5 * v), NAVY), false),
+                at(
+                    shape_of(rrect(left, fur.0, right - left, fur.1 - fur.0, (fur.1 - fur.0) / 2.0), CREAM_PIECE),
+                    false,
+                ),
+            ];
+            // The tip: out from under the band's left end, flopping down the
+            // left of the face, no thicker than the band; the pompom on its end.
+            let detail = move |k: f32| {
+                let p = |x: f32, y: f32| (left + x * k, mid + y * k);
+                let (s, c1, m, c2, e) = (p(3.0, 0.0), p(-6.25, 1.37), p(-7.8, 9.96), p(-8.6, 14.65), p(-10.16, 17.0));
+                let pom = p(-10.16, 18.16);
+                let tip = Piece::Stroke {
+                    segs: vec![Move(s.0, s.1), Quad(c1.0, c1.1, m.0, m.1), Quad(c2.0, c2.1, e.0, e.1)],
+                    width: (4.7 * k).min(3.5 * v),
+                    tone: fixed(NAVY),
+                };
+                let pompom = Piece::Dot { cx: pom.0, cy: pom.1, r: 3.1 * k, tone: fixed(CREAM_PIECE) };
+                vec![at(tip, false), at(pompom, false)]
+            };
+            (brim, Box::new(detail))
+        }
+        CatAccessory::Crown => {
+            // Gold band, its lower edge zig-zagging down to points.
+            let (body, tip) = (y0 + 4.3 * v, y0 + 5.86 * v);
+            let teeth = ((right - left) / (7.8 * u)).round().max(2.0) as usize;
+            let w = (right - left) / teeth as f32;
+            let mut segs = vec![Move(left, y0), To(right, y0), To(right, body)];
+            for i in (0..teeth).rev() {
+                let x = left + w * i as f32;
+                segs.push(To(x + w / 2.0, tip));
+                segs.push(To(x, body));
+            }
+            segs.push(Close);
+            let mut band = at(shape_of(segs, GOLD), false);
+            band.fixed_edge = Some(CROWN_EDGE);
+            // A darker strip along the top and three jewels, on the band.
+            let c = (left + right) / 2.0;
+            let gap = (10.16 * u).min((right - left) / 2.0 - 2.5 * v).max(0.0);
+            let jy = y0 + 2.81 * v;
+            let jewel = |x: f32, r: f32, rgb: u32| at(Piece::Dot { cx: x, cy: jy, r: r * v, tone: fixed(rgb) }, true);
+            let brim = vec![
+                band,
+                at(shape_of(rect(left, y0, right, y0 + 1.56 * v), GOLD_DARK), true),
+                jewel(c - gap, 1.09, RASPBERRY),
+                jewel(c, 1.25, TIE_KNOT),
+                jewel(c + gap, 1.09, RASPBERRY),
+            ];
+            (brim, Box::new(|_: f32| Vec::new()))
+        }
+        _ => {
+            // White band with a navy ribbon stripe, a navy rim under it
+            // (2.34 wider each way).
+            let (wl, wr) = (left + 2.34 * u, right - 2.34 * u);
+            let (rim_t, rim_b) = (y0 + 4.69 * v, y0 + 6.72 * v);
+            let brim = vec![
+                at(shape_of(rect(wl, y0, wr, rim_t), SAILOR_WHITE), false),
+                at(shape_of(rect(wl, y0 + 2.03 * v, wr, y0 + 4.06 * v), NAVY), true),
+                at(shape_of(rrect(left, rim_t, right - left, rim_b - rim_t, (rim_b - rim_t) / 2.0), NAVY), false),
+            ];
+            // Two short ribbon tails from under the rim's left end.
+            let hide = rim_b - (rim_b - rim_t) / 2.0;
+            let detail = move |k: f32| {
+                // Each tail: its top corners (hidden under the rim) and the
+                // notched end hanging below it, in grid units from the rim's
+                // left end and bottom.
+                let tail = |top: (f32, f32), end: [(f32, f32); 3]| {
+                    let mut segs = vec![Move(left + top.0 * k, hide)];
+                    segs.extend(end.map(|(x, y)| To(left + x * k, rim_b + y * k)));
+                    segs.extend([To(left + top.1 * k, hide), Close]);
+                    at(shape_of(segs, NAVY), false)
+                };
+                vec![
+                    tail((4.75, 7.09), [(0.84, 8.13), (3.58, 7.34), (5.14, 9.69)]),
+                    tail((7.88, 10.61), [(6.7, 8.9), (9.05, 7.73), (10.61, 9.69)]),
+                ]
+            };
+            (brim, Box::new(detail))
+        }
+    };
+    // The eyes' reach: their box, slid by the look or the typing glance.
+    let eyes_left = eyes.0 - FACE_EYES_HALF_W * u - LOOK_EYE_DIP.max(GLANCE_X * u);
+    let fits = |ps: &[FacePiece]| {
+        ps.iter().all(|p| {
+            let (_, t, r, b) = drawn_box(p);
+            (r <= eyes_left - RIM_GAP || b <= eye_top - RIM_GAP)
+                && t >= shape.y
+                && p.corners((0.0, 0.0), 0.0).into_iter().all(|(x, y)| inside_both(shape, x, y))
+        })
+    };
+    let mut k = u;
+    let mut hanging = detail(k);
+    while !hanging.is_empty() && !fits(&hanging) {
+        k *= 0.95;
+        hanging = if k < RIM_DETAIL_MIN * u { Vec::new() } else { detail(k) };
+    }
+    // The detail comes out from under the brim.
+    hanging.into_iter().chain(brim).collect()
 }
 
 /// `parts` (in the head's grid) in the notch's left corner: between
 /// `FACE_SIDE` from the notch's left end and the face's box (`FACE_HALF_W`
 /// across from `eyes`, plus `geometry::FACE_MARGIN`), clear of the notch's
-/// top and bottom, turned `turn` degrees about their box's centre, at most
-/// `cap` grid units of the face per unit of theirs, and shrunk until every
-/// corner of their box clears both styles' rounded corners. `inner(i)`
-/// marks the details.
+/// top and bottom, at most `cap` grid units of the face per unit of theirs,
+/// and shrunk until every corner of their box clears both styles' rounded
+/// corners. `inner(i)` marks the details.
 fn corner_pieces(
     parts: Vec<Piece>,
     inner: impl Fn(usize) -> bool,
     cap: f32,
-    turn: f32,
     shape: Rect,
     eyes: (f32, f32),
     unit: f32,
@@ -1242,18 +1436,14 @@ fn corner_pieces(
         |a, p| (a.0.min(p.0), a.1.min(p.1), a.2.max(p.2), a.3.max(p.3)),
     );
     let (w, h) = (r - l, b - t);
-    let a = turn.to_radians();
-    let (c, s) = (a.cos().abs(), a.sin().abs());
-    // The turned box, and how much the edge adds to it on each side.
-    let (tw, th) = (w * c + h * s, w * s + h * c);
-    let edge = FACE_EDGE_DIP * (c + s);
+    let edge = FACE_EDGE_DIP;
     let left = shape.x + FACE_SIDE;
     let right = eyes.0 - FACE_HALF_W * unit - FACE_MARGIN - CORNER_GAP;
     let cy = shape.y + CORNER_DOWN * shape.h;
     let tall = 2.0 * (cy - shape.y).min(shape.bottom() - cy) - 2.0 * CORNER_PAD;
     let mut k = (cap * unit)
-        .min((right - left - 2.0 * edge) / tw)
-        .min((tall - 2.0 * edge) / th)
+        .min((right - left - 2.0 * edge) / w)
+        .min((tall - 2.0 * edge) / h)
         .max(0.0);
     let at = ((left + right) / 2.0, cy);
     let build = |k: f32| -> Vec<FacePiece> {
@@ -1264,7 +1454,7 @@ fn corner_pieces(
                 piece: piece.clone(),
                 origin: ((l + r) / 2.0, (t + b) / 2.0),
                 k,
-                turn,
+                turn: 0.0,
                 at,
                 anchor: FaceAnchor::Corner,
                 inner: inner(i),
@@ -1839,27 +2029,117 @@ mod tests {
     }
 
     #[test]
-    fn face_hats_are_whole_small_and_tilted_in_the_corner_left_of_the_face() {
+    fn the_face_eyes_box_holds_every_eye() {
+        use crate::ui::robot::{GLANCE_Y, face_marks};
+        // Every eye, open and shut, in every expression: 13 units across
+        // each way from the eye line's centre and 7 up (the thinking eyes
+        // look up). The typing eyes glance up only from lower down.
+        let mut widest = 0.0f32;
+        let mut highest = 0.0f32;
+        for expr in Expr::ALL {
+            for blink in [false, true] {
+                for m in face_marks(expr, blink).into_iter().filter(|m| m.k == 1.0) {
+                    let (l, t, r, _) = mark_bounds(&m.part);
+                    let up = if expr == Expr::Typing { GLANCE_Y } else { 0.0 };
+                    widest = widest.max(32.0 - (l + m.at.0)).max(r + m.at.0 - 32.0);
+                    highest = highest.max(40.0 - (t + m.at.1) + up);
+                }
+            }
+        }
+        assert!(widest <= FACE_EYES_HALF_W, "{widest}");
+        assert!(highest <= FACE_EYES_UP, "{highest}");
+        // Tight: the box is the eyes', not a guess.
+        assert!(FACE_EYES_HALF_W - widest < 0.5 && FACE_EYES_UP - highest < 0.5);
+    }
+
+    #[test]
+    fn face_hats_are_brims_along_the_top_edge_over_the_face() {
         use crate::config::Style;
         use crate::ui::geometry::NotchSize;
-        for hat in [CatAccessory::Nightcap, CatAccessory::Crown, CatAccessory::Sailor] {
-            let (shape, eyes, unit) = idle_face(Style::Notch, NotchSize::DEFAULT, hat);
-            let face = face_pieces(hat, ShapeKind::Idle, shape, eyes, unit);
-            // The whole hat: every piece the head wears.
-            assert_eq!(face.len(), pieces(Mascot::Cat, hat).len(), "{hat:?}");
-            for p in &face {
-                assert_eq!(p.turn, -16.0, "{hat:?}");
-                assert_eq!(p.anchor, FaceAnchor::Corner);
-                // Left of the face's box, in the notch's corner.
-                for (x, _) in p.corners((0.0, 0.0), 0.0) {
-                    assert!(x < eyes.0 - FACE_HALF_W * unit, "{hat:?} {p:?}");
-                    assert!(x > shape.x, "{hat:?} {p:?}");
-                }
-                // Small: a hat unit is under a grid unit of the face.
-                assert!(p.k < unit, "{hat:?}");
+        use crate::ui::robot::{GLANCE_X, LOOK_EYE_DIP};
+        let hats = [CatAccessory::Nightcap, CatAccessory::Crown, CatAccessory::Sailor];
+        // Worn in every view: they hug the top edge over the face. The bow and
+        // the flower stay in the idle notch's left corner.
+        for kind in [
+            ShapeKind::Idle,
+            ShapeKind::MediaCompact,
+            ShapeKind::MediaLyric,
+            ShapeKind::PomodoroCompact,
+            ShapeKind::RecordCompact,
+        ] {
+            for hat in hats {
+                assert!(face_wears(hat, kind), "{hat:?} {kind:?}");
             }
-            // Never on the narrow views.
-            assert!(face_pieces(hat, ShapeKind::MediaCompact, shape, eyes, unit).is_empty());
+            for corner in [CatAccessory::Bow, CatAccessory::Flower] {
+                assert_eq!(face_wears(corner, kind), kind == ShapeKind::Idle, "{corner:?} {kind:?}");
+            }
+        }
+        let look = CatLook::default();
+        for style in [Style::Pill, Style::Notch] {
+            for hat in hats {
+                let what = format!("{style:?} {hat:?}");
+                let (shape, eyes, unit) = idle_face(style, NotchSize::DEFAULT, hat);
+                let face = face_pieces(hat, ShapeKind::Idle, shape, eyes, unit);
+                assert!(!face.is_empty(), "{what}");
+                let eye_top = eyes.1 - FACE_EYES_UP * unit;
+                let eyes_left = eyes.0 - FACE_EYES_HALF_W * unit - LOOK_EYE_DIP.max(GLANCE_X * unit);
+                for p in &face {
+                    assert_eq!(p.anchor, FaceAnchor::Rim, "{what}");
+                    assert_eq!(p.turn, 0.0, "{what}");
+                    // Above the eyes, or (the hanging detail) left of them.
+                    let (_, _, r, b) = drawn_box(p);
+                    assert!(b <= eye_top || r <= eyes_left, "{what}: {p:?}");
+                }
+                // The brim: from the top edge, across both eyes, and not a
+                // hairline (the mockup's is 8 dip at this size).
+                let boxes: Vec<_> = face.iter().map(drawn_box).collect();
+                let (l, r) = boxes
+                    .iter()
+                    .filter(|b| (b.1 - shape.y).abs() < 1e-3)
+                    .fold((f32::MAX, f32::MIN), |a, b| (a.0.min(b.0), a.1.max(b.2)));
+                let depth = boxes.iter().filter(|b| b.3 <= eye_top).fold(0.0f32, |a, b| a.max(b.3 - shape.y));
+                assert!(l < eyes.0 - 8.0 * unit && r > eyes.0 + 8.0 * unit, "{what}: {l}..{r}");
+                assert!(depth >= 6.0, "{what}: {depth} dip deep");
+                // Its own colours and the signature detail, hanging left of
+                // the eyes.
+                let hangs = |p: &&FacePiece| {
+                    let (_, _, r, b) = drawn_box(p);
+                    b > eye_top && r <= eyes_left
+                };
+                let rgb = |p: &FacePiece| p.main_rgb(look);
+                match hat {
+                    CatAccessory::Nightcap => {
+                        assert!(face.iter().any(|p| matches!(p.piece, Piece::Shape { .. }) && rgb(p) == NAVY));
+                        assert!(face.iter().any(|p| matches!(p.piece, Piece::Shape { .. }) && rgb(p) == CREAM_PIECE));
+                        // The tip flops down on the left, ending in the pompom.
+                        let hanging: Vec<_> = face.iter().filter(hangs).collect();
+                        assert!(hanging.iter().any(|p| matches!(p.piece, Piece::Stroke { .. }) && rgb(p) == NAVY), "{what}");
+                        assert!(hanging.iter().any(|p| matches!(p.piece, Piece::Dot { .. }) && rgb(p) == CREAM_PIECE), "{what}");
+                    }
+                    CatAccessory::Crown => {
+                        let band: Vec<_> = face.iter().filter(|p| rgb(p) == GOLD).collect();
+                        assert_eq!(band.len(), 1, "{what}");
+                        assert_eq!(band[0].fixed_edge, Some(CROWN_EDGE));
+                        // The zig-zag lower edge: more than a box's corners.
+                        let Piece::Shape { segs, .. } = &band[0].piece else { panic!("{what}") };
+                        assert!(segs.len() >= 8, "{what}");
+                        // Three jewels on the band, left to right.
+                        let mut jewels: Vec<_> = face.iter().filter(|p| matches!(p.piece, Piece::Dot { .. })).collect();
+                        jewels.sort_by(|a, b| drawn_box(a).0.total_cmp(&drawn_box(b).0));
+                        assert_eq!(jewels.iter().map(|p| rgb(p)).collect::<Vec<_>>(), vec![RASPBERRY, TIE_KNOT, RASPBERRY]);
+                        assert!(jewels.iter().all(|p| p.inner));
+                    }
+                    CatAccessory::Sailor => {
+                        assert!(face.iter().any(|p| rgb(p) == SAILOR_WHITE && !p.inner));
+                        // The ribbon stripe sits on the white band; the rim under it.
+                        assert!(face.iter().any(|p| rgb(p) == NAVY && p.inner));
+                        assert!(face.iter().any(|p| rgb(p) == NAVY && !p.inner && !hangs(&p)));
+                        // Two ribbon tails on the left.
+                        assert_eq!(face.iter().filter(hangs).filter(|p| rgb(p) == NAVY).count(), 2, "{what}");
+                    }
+                    _ => unreachable!(),
+                }
+            }
         }
     }
 

@@ -10,7 +10,7 @@ Mockups (open in a browser, all interactive):
 - `docs/design/warna-notch.html`: five general directions (A to E) with live contrast.
 - `docs/design/warna-notch-maskot.html`: every mascot coat (11) in four colourings.
 - `docs/design/notch-muka.html`: Gradasi vs Jadi muka per expression and accessory,
-  the hats (the "miring di pojok" row is the chosen one), and the shrink to the eyes.
+  the hats (the "pinggiran" row is the chosen one), and the shrink to the eyes.
 
 ## Intent
 
@@ -83,9 +83,10 @@ From the first mockup (A to E):
 - **Jadi muka** came from the earlier "mata maskot" choice (the shrunk pill takes
   the face colour) grown to the whole notch; chosen as the second option.
 
-Hats in Jadi muka: "pinggiran" (brim along the top edge, the rest past the screen
-edge) vs **"miring di pojok"** (a small whole hat tilted left of the eyes).
-The owner picked **miring di pojok**.
+Hats in Jadi muka: **"pinggiran"** (brim along the top edge, the rest past the
+screen edge) vs "miring di pojok" (a small whole hat tilted left of the eyes).
+The owner first picked miring di pojok, then switched to **pinggiran** on
+2026-11-17: "yang topi di jadi muka, ganti deh mau pake cara jadi muka: pinggiran".
 
 ## The design
 
@@ -197,7 +198,7 @@ dark fill).
 | Dasi kupu-kupu | small, under the eyes |
 | Syal | a band along the notch's bottom edge with the short tail |
 | Pita, Bunga | the notch's left corner |
-| Topi tidur, Mahkota, Topi pelaut | **miring di pojok**: the whole hat, small, tilted about -16°, left of the eyes; the crown gets a darker gold edge (#9A6A12) so it reads on yellow |
+| Topi tidur, Mahkota, Topi pelaut | **pinggiran** (the owner switched from miring di pojok on 2026-11-17: "yang topi di jadi muka, ganti deh mau pake cara jadi muka: pinggiran"): the hat is worn, its top past the screen edge, so only its lower part shows along the notch's top edge over the face, in every view, clear of the eyes and left of the clock, plus one detail. Topi tidur: navy band, cream fur under it, the tip flopping down the left of the face to a cream pompom. Mahkota: gold band with a zig-zag lower edge, three jewels (raspberry, blue, raspberry) and a darker gold edge (#9A6A12) so it reads on yellow. Topi pelaut: white band with a navy ribbon stripe, a navy rim under it and two short navy ribbon tails on the left. The hanging detail shrinks, or is left off, where there is no room left of the eyes (the narrow views) |
 
 - Accessory contrast (call made after the builder check): a relocated piece whose
   main colour is under 3:1 against the face (for example the bow or scarf on a

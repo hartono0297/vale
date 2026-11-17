@@ -2627,19 +2627,25 @@ mod tests {
                         let pieces = face_pieces(accessory, kind, as_rect(s), centre, unit);
                         let worn = accessory != CatAccessory::None && face_wears(accessory, kind);
                         assert_eq!(!pieces.is_empty(), worn, "{name} {accessory:?}");
-                        // The narrow views wear only the glasses, the bow tie
-                        // and the earcups.
+                        // The narrow views wear the glasses, the bow tie, the
+                        // earcups and the hats' brims, never the corner pieces
+                        // or the scarf.
                         if kind != ShapeKind::Idle {
                             assert!(!matches!(
                                 accessory,
-                                CatAccessory::Scarf
-                                    | CatAccessory::Bow
-                                    | CatAccessory::Flower
-                                    | CatAccessory::Nightcap
-                                    | CatAccessory::Crown
-                                    | CatAccessory::Sailor
+                                CatAccessory::Scarf | CatAccessory::Bow | CatAccessory::Flower
                             ) || pieces.is_empty());
                         }
+                        // The hats are brims in every view.
+                        let hat = matches!(
+                            accessory,
+                            CatAccessory::Nightcap | CatAccessory::Crown | CatAccessory::Sailor
+                        );
+                        assert_eq!(
+                            hat,
+                            !pieces.is_empty() && pieces.iter().all(|p| p.anchor == FaceAnchor::Rim),
+                            "{style:?} {size:?} {name} {accessory:?}"
+                        );
                         // The corner pieces: left of the face, and still visible.
                         let face_left = centre.0 - FACE_HALF_W * unit;
                         let corner: Vec<(f32, f32)> = pieces
@@ -2696,6 +2702,101 @@ mod tests {
             }
         }
         assert!(checked > 200_000, "{checked} pieces checked");
+    }
+
+    /// The eyes' boxes as drawn ("open and shut" by `blink`), without what
+    /// sits beside them: `robot::face_boxes`' eye marks.
+    fn eye_boxes(
+        expr: crate::ui::robot::Expr,
+        blink: bool,
+        centre: (f32, f32),
+        scale: f32,
+        slide: (f32, f32),
+        nod: f32,
+    ) -> Vec<(f32, f32, f32, f32)> {
+        use crate::ui::robot::{face_marks, face_unit, mark_bounds};
+        let u = face_unit(scale);
+        let at = |x: f32, y: f32| (centre.0 + (x - 32.0) * u + slide.0, centre.1 + (y - 40.0) * u + nod + slide.1);
+        face_marks(expr, blink)
+            .into_iter()
+            // The eyes keep their places; what floats beside them is smaller.
+            .filter(|m| m.k == 1.0)
+            .map(|m| {
+                let (l, t, r, b) = mark_bounds(&m.part);
+                let ((l, t), (r, b)) = (at(l + m.at.0, t + m.at.1), at(r + m.at.0, b + m.at.1));
+                (l, t, r, b)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn face_hat_brims_hug_the_top_edge_and_never_cover_the_eyes() {
+        use crate::theme::CatAccessory;
+        use crate::ui::cat_style::{FaceAnchor, face_pieces};
+        use crate::ui::robot::{Expr, NOD_MAX_DIP, face_pose_in, face_slide, face_unit};
+        let vs = [-1.0, -0.5, 0.0, 0.5, 1.0];
+        let mut checked = 0usize;
+        for style in [Style::Pill, Style::Notch] {
+            for size in notch_sizes() {
+                for hat in [CatAccessory::Nightcap, CatAccessory::Crown, CatAccessory::Sailor] {
+                    let look = crate::ui::cat_style::CatLook { accessory: hat, ..Default::default() };
+                    for view in face_views(style, size, hat) {
+                        let FaceView { name, kind, shape: s, clock, area } = view;
+                        let scale = face_scale(area, hat);
+                        let unit = face_unit(scale);
+                        let centre = centre_of(area);
+                        let pieces = face_pieces(hat, kind, as_rect(s), centre, unit);
+                        let what = format!("{style:?} {size:?} {name} {hat:?}");
+                        assert!(!pieces.is_empty(), "{what}");
+                        let boxes: Vec<(f32, f32, f32, f32)> = pieces
+                            .iter()
+                            .map(|p| {
+                                assert_eq!(p.anchor, FaceAnchor::Rim, "{what}");
+                                p.corners((0.0, 0.0), 0.0).iter().fold(
+                                    (f32::MAX, f32::MAX, f32::MIN, f32::MIN),
+                                    |a, &(x, y)| (a.0.min(x), a.1.min(y), a.2.max(x), a.3.max(y)),
+                                )
+                            })
+                            .collect();
+                        // It hugs the notch's top edge...
+                        let top = boxes.iter().fold(f32::MAX, |a, b| a.min(b.1));
+                        assert!((top - s.y).abs() < 1e-3, "{what}: top {top} vs {}", s.y);
+                        // ...over the face: the brim (what starts at the top)
+                        // reaches past the face's centre and over the right eye.
+                        let (l, r) = boxes
+                            .iter()
+                            .filter(|b| (b.1 - s.y).abs() < 1e-3)
+                            .fold((f32::MAX, f32::MIN), |a, b| (a.0.min(b.0), a.1.max(b.2)));
+                        assert!(l < centre.0 && r > centre.0 + 8.0 * unit, "{what}: brim {l}..{r}");
+                        for expr in Expr::ALL {
+                            let vs: &[f32] = if expr.follows() { &vs } else { &[0.0] };
+                            for &v in vs {
+                                for nod in [0.0, NOD_MAX_DIP] {
+                                    let pose = face_pose_in(
+                                        style, s, clock, centre, scale, expr, look,
+                                        face_pose(expr, v, nod),
+                                    );
+                                    let slide = face_slide(&pose, scale);
+                                    for blink in [false, true] {
+                                        for e in eye_boxes(expr, blink, centre, scale, slide, pose.nod_dip) {
+                                            for b in &boxes {
+                                                let apart = b.2 <= e.0 || e.2 <= b.0 || b.3 <= e.1 || e.3 <= b.1;
+                                                assert!(
+                                                    apart,
+                                                    "{what} {expr:?} v {v} nod {nod} blink {blink}: {b:?} covers the eye {e:?}"
+                                                );
+                                                checked += 1;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 1_000_000, "{checked} pairs checked");
     }
 
     #[test]

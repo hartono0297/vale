@@ -3040,6 +3040,24 @@ mod tests {
     }
 
     #[test]
+    fn the_face_wears_its_hat_along_the_top_edge() {
+        use crate::theme::CatAccessory;
+        // On the 64 dip tall test notch the brims have their full depth: the
+        // nightcap's navy band from 1 dip down, its cream fur under it; the
+        // crown's gold.
+        let nightcap = CatLook { accessory: CatAccessory::Nightcap, ..CatLook::default() };
+        let (img, fill) = face_render(nightcap, Expr::Idle, Pose::default());
+        assert_eq!(face_px(&img, 64, 2), 0x2F4A7A);
+        assert_eq!(face_px(&img, 64, 7), 0xF4EDE4);
+        // The eyes stay clear, and below the brim it is the face.
+        assert_eq!(face_px(&img, 54, 32), nightcap.eye_rgb());
+        assert_eq!(face_px(&img, 64, 16), fill);
+        let crown = CatLook { accessory: CatAccessory::Crown, ..CatLook::default() };
+        let (img, _) = face_render(crown, Expr::Idle, Pose::default());
+        assert_eq!(face_px(&img, 60, 5), 0xF2B33D);
+    }
+
+    #[test]
     fn the_face_paints_marks_only() {
         let look = CatLook::default();
         // Idle: the left eye's pill (grid 24, 40) at 64 - 8 * 1.28 dip.
