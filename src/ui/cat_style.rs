@@ -33,6 +33,7 @@ use windows::Win32::Graphics::Direct2D::{
 use windows::core::{Interface, Result as WinResult};
 use windows_numerics::{Matrix3x2, Vector2};
 
+use super::geometry::{Rect, ShapeKind};
 use super::mascot;
 use super::robot::{CREAM, EAR_STROKE, Ears, Ink, RobotPainter, Seg, Shape, Side, path};
 use crate::config::Config;
@@ -809,8 +810,7 @@ fn accessory_piece_corners(
 }
 
 /// The box of one piece, stroke included (curves by their control points).
-#[cfg(test)]
-fn piece_bounds(piece: &Piece) -> (f32, f32, f32, f32) {
+pub(crate) fn piece_bounds(piece: &Piece) -> (f32, f32, f32, f32) {
     let mut b = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
     let mut add = |x: f32, y: f32, pad: f32| {
         b = (
@@ -848,14 +848,455 @@ fn piece_bounds(piece: &Piece) -> (f32, f32, f32, f32) {
     b
 }
 
+// ---- Accessories on the face notch ("Jadi muka") ----
+
+/// The crown's darker gold edge on a face, so it reads on a yellow one.
+pub const CROWN_EDGE: u32 = 0x9A6A12;
+/// The width of the edge a face piece gets, outside its outline, in dip.
+pub const FACE_EDGE_DIP: f32 = 1.0;
+/// Half the box, in grid units from the eyes' centre (32, 40), that the
+/// face's marks stay in: the heart beside the left eye reaches 23.3 across,
+/// the thought dots 7.7 up.
+pub const FACE_HALF_W: f32 = 23.5;
+pub const FACE_HALF_H: f32 = 8.0;
+/// The same down with the bow tie under the eyes (it reaches 9.8).
+pub const FACE_HALF_H_TIE: f32 = 10.5;
+/// The hats tilt this many degrees (counter-clockwise), "miring di pojok".
+pub const FACE_HAT_TURN: f32 = -16.0;
+/// The bow tie under the eyes: its size against the head's and how far
+/// below the eye line its knot sits, in grid units.
+const FACE_TIE_K: f32 = 0.55;
+const FACE_TIE_DY: f32 = 7.5;
+/// The earcups: their size against the head's, how far in from the notch's
+/// ends (dip).
+const FACE_CUP_K: f32 = 0.7;
+const FACE_CUP_IN: f32 = 3.5;
+/// The scarf on the notch's bottom edge: band and tail height (grid units)
+/// and the room kept under the tail (dip), past its edge.
+const FACE_BAND_H: f32 = 2.4;
+const FACE_TAIL_H: f32 = 1.6;
+const FACE_SCARF_LIFT: f32 = 2.25;
+/// The corner pieces (bow, flower, hats) in the notch's left corner: the
+/// room kept from the face's box and from the notch's top and bottom (dip),
+/// and where their centre sits down the notch (a share of its height).
+const CORNER_GAP: f32 = 1.0;
+const CORNER_PAD: f32 = 3.0;
+const CORNER_DOWN: f32 = 0.45;
+
+/// What a face piece moves with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FaceAnchor {
+    /// The eyes: slides with the look and nods with the face (the glasses).
+    Eyes,
+    /// The face: nods with it (the bow tie).
+    Face,
+    /// The notch's left corner, left of the face: stays put (the bow, the
+    /// flower, the hats).
+    Corner,
+    /// The notch's ends and bottom edge: stays put (the earcups, the scarf).
+    Notch,
+}
+
+/// One piece of an accessory on the face notch: `piece` in its own units
+/// (the head's grid, or dip), placed by moving `origin` to the start,
+/// scaling by `k` (dip per unit), turning `turn` degrees clockwise and
+/// moving to `at` (dip).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FacePiece {
+    pub piece: Piece,
+    pub origin: (f32, f32),
+    pub k: f32,
+    pub turn: f32,
+    pub at: (f32, f32),
+    pub anchor: FaceAnchor,
+    /// A detail drawn over another piece (a knot, a band, an inner cup): it
+    /// sits on the accessory, not on the face, so it never gets an edge.
+    pub inner: bool,
+    /// An edge it always has (the crown's darker gold).
+    pub fixed_edge: Option<u32>,
+    /// The face it is worn on: the eyes' centre (dip) and dip per grid unit,
+    /// to know what lies under it (the calico patches).
+    pub face: ((f32, f32), f32),
+}
+
+impl FacePiece {
+    /// Its units to dip, slid by `slide` when on the eyes and nodded `nod`
+    /// down when on the eyes or the face.
+    pub fn place(&self, slide: (f32, f32), nod: f32) -> Matrix3x2 {
+        let (sx, sy) = if self.anchor == FaceAnchor::Eyes {
+            slide
+        } else {
+            (0.0, 0.0)
+        };
+        let nod = if matches!(self.anchor, FaceAnchor::Eyes | FaceAnchor::Face) {
+            nod
+        } else {
+            0.0
+        };
+        Matrix3x2::translation(-self.origin.0, -self.origin.1)
+            * Matrix3x2::scale(self.k, self.k)
+            * Matrix3x2::rotation_around(self.turn, Vector2::new(0.0, 0.0))
+            * Matrix3x2::translation(self.at.0 + sx, self.at.1 + sy + nod)
+    }
+
+    /// The four corners of its box as drawn, in dip, the edge included
+    /// (whether or not it gets one): a turned piece's box turns with it.
+    pub fn corners(&self, slide: (f32, f32), nod: f32) -> [(f32, f32); 4] {
+        let (l, t, r, b) = piece_bounds(&self.piece);
+        let g = if self.k > 0.0 { FACE_EDGE_DIP / self.k } else { 0.0 };
+        let m = self.place(slide, nod);
+        [(l - g, t - g), (r + g, t - g), (r + g, b + g), (l - g, b + g)]
+            .map(|(x, y)| (x * m.M11 + y * m.M21 + m.M31, x * m.M12 + y * m.M22 + m.M32))
+    }
+
+    /// Its colour on `look`.
+    pub fn main_rgb(&self, look: CatLook) -> u32 {
+        let tone = match &self.piece {
+            Piece::Shape { fill, .. } => *fill,
+            Piece::Stroke { tone, .. } | Piece::Dot { tone, .. } | Piece::Ring { tone, .. } => {
+                *tone
+            }
+        };
+        match tone {
+            Tone::Fixed(rgb) => rgb,
+            Tone::Frame => look.frame_rgb(),
+        }
+    }
+
+    /// The colours under it on `look`'s face notch: the face's fill and each
+    /// calico patch its box (at rest) reaches.
+    pub fn colours_under(&self, look: CatLook) -> Vec<u32> {
+        use super::peek_face::PeekMark;
+        use super::robot::{FaceBoxKind, face_coat};
+        let corners = self.corners((0.0, 0.0), 0.0);
+        let (l, t, r, b) = corners.iter().fold(
+            (f32::MAX, f32::MAX, f32::MIN, f32::MIN),
+            |a, &(x, y)| (a.0.min(x), a.1.min(y), a.2.max(x), a.3.max(y)),
+        );
+        let ((ex, ey), u) = self.face;
+        let mut under = vec![super::peek_face::peek_face(look, 0).fill];
+        for (mark, kind) in face_coat(look) {
+            if let (PeekMark::Dot { cx, cy, r: rad, rgb }, FaceBoxKind::Patch) = (mark, kind) {
+                let (px, py, pr) = (ex + (cx - 32.0) * u, ey + (cy - 40.0) * u, rad * u);
+                let (nx, ny) = (px.clamp(l, r), py.clamp(t, b));
+                if (nx - px).powi(2) + (ny - py).powi(2) < pr * pr {
+                    under.push(rgb);
+                }
+            }
+        }
+        under
+    }
+
+    /// The edge it gets on `look`'s face notch: its own; else, where its
+    /// colour is under 3:1 against anything under it (`colours_under`), a
+    /// 1 dip edge in the face's eye colour (cream where that would read less
+    /// on what is under it); never on a detail.
+    pub fn edge(&self, look: CatLook) -> Option<u32> {
+        use super::notch_colour::{CREAM as CREAM_TEXT, contrast};
+        if self.inner {
+            return None;
+        }
+        if self.fixed_edge.is_some() {
+            return self.fixed_edge;
+        }
+        let under = self.colours_under(look);
+        let worst = |c: u32| under.iter().map(|&u| contrast(c, u)).fold(f32::MAX, f32::min);
+        if worst(self.main_rgb(look)) >= 3.0 {
+            return None;
+        }
+        let eye = look.eye_rgb();
+        Some(if worst(eye) >= 3.0 || worst(eye) >= worst(CREAM_TEXT) {
+            eye
+        } else {
+            CREAM_TEXT
+        })
+    }
+}
+
+/// Half the box (across, down), in grid units from the eyes' centre, that
+/// the face's marks and the pieces of `accessory` worn on the face (the
+/// glasses, the bow tie) stay in, edges aside (`geometry::face_scale` keeps
+/// room for those). The corner pieces sit outside it, in the notch's corner,
+/// so they never make the face smaller.
+pub fn face_half(accessory: CatAccessory) -> (f32, f32) {
+    match accessory {
+        CatAccessory::Bowtie => (FACE_HALF_W, FACE_HALF_H_TIE),
+        _ => (FACE_HALF_W, FACE_HALF_H),
+    }
+}
+
+/// How far in from a notch end a box `depth` dip above its bottom must
+/// start to clear the rounded bottom corner, for either style (the Notch's
+/// 16 dip corner or the Pill's half height, whichever cuts more).
+fn corner_in(shape: Rect, depth: f32) -> f32 {
+    let r = (shape.h / 2.0).max(super::geometry::COMPACT_INSET);
+    let d = depth.clamp(0.0, r);
+    r - (r * r - (r - d) * (r - d)).max(0.0).sqrt()
+}
+
+/// A point inside `shape` as either style rounds it (the Pill's half-height
+/// ends, the Notch's 16 dip bottom corners).
+fn inside_both(shape: Rect, x: f32, y: f32) -> bool {
+    use super::geometry::{COMPACT_INSET, ShapeRect, shape_contains};
+    use crate::config::Style;
+    let s = |radius| ShapeRect {
+        x: shape.x,
+        y: shape.y,
+        w: shape.w,
+        h: shape.h,
+        radius,
+    };
+    shape_contains(Style::Pill, s(shape.h / 2.0), x, y)
+        && shape_contains(Style::Notch, s(COMPACT_INSET), x, y)
+}
+
+/// Whether `accessory` is drawn on the face notch of a `kind` view: every one
+/// on the idle notch; on the narrow views (media, lyric, pomodoro, REC) only
+/// the glasses, the bow tie and the earcups (no room left of the face for the
+/// corner pieces, and the scarf would run under the text).
+pub fn face_wears(accessory: CatAccessory, kind: ShapeKind) -> bool {
+    kind == ShapeKind::Idle
+        || matches!(
+            accessory,
+            CatAccessory::Glasses | CatAccessory::Bowtie | CatAccessory::Headphone
+        )
+}
+
+/// `accessory` on the face notch of a `kind` view, in paint order: `shape`
+/// is the notch, `eyes` the eyes' centre (dip, before the look), `unit` dip
+/// per grid unit (`robot::face_unit`). Empty where `face_wears` says no.
+///
+/// - Glasses: on the eyes, sliding with the look.
+/// - Headphone: two earcups at the notch's left and right ends (no band).
+/// - Bow tie: small, under the eyes.
+/// - Scarf: a band along the notch's bottom edge, its tail hanging from it.
+/// - Bow, flower: in the notch's left corner, left of the face.
+/// - Nightcap, crown, sailor cap: the whole hat, small, turned -16 degrees,
+///   in that corner ("miring di pojok").
+///
+/// A piece under 3:1 against what lies under it gets a 1 dip edge
+/// (`FacePiece::edge`); the crown always has its darker gold one.
+pub fn face_pieces(
+    accessory: CatAccessory,
+    kind: ShapeKind,
+    shape: Rect,
+    eyes: (f32, f32),
+    unit: f32,
+) -> Vec<FacePiece> {
+    if !face_wears(accessory, kind) {
+        return Vec::new();
+    }
+    let make = |piece: Piece, origin, k, turn, at, anchor, inner| FacePiece {
+        piece,
+        origin,
+        k,
+        turn,
+        at,
+        anchor,
+        inner,
+        fixed_edge: None,
+        face: (eyes, unit),
+    };
+    let head = |a: CatAccessory| pieces(Mascot::Cat, a).into_iter().map(|(_, p)| p);
+    match accessory {
+        CatAccessory::None => Vec::new(),
+        CatAccessory::Glasses => head(accessory)
+            .map(|p| make(p, (32.0, 40.0), unit, 0.0, eyes, FaceAnchor::Eyes, false))
+            .collect(),
+        CatAccessory::Bowtie => {
+            let at = (eyes.0, eyes.1 + FACE_TIE_DY * unit);
+            head(accessory)
+                .map(|p| {
+                    let knot = matches!(p, Piece::Dot { .. });
+                    make(p, anchors(Mascot::Cat).tie, FACE_TIE_K * unit, 0.0, at, FaceAnchor::Face, knot)
+                })
+                .collect()
+        }
+        CatAccessory::Headphone => {
+            let k = FACE_CUP_K * unit;
+            let mid = shape.y + shape.h / 2.0;
+            let cup = |origin: (f32, f32), at: (f32, f32)| {
+                [
+                    make(
+                        Piece::Shape {
+                            segs: rrect(0.0, 0.0, 7.0, 12.0, 3.0),
+                            fill: fixed(CREAM_PIECE),
+                            edge: None,
+                        },
+                        origin,
+                        k,
+                        0.0,
+                        at,
+                        FaceAnchor::Notch,
+                        false,
+                    ),
+                    make(
+                        Piece::Shape {
+                            segs: rrect(1.6, 2.5, 3.8, 7.0, 1.6),
+                            fill: fixed(NAVY),
+                            edge: None,
+                        },
+                        origin,
+                        k,
+                        0.0,
+                        at,
+                        FaceAnchor::Notch,
+                        true,
+                    ),
+                ]
+            };
+            let mut v = cup((0.0, 6.0), (shape.x + FACE_CUP_IN, mid)).to_vec();
+            v.extend(cup((7.0, 6.0), (shape.right() - FACE_CUP_IN, mid)));
+            v
+        }
+        CatAccessory::Scarf => {
+            use Seg::{Close, Line as To, Move};
+            let (band_h, tail_h) = (FACE_BAND_H * unit, FACE_TAIL_H * unit);
+            let bottom = shape.bottom() - FACE_SCARF_LIFT;
+            let (band_t, band_b) = (bottom - tail_h - band_h, bottom - tail_h);
+            // Each box, its edge included, clears the rounded bottom corners.
+            let band_in = corner_in(shape, shape.bottom() - band_b - FACE_EDGE_DIP)
+                + FACE_EDGE_DIP
+                + 0.25;
+            let tail_x = shape.x
+                + corner_in(shape, shape.bottom() - bottom - FACE_EDGE_DIP)
+                + FACE_EDGE_DIP
+                + 0.25;
+            let tail_w = 2.6 * unit;
+            let band = rrect(
+                shape.x + band_in,
+                band_t,
+                (shape.w - 2.0 * band_in).max(0.0),
+                band_h,
+                band_h / 2.0,
+            );
+            let tail = vec![
+                Move(tail_x, band_t + band_h / 2.0),
+                To(tail_x + tail_w, band_t + band_h / 2.0),
+                To(tail_x + tail_w + 0.6 * unit, bottom),
+                To(tail_x + 0.6 * unit, bottom),
+                Close,
+            ];
+            let at_notch = |segs, rgb| {
+                make(
+                    Piece::Shape {
+                        segs,
+                        fill: fixed(rgb),
+                        edge: None,
+                    },
+                    (0.0, 0.0),
+                    1.0,
+                    0.0,
+                    (0.0, 0.0),
+                    FaceAnchor::Notch,
+                    false,
+                )
+            };
+            // The tail first: it comes out from under the band.
+            vec![at_notch(tail, MUSTARD_DARK), at_notch(band, MUSTARD)]
+        }
+        CatAccessory::Bow | CatAccessory::Flower => {
+            let parts: Vec<Piece> = head(accessory).collect();
+            // The knot, the flower's heart: the last piece, over the rest.
+            let last = parts.len().saturating_sub(1);
+            corner_pieces(parts, |i| i == last, 0.6, 0.0, shape, eyes, unit)
+        }
+        CatAccessory::Nightcap | CatAccessory::Crown | CatAccessory::Sailor => {
+            let parts: Vec<Piece> = head(accessory).collect();
+            // The crown's band and the cap's ribbon sit on the hat.
+            let inner = |i: usize| match accessory {
+                CatAccessory::Crown => i == 1,
+                CatAccessory::Sailor => i == 1,
+                _ => false,
+            };
+            let mut v = corner_pieces(parts, inner, 0.8, FACE_HAT_TURN, shape, eyes, unit);
+            if accessory == CatAccessory::Crown {
+                for p in v.iter_mut().filter(|p| !p.inner) {
+                    p.fixed_edge = Some(CROWN_EDGE);
+                }
+            }
+            v
+        }
+    }
+}
+
+/// `parts` (in the head's grid) in the notch's left corner: between
+/// `FACE_SIDE` from the notch's left end and the face's box (`FACE_HALF_W`
+/// across from `eyes`, plus `geometry::FACE_MARGIN`), clear of the notch's
+/// top and bottom, turned `turn` degrees about their box's centre, at most
+/// `cap` grid units of the face per unit of theirs, and shrunk until every
+/// corner of their box clears both styles' rounded corners. `inner(i)`
+/// marks the details.
+fn corner_pieces(
+    parts: Vec<Piece>,
+    inner: impl Fn(usize) -> bool,
+    cap: f32,
+    turn: f32,
+    shape: Rect,
+    eyes: (f32, f32),
+    unit: f32,
+) -> Vec<FacePiece> {
+    use super::geometry::{FACE_MARGIN, FACE_SIDE};
+    let (l, t, r, b) = parts.iter().map(piece_bounds).fold(
+        (f32::MAX, f32::MAX, f32::MIN, f32::MIN),
+        |a, p| (a.0.min(p.0), a.1.min(p.1), a.2.max(p.2), a.3.max(p.3)),
+    );
+    let (w, h) = (r - l, b - t);
+    let a = turn.to_radians();
+    let (c, s) = (a.cos().abs(), a.sin().abs());
+    // The turned box, and how much the edge adds to it on each side.
+    let (tw, th) = (w * c + h * s, w * s + h * c);
+    let edge = FACE_EDGE_DIP * (c + s);
+    let left = shape.x + FACE_SIDE;
+    let right = eyes.0 - FACE_HALF_W * unit - FACE_MARGIN - CORNER_GAP;
+    let cy = shape.y + CORNER_DOWN * shape.h;
+    let tall = 2.0 * (cy - shape.y).min(shape.bottom() - cy) - 2.0 * CORNER_PAD;
+    let mut k = (cap * unit)
+        .min((right - left - 2.0 * edge) / tw)
+        .min((tall - 2.0 * edge) / th)
+        .max(0.0);
+    let at = ((left + right) / 2.0, cy);
+    let build = |k: f32| -> Vec<FacePiece> {
+        parts
+            .iter()
+            .enumerate()
+            .map(|(i, piece)| FacePiece {
+                piece: piece.clone(),
+                origin: ((l + r) / 2.0, (t + b) / 2.0),
+                k,
+                turn,
+                at,
+                anchor: FaceAnchor::Corner,
+                inner: inner(i),
+                fixed_edge: None,
+                face: (eyes, unit),
+            })
+            .collect()
+    };
+    let clear = |v: &[FacePiece]| {
+        v.iter().all(|p| {
+            p.corners((0.0, 0.0), 0.0)
+                .into_iter()
+                .all(|(x, y)| inside_both(shape, x, y))
+        })
+    };
+    for _ in 0..64 {
+        if k <= 0.0 || clear(&build(k)) {
+            break;
+        }
+        k *= 0.95;
+    }
+    build(k)
+}
+
 // ---- Calico patches (grid units) ----
 
 /// The orange circle on the head, top-left: the site's circle cx 60 cy 118
 /// r 62 on the 256 grid, mapped to the 64 grid (`x = sx / 4.6 + 4.17391`,
 /// `y = sy / 4.6 + 2.91304`).
-const ORANGE_CIRCLE: (f32, f32, f32) = (17.217, 28.565, 13.478);
+pub(crate) const ORANGE_CIRCLE: (f32, f32, f32) = (17.217, 28.565, 13.478);
 /// The dark circle on the head, bottom-right: the site's cx 214 cy 226 r 46.
-const DARK_CIRCLE: (f32, f32, f32) = (50.696, 52.043, 10.0);
+pub(crate) const DARK_CIRCLE: (f32, f32, f32) = (50.696, 52.043, 10.0);
 
 fn missing_geometry() -> windows::core::Error {
     windows::core::Error::from(windows::Win32::Foundation::E_FAIL)
@@ -1082,6 +1523,106 @@ impl RobotPainter {
     }
 }
 
+/// How many face piece paths are kept: every accessory's pieces at a few
+/// notch sizes. Past it the cache starts over.
+const FACE_PATHS_KEPT: usize = 48;
+
+impl RobotPainter {
+    /// The path of a face piece's `segs`, built the first time and kept, as
+    /// `extras` keeps the head's.
+    fn face_path(&self, segs: &[Seg]) -> WinResult<ID2D1PathGeometry> {
+        if let Some((_, g)) = self.face_paths.borrow().iter().find(|(s, _)| s == segs) {
+            return Ok(g.clone());
+        }
+        let g = path(&self.factory, segs)?;
+        let mut kept = self.face_paths.borrow_mut();
+        if kept.len() >= FACE_PATHS_KEPT {
+            kept.clear();
+        }
+        kept.push((segs.to_vec(), g.clone()));
+        Ok(g)
+    }
+
+    /// Paints `pieces` (`face_pieces`) on the face notch for `look`: the ones
+    /// on the eyes slid by the face's look (`robot::face_slide` of `pose` at
+    /// `scale`, cut back with `robot::face_pose_in`), all but the notch's
+    /// nodded with the face. Each piece's edge (`FacePiece::edge`) is drawn
+    /// under it, `FACE_EDGE_DIP` past its outline. The render target's
+    /// transform is restored.
+    pub fn paint_face_pieces(
+        &self,
+        rt: &ID2D1RenderTarget,
+        pieces: &[FacePiece],
+        scale: f32,
+        pose: &super::robot::Pose,
+        look: CatLook,
+        alpha: f32,
+    ) -> WinResult<()> {
+        if pieces.is_empty() {
+            return Ok(());
+        }
+        let slide = super::robot::face_slide(pose, scale);
+        unsafe {
+            let brush = rt.CreateSolidColorBrush(&solid(0, alpha), None)?;
+            let mut previous = Matrix3x2::default();
+            rt.GetTransform(&mut previous);
+            for p in pieces {
+                if p.k <= 0.0 {
+                    continue;
+                }
+                rt.SetTransform(&(p.place(slide, pose.nod_dip) * previous));
+                // The edge in local units: twice the dip width, half of it
+                // under the piece.
+                let grow = 2.0 * FACE_EDGE_DIP / p.k;
+                let edge = p.edge(look);
+                let main = solid(p.main_rgb(look), alpha);
+                match &p.piece {
+                    Piece::Shape { segs, edge: own, .. } => {
+                        let g = self.face_path(segs)?;
+                        let own = own.unwrap_or(0.0);
+                        if let Some(rgb) = edge {
+                            brush.SetColor(&solid(rgb, alpha));
+                            rt.DrawGeometry(&g, &brush, own + grow, &self.round);
+                        }
+                        brush.SetColor(&main);
+                        rt.FillGeometry(&g, &brush, None);
+                        if own > 0.0 {
+                            rt.DrawGeometry(&g, &brush, own, &self.round);
+                        }
+                    }
+                    Piece::Stroke { segs, width, .. } => {
+                        let g = self.face_path(segs)?;
+                        if let Some(rgb) = edge {
+                            brush.SetColor(&solid(rgb, alpha));
+                            rt.DrawGeometry(&g, &brush, width + grow, &self.round);
+                        }
+                        brush.SetColor(&main);
+                        rt.DrawGeometry(&g, &brush, *width, &self.round);
+                    }
+                    Piece::Dot { cx, cy, r, .. } => {
+                        if let Some(rgb) = edge {
+                            brush.SetColor(&solid(rgb, alpha));
+                            rt.FillEllipse(&circle(*cx, *cy, r + grow / 2.0), &brush);
+                        }
+                        brush.SetColor(&main);
+                        rt.FillEllipse(&circle(*cx, *cy, *r), &brush);
+                    }
+                    Piece::Ring { cx, cy, r, width, .. } => {
+                        if let Some(rgb) = edge {
+                            brush.SetColor(&solid(rgb, alpha));
+                            rt.DrawEllipse(&circle(*cx, *cy, *r), &brush, width + grow, &self.round);
+                        }
+                        brush.SetColor(&main);
+                        rt.DrawEllipse(&circle(*cx, *cy, *r), &brush, *width, &self.round);
+                    }
+                }
+            }
+            rt.SetTransform(&previous);
+        }
+        Ok(())
+    }
+}
+
 fn circle(cx: f32, cy: f32, r: f32) -> windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE {
     windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE {
         point: Vector2::new(cx, cy),
@@ -1171,6 +1712,154 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// Every coat of every mascot, wearing `accessory`.
+    fn every_coat(accessory: CatAccessory) -> Vec<CatLook> {
+        let mut v = Vec::new();
+        for &mascot in Mascot::ALL {
+            for coat in crate::theme::Coat::all_of(mascot) {
+                let mut l = CatLook { mascot, accessory, ..CatLook::default() };
+                match coat {
+                    crate::theme::Coat::Cat(x) => l.color = x,
+                    crate::theme::Coat::Falk(x) => l.falk = x,
+                    crate::theme::Coat::Octopus(x) => l.octopus = x,
+                }
+                v.push(l);
+            }
+        }
+        v
+    }
+
+    /// The idle face notch at `size` in `style` wearing `accessory`: the
+    /// shape, the eyes' centre and the face's grid unit.
+    fn idle_face(
+        style: crate::config::Style,
+        size: crate::ui::geometry::NotchSize,
+        accessory: CatAccessory,
+    ) -> (Rect, (f32, f32), f32) {
+        use crate::ui::geometry::{face_idle_layout, face_scale, shape_with_robot_sized};
+        use crate::ui::robot::face_unit;
+        let s = shape_with_robot_sized(style, size, ShapeKind::Idle, true);
+        let (area, _) = face_idle_layout(s, true, accessory);
+        let shape = Rect { x: s.x, y: s.y, w: s.w, h: s.h };
+        let eyes = (area.x + area.w / 2.0, area.y + area.h / 2.0);
+        (shape, eyes, face_unit(face_scale(area, accessory)))
+    }
+
+    #[test]
+    fn face_pieces_hold_3_to_1_or_have_an_edge() {
+        use crate::config::Style;
+        use crate::ui::geometry::NotchSize;
+        use crate::ui::notch_colour::{CREAM as CREAM_TEXT, contrast};
+        let sizes = [
+            NotchSize::DEFAULT,
+            NotchSize::from_px(160, 28),
+            NotchSize::from_px(300, 44),
+        ];
+        let mut over_a_patch = 0;
+        for &accessory in CatAccessory::ALL {
+            for size in sizes {
+                let (shape, eyes, unit) = idle_face(Style::Notch, size, accessory);
+                let pieces = face_pieces(accessory, ShapeKind::Idle, shape, eyes, unit);
+                assert_eq!(pieces.is_empty(), accessory == CatAccessory::None, "{accessory:?}");
+                let coats = every_coat(accessory);
+                assert_eq!(coats.len(), 11);
+                for look in coats {
+                    let outline: Vec<&FacePiece> = pieces.iter().filter(|p| !p.inner).collect();
+                    assert!(accessory == CatAccessory::None || !outline.is_empty());
+                    for p in outline {
+                        let main = p.main_rgb(look);
+                        let edge = p.edge(look);
+                        // Everything under it: the face and any calico patch.
+                        let under = p.colours_under(look);
+                        let low = under.iter().any(|&c| contrast(main, c) < 3.0);
+                        assert!(
+                            !low || edge.is_some(),
+                            "{accessory:?} {look:?}: #{main:06X} on {under:06X?} has no edge"
+                        );
+                        if under.len() > 1 && low {
+                            over_a_patch += 1;
+                        }
+                        // The contrast edge is the face's eye colour where that
+                        // reads on everything under it, else cream.
+                        if let (Some(e), None) = (edge, p.fixed_edge) {
+                            let reads = under.iter().all(|&c| contrast(look.eye_rgb(), c) >= 3.0);
+                            if reads {
+                                assert_eq!(e, look.eye_rgb());
+                            } else {
+                                assert!(e == look.eye_rgb() || e == CREAM_TEXT);
+                            }
+                        }
+                        if accessory == CatAccessory::Crown && matches!(p.piece, Piece::Shape { .. }) {
+                            assert_eq!(edge, Some(CROWN_EDGE), "{look:?}");
+                        }
+                    }
+                }
+            }
+        }
+        // Some piece really sits on a calico patch it would melt into.
+        assert!(over_a_patch > 0);
+        assert_eq!(CROWN_EDGE, 0x9A6A12);
+    }
+
+    #[test]
+    fn a_piece_on_a_calico_patch_is_edged_against_the_patch() {
+        use crate::ui::notch_colour::contrast;
+        // The raspberry bow straight on the orange patch (top-left of the
+        // eyes) of a Calico face: cream under the rest of it reads, the
+        // patch does not.
+        let calico = CatLook {
+            color: CatColor::Calico,
+            accessory: CatAccessory::Bow,
+            ..CatLook::default()
+        };
+        let (eyes, unit) = ((100.0, 17.0), 1.28);
+        let (cx, cy, _) = ORANGE_CIRCLE;
+        let bow = FacePiece {
+            piece: Piece::Dot { cx: 0.0, cy: 0.0, r: 2.0, tone: fixed(RASPBERRY) },
+            origin: (0.0, 0.0),
+            k: 1.0,
+            turn: 0.0,
+            at: (eyes.0 + (cx - 32.0) * unit, eyes.1 + (cy - 40.0) * unit),
+            anchor: FaceAnchor::Corner,
+            inner: false,
+            fixed_edge: None,
+            face: (eyes, unit),
+        };
+        assert!(contrast(RASPBERRY, CALICO_CREAM) >= 3.0);
+        assert!(contrast(RASPBERRY, PATCH_ORANGE) < 3.0);
+        assert!(bow.colours_under(calico).contains(&PATCH_ORANGE));
+        assert!(bow.edge(calico).is_some());
+        // The same piece away from the patch needs none.
+        let away = FacePiece { at: (eyes.0, eyes.1 + 3.0 * unit), ..bow };
+        assert_eq!(away.colours_under(calico), vec![CALICO_CREAM]);
+        assert_eq!(away.edge(calico), None);
+    }
+
+    #[test]
+    fn face_hats_are_whole_small_and_tilted_in_the_corner_left_of_the_face() {
+        use crate::config::Style;
+        use crate::ui::geometry::NotchSize;
+        for hat in [CatAccessory::Nightcap, CatAccessory::Crown, CatAccessory::Sailor] {
+            let (shape, eyes, unit) = idle_face(Style::Notch, NotchSize::DEFAULT, hat);
+            let face = face_pieces(hat, ShapeKind::Idle, shape, eyes, unit);
+            // The whole hat: every piece the head wears.
+            assert_eq!(face.len(), pieces(Mascot::Cat, hat).len(), "{hat:?}");
+            for p in &face {
+                assert_eq!(p.turn, -16.0, "{hat:?}");
+                assert_eq!(p.anchor, FaceAnchor::Corner);
+                // Left of the face's box, in the notch's corner.
+                for (x, _) in p.corners((0.0, 0.0), 0.0) {
+                    assert!(x < eyes.0 - FACE_HALF_W * unit, "{hat:?} {p:?}");
+                    assert!(x > shape.x, "{hat:?} {p:?}");
+                }
+                // Small: a hat unit is under a grid unit of the face.
+                assert!(p.k < unit, "{hat:?}");
+            }
+            // Never on the narrow views.
+            assert!(face_pieces(hat, ShapeKind::MediaCompact, shape, eyes, unit).is_empty());
         }
     }
 

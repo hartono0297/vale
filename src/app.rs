@@ -7086,6 +7086,10 @@ impl App {
                 self.on_fill_changed();
                 self.save_config();
             }
+            SettingsAction::NotchStyle(v) => {
+                self.config.notch_style = v;
+                self.save_config();
+            }
             SettingsAction::NotchReset => {
                 self.set_notch_size(NOTCH_W_DEFAULT, NOTCH_H_DEFAULT, false);
                 self.save_config();

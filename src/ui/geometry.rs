@@ -348,6 +348,152 @@ pub fn lyric_layout_robot(s: ShapeRect) -> (Rect, Rect) {
     (robot, text_box(left, line.right(), s.y, s.h))
 }
 
+/// The face notch's face ("Jadi muka") keeps this far in from the shape's
+/// ends: past the rounded corners, the Pill's top ones too.
+pub const FACE_SIDE: f32 = 7.0;
+/// Room kept round the face's box (`cat_style::face_half`), in dip: the 1 dip
+/// edge of its pieces and a little air.
+pub const FACE_MARGIN: f32 = 1.5;
+/// How much wider the narrow closed views (media, lyric, pomodoro, REC and
+/// its caption, the screen countdown) are in Face mode, on top of
+/// `robot_extra`: the face takes the robot's 26 dip slot and needs more, so
+/// it is never smaller than the shrunk pill's (`face_scale` >= 1). The
+/// shape grows evenly (it stays centred); its content is laid out
+/// `FACE_EXTRA` further in from the left (`face_content`), so the face gets
+/// all of it.
+pub const FACE_EXTRA: f32 = 12.0;
+
+/// The width Face mode adds to a `kind` shape: `FACE_EXTRA` for the narrow
+/// closed views, 0 for the idle island (the face and the clock share it,
+/// `face_idle_layout`) and everything else. Plain and Gradient never add it.
+pub fn face_extra(kind: ShapeKind) -> f32 {
+    match kind {
+        ShapeKind::MediaCompact
+        | ShapeKind::MediaLyric
+        | ShapeKind::PomodoroCompact
+        | ShapeKind::RecordCompact => FACE_EXTRA,
+        _ => 0.0,
+    }
+}
+
+/// `s` (the view's shape as Plain and Gradient build it: `shape_with_robot_sized`,
+/// `lyric_shape_sized`, `with_rec_caption`) widened by `face_extra(kind)`,
+/// still centred: the Face-mode shape.
+pub fn with_face_extra(s: ShapeRect, kind: ShapeKind) -> ShapeRect {
+    let extra = face_extra(kind);
+    ShapeRect {
+        x: s.x - extra / 2.0,
+        w: s.w + extra,
+        ..s
+    }
+}
+
+/// The shape a Face-mode view's content is laid out in (pass it to
+/// `compact_layout_robot`, `lyric_layout_robot`, the pomodoro and REC
+/// layouts): the Face-mode shape `s` less `face_extra(kind)` on the left, so
+/// the content keeps its room and the face gets the extra.
+pub fn face_content(s: ShapeRect, kind: ShapeKind) -> ShapeRect {
+    let extra = face_extra(kind);
+    ShapeRect {
+        x: s.x + extra,
+        w: s.w - extra,
+        ..s
+    }
+}
+
+/// The box the face notch's face is centred in (its eyes on the box's
+/// centre) in a narrow view: left of `clock_left` (the left of whatever sits
+/// right of the face: the media title, the lyric line, the pomodoro ring,
+/// the REC dot, as laid out in `face_content`) by the clock's gap,
+/// `FACE_SIDE` in from the shape's left end, as tall as the shape. No wider
+/// than the full-size face needs, so it stays by what follows it. With no
+/// clock it is centred in the shape. Zero wide when there is no room
+/// (mid-morph). The idle island uses `face_idle_layout`.
+pub fn face_area(shape: Rect, clock_left: Option<f32>) -> Rect {
+    use super::cat_style::FACE_HALF_W;
+    use super::robot::{FACE_SCALE, face_unit};
+    let widest = 2.0 * (FACE_HALF_W * face_unit(FACE_SCALE) + FACE_MARGIN);
+    let left = shape.x + FACE_SIDE;
+    let (l, r) = match clock_left {
+        Some(c) => {
+            let r = c - ROBOT_GAP;
+            ((r - widest).max(left), r)
+        }
+        None => {
+            let r = shape.right() - FACE_SIDE;
+            let w = (r - left).clamp(0.0, widest);
+            let mid = (left + r) / 2.0;
+            (mid - w / 2.0, mid + w / 2.0)
+        }
+    };
+    Rect {
+        x: l,
+        y: shape.y,
+        w: (r - l).max(0.0),
+        h: shape.h,
+    }
+}
+
+/// The idle face notch: the face's box (`face_area`'s kind, its eyes on the
+/// centre) and the clock's box, side by side with the clock's gap and centred
+/// as one group in `s`, as `idle_layout` centres the head and the clock. The
+/// face is as large as `face_scale` allows in what the clock leaves; without
+/// the clock it is centred alone.
+pub fn face_idle_layout(
+    s: ShapeRect,
+    clock: bool,
+    accessory: crate::theme::CatAccessory,
+) -> (Rect, Option<Rect>) {
+    use super::robot::face_unit;
+    let clock_w = if clock { ROBOT_GAP + CLOCK_W } else { 0.0 };
+    let room = Rect {
+        x: s.x,
+        y: s.y,
+        w: (s.w - 2.0 * FACE_SIDE - clock_w).max(0.0),
+        h: s.h,
+    };
+    let scale = face_scale(room, accessory);
+    let (half_w, _) = super::cat_style::face_half(accessory);
+    let face_w = if scale > 0.0 {
+        2.0 * (half_w * face_unit(scale) + FACE_MARGIN)
+    } else {
+        0.0
+    };
+    let x = s.x + (s.w - face_w - clock_w) / 2.0;
+    let face = Rect {
+        x,
+        y: s.y,
+        w: face_w,
+        h: s.h,
+    };
+    let clock = clock.then_some(Rect {
+        x: x + face_w + ROBOT_GAP,
+        y: s.y,
+        w: CLOCK_W,
+        h: s.h,
+    });
+    (face, clock)
+}
+
+/// The scale to draw the face at in `area` (`face_area`, `face_idle_layout`)
+/// wearing `accessory`: `robot::FACE_SCALE` where it has the room, else the
+/// largest at which the face's box (`cat_style::face_half`), its margin and
+/// the dance's nod fit; 0 when nothing fits. The corner pieces never count:
+/// they sit outside the face's box.
+pub fn face_scale(area: Rect, accessory: crate::theme::CatAccessory) -> f32 {
+    use super::robot::{FACE_SCALE, NOD_MAX_DIP, face_unit};
+    let (half_w, half_h) = super::cat_style::face_half(accessory);
+    let across = (area.w / 2.0 - FACE_MARGIN) / half_w;
+    let down = (area.h / 2.0 - NOD_MAX_DIP - FACE_MARGIN) / half_h;
+    // A hair over, so a box built for the full-size face gives it back.
+    let scale = across.min(down) / face_unit(1.0) + 1e-4;
+    if scale.is_nan() {
+        0.0
+    } else {
+        scale.clamp(0.0, FACE_SCALE)
+    }
+}
+
 /// Linear blend; `t` outside 0..=1 extrapolates, which is how the eased
 /// overshoot carries past the target shape.
 pub fn lerp_shape(a: ShapeRect, b: ShapeRect, t: f32) -> ShapeRect {
@@ -2235,6 +2381,341 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// A closed compact view as the face notch ("Jadi muka") lays it out.
+    struct FaceView {
+        name: String,
+        kind: ShapeKind,
+        /// The Face-mode shape (`with_face_extra`).
+        shape: ShapeRect,
+        /// The left of what sits right of the face: the idle clock
+        /// (`face_idle_layout`), the media title, the lyric line, the pomodoro
+        /// ring, the REC dot (laid out in `face_content`); `None` for the idle
+        /// island without its clock.
+        clock: Option<f32>,
+        /// The face's box: its eyes sit on the centre.
+        area: Rect,
+    }
+
+    /// Every closed compact view the face is drawn in, for `accessory`. The
+    /// screen countdown uses the REC shape.
+    fn face_views(style: Style, size: NotchSize, accessory: crate::theme::CatAccessory) -> Vec<FaceView> {
+        use crate::ui::panel_layout::{pomodoro_compact_layout_robot, record_compact_layout};
+        let idle = shape_with_robot_sized(style, size, ShapeKind::Idle, true);
+        let mut v = Vec::new();
+        for (name, clock) in [("idle", true), ("idle without clock", false)] {
+            let (area, c) = face_idle_layout(idle, clock, accessory);
+            v.push(FaceView {
+                name: name.to_string(),
+                kind: ShapeKind::Idle,
+                shape: idle,
+                clock: c.map(|c| c.x),
+                area,
+            });
+        }
+        let mut narrow = |name: String, kind: ShapeKind, plain: ShapeRect, left: &dyn Fn(ShapeRect) -> f32| {
+            let shape = with_face_extra(plain, kind);
+            let clock = Some(left(face_content(shape, kind)));
+            v.push(FaceView { name, kind, shape, clock, area: face_area(as_rect(shape), clock) });
+        };
+        let plain = |kind| shape_with_robot_sized(style, size, kind, true);
+        narrow("media".into(), ShapeKind::MediaCompact, plain(ShapeKind::MediaCompact), &|c| {
+            compact_layout_robot(c).text.x
+        });
+        narrow("pomodoro".into(), ShapeKind::PomodoroCompact, plain(ShapeKind::PomodoroCompact), &|c| {
+            let ring = pomodoro_compact_layout_robot(c);
+            ring.1.0 - ring.2
+        });
+        let rec = plain(ShapeKind::RecordCompact);
+        for (name, s, caption) in [("record", rec, false), ("caption", with_rec_caption(rec), true)] {
+            narrow(name.into(), ShapeKind::RecordCompact, s, &|c| {
+                let l = record_compact_layout(c, true, caption);
+                l.dot.0.0 - l.dot.1
+            });
+        }
+        for lw in [LYRIC_MIN_W, LYRIC_MAX_W] {
+            narrow(format!("lyric {lw}"), ShapeKind::MediaLyric, lyric_shape_sized(style, size, lw), &|c| {
+                lyric_layout_robot(c).1.x
+            });
+        }
+        v
+    }
+
+    /// One coat of each kind of face: plain, calico patches, cheeks and beak,
+    /// a beak alone, octopus spots, the Black cat's amber eyes.
+    fn face_looks() -> Vec<crate::ui::cat_style::CatLook> {
+        use crate::theme::{CatColor, FalkColor};
+        use crate::ui::cat_style::CatLook;
+        let cat = |color| CatLook { mascot: Mascot::Cat, color, ..CatLook::default() };
+        let falk = |falk| CatLook { mascot: Mascot::Falk, falk, ..CatLook::default() };
+        vec![
+            cat(CatColor::Terracotta),
+            cat(CatColor::Calico),
+            cat(CatColor::Black),
+            falk(FalkColor::Lutino),
+            falk(FalkColor::WhiteFace),
+            CatLook { mascot: Mascot::Octopus, ..CatLook::default() },
+        ]
+    }
+
+    fn as_rect(s: ShapeRect) -> Rect {
+        Rect { x: s.x, y: s.y, w: s.w, h: s.h }
+    }
+
+    fn centre_of(r: Rect) -> (f32, f32) {
+        (r.x + r.w / 2.0, r.y + r.h / 2.0)
+    }
+
+    /// The pose of `expr` looking `v` of the way across, nodding `nod` dip:
+    /// the faces that look slide, the typing face glances.
+    fn face_pose(expr: crate::ui::robot::Expr, v: f32, nod: f32) -> crate::ui::robot::Pose {
+        use crate::ui::robot::Pose;
+        let pose = Pose { nod_dip: nod, ..Pose::default().looking_as(expr, v) };
+        if expr.glances() { pose.glancing(v, v) } else { pose }
+    }
+
+    #[test]
+    fn the_face_stays_inside_every_compact_notch() {
+        use crate::theme::CatAccessory;
+        use crate::ui::robot::{
+            Expr, FaceBoxKind, NOD_MAX_DIP, face_boxes, face_pose_in, face_slide,
+        };
+        let looks = face_looks();
+        let vs: Vec<f32> = (0..=8).map(|i| -1.0 + 0.25 * i as f32).collect();
+        let mut checked = 0usize;
+        for style in [Style::Pill, Style::Notch] {
+            for size in notch_sizes() {
+                for view in face_views(style, size, CatAccessory::None) {
+                    let FaceView { name, shape: s, clock, area, .. } = view;
+                    let scale = face_scale(area, CatAccessory::None);
+                    let centre = centre_of(area);
+                    // Never smaller than the shrunk pill's face.
+                    assert!(scale >= 1.0, "{style:?} {size:?} {name}: scale {scale}");
+                    for &look in &looks {
+                        for expr in Expr::ALL {
+                            // A face that neither looks nor glances stays centred.
+                            let vs: &[f32] = if expr.follows() { &vs } else { &[0.0] };
+                            for &v in vs {
+                                for nod in [0.0, NOD_MAX_DIP] {
+                                    let pose = face_pose_in(
+                                        style, s, clock, centre, scale, expr, look,
+                                        face_pose(expr, v, nod),
+                                    );
+                                    let slide = face_slide(&pose, scale);
+                                    for blink in [false, true] {
+                                        let what = format!(
+                                            "{style:?} {size:?} {name} {:?} {expr:?} v {v} nod {nod} blink {blink}",
+                                            look.mascot
+                                        );
+                                        for b in
+                                            face_boxes(look, expr, blink, centre, scale, slide, pose.nod_dip)
+                                        {
+                                            if let Some(c) = clock {
+                                                assert!(b.r < c, "{what}: {b:?} reaches the clock at {c}");
+                                            }
+                                            // Calico patches are clipped to the shape.
+                                            if b.kind == FaceBoxKind::Patch {
+                                                continue;
+                                            }
+                                            for (x, y) in [(b.l, b.t), (b.r, b.t), (b.l, b.b), (b.r, b.b)] {
+                                                assert!(
+                                                    shape_contains(style, s, x, y),
+                                                    "{what}: {b:?} leaves {s:?} at ({x}, {y})"
+                                                );
+                                            }
+                                            checked += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 5_000_000, "{checked} boxes checked");
+    }
+
+    #[test]
+    fn the_idle_face_and_clock_are_centred_and_full_size_on_the_default_notch() {
+        use crate::theme::CatAccessory;
+        use crate::ui::robot::{Expr, FACE_SCALE, face_pose_in, face_slide};
+        for style in [Style::Pill, Style::Notch] {
+            // Every size: the face and the clock as one group, centred.
+            for size in notch_sizes() {
+                let s = shape_with_robot_sized(style, size, ShapeKind::Idle, true);
+                for &accessory in CatAccessory::ALL {
+                    let (area, clock) = face_idle_layout(s, true, accessory);
+                    let clock = clock.expect("the clock");
+                    let (left, right) = (area.x - s.x, s.x + s.w - clock.right());
+                    assert!((left - right).abs() < 1e-3, "{style:?} {size:?} {accessory:?}: {left} vs {right}");
+                    assert!((clock.x - area.right() - ROBOT_GAP).abs() < 1e-3);
+                    let (alone, none) = face_idle_layout(s, false, accessory);
+                    assert!(none.is_none());
+                    assert!((centre_of(alone).0 - (s.x + s.w / 2.0)).abs() < 1e-3);
+                }
+            }
+            // 190 x 34: full size whatever is worn, and the look is not cut.
+            let s = shape_with_robot_sized(style, NotchSize::DEFAULT, ShapeKind::Idle, true);
+            for &accessory in CatAccessory::ALL {
+                let (area, _) = face_idle_layout(s, true, accessory);
+                assert_eq!(face_scale(area, accessory), FACE_SCALE, "{style:?} {accessory:?}");
+            }
+            let (area, clock) = face_idle_layout(s, true, CatAccessory::None);
+            let clock = clock.map(|c| c.x);
+            let centre = centre_of(area);
+            for look in face_looks() {
+                for v in [-1.0, 1.0] {
+                    let want = face_pose(Expr::Idle, v, 0.0);
+                    let got = face_pose_in(style, s, clock, centre, FACE_SCALE, Expr::Idle, look, want);
+                    assert_eq!(face_slide(&got, FACE_SCALE), face_slide(&want, FACE_SCALE), "{style:?} {look:?} v {v}");
+                    assert!(face_slide(&got, FACE_SCALE).0.abs() > 0.0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn face_mode_widens_only_the_narrow_views() {
+        for kind in [
+            ShapeKind::MediaCompact,
+            ShapeKind::MediaLyric,
+            ShapeKind::PomodoroCompact,
+            ShapeKind::RecordCompact,
+        ] {
+            assert_eq!(face_extra(kind), FACE_EXTRA);
+        }
+        for kind in [ShapeKind::Idle, ShapeKind::Notice, ShapeKind::Panel, ShapeKind::Eyes] {
+            assert_eq!(face_extra(kind), 0.0);
+        }
+        for style in [Style::Pill, Style::Notch] {
+            for size in notch_sizes() {
+                for kind in [ShapeKind::Idle, ShapeKind::MediaCompact, ShapeKind::PomodoroCompact, ShapeKind::RecordCompact] {
+                    let plain = shape_with_robot_sized(style, size, kind, true);
+                    let face = with_face_extra(plain, kind);
+                    let content = face_content(face, kind);
+                    // Still centred, wider by the extra; the content keeps its
+                    // width and the right end, the face gets the rest.
+                    assert!((face.x + face.w / 2.0 - (plain.x + plain.w / 2.0)).abs() < 1e-3);
+                    assert!((face.w - plain.w - face_extra(kind)).abs() < 1e-3);
+                    assert!((content.w - plain.w).abs() < 1e-3);
+                    assert!((content.x + content.w - (face.x + face.w)).abs() < 1e-3);
+                    assert_eq!((face.y, face.h, face.radius), (plain.y, plain.h, plain.radius));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_face_accessory_stays_inside_the_notch() {
+        use crate::theme::CatAccessory;
+        use crate::ui::cat_style::{CatLook, FACE_HALF_W, FaceAnchor, face_pieces, face_wears};
+        use crate::ui::robot::{Expr, NOD_MAX_DIP, face_pose_in, face_slide, face_unit};
+        let vs: Vec<f32> = (0..=8).map(|i| -1.0 + 0.25 * i as f32).collect();
+        let mut checked = 0usize;
+        for style in [Style::Pill, Style::Notch] {
+            for size in notch_sizes() {
+                for &accessory in CatAccessory::ALL {
+                    for view in face_views(style, size, accessory) {
+                        let FaceView { name, kind, shape: s, clock, area } = view;
+                        let scale = face_scale(area, accessory);
+                        let unit = face_unit(scale);
+                        assert!(scale >= 1.0, "{style:?} {size:?} {name} {accessory:?}: scale {scale}");
+                        let centre = centre_of(area);
+                        let pieces = face_pieces(accessory, kind, as_rect(s), centre, unit);
+                        let worn = accessory != CatAccessory::None && face_wears(accessory, kind);
+                        assert_eq!(!pieces.is_empty(), worn, "{name} {accessory:?}");
+                        // The narrow views wear only the glasses, the bow tie
+                        // and the earcups.
+                        if kind != ShapeKind::Idle {
+                            assert!(!matches!(
+                                accessory,
+                                CatAccessory::Scarf
+                                    | CatAccessory::Bow
+                                    | CatAccessory::Flower
+                                    | CatAccessory::Nightcap
+                                    | CatAccessory::Crown
+                                    | CatAccessory::Sailor
+                            ) || pieces.is_empty());
+                        }
+                        // The corner pieces: left of the face, and still visible.
+                        let face_left = centre.0 - FACE_HALF_W * unit;
+                        let corner: Vec<(f32, f32)> = pieces
+                            .iter()
+                            .filter(|p| p.anchor == FaceAnchor::Corner)
+                            .flat_map(|p| p.corners((0.0, 0.0), 0.0))
+                            .collect();
+                        if !corner.is_empty() {
+                            let (lo, hi) = corner
+                                .iter()
+                                .fold((f32::MAX, f32::MIN), |a, &(x, _)| (a.0.min(x), a.1.max(x)));
+                            assert!(hi < face_left, "{style:?} {size:?} {name} {accessory:?}: {hi} reaches the face at {face_left}");
+                            assert!(hi - lo >= 8.0, "{style:?} {size:?} {name} {accessory:?}: {} dip wide", hi - lo);
+                        }
+                        // Only the pieces on the eyes (the glasses) slide with the
+                        // look, which each mascot's marks and each face cut back.
+                        let slides = pieces.iter().any(|p| p.anchor == FaceAnchor::Eyes);
+                        let mascots: &[Mascot] = if slides { Mascot::ALL } else { &[Mascot::Cat] };
+                        for &mascot in mascots {
+                            let look = CatLook { mascot, accessory, ..CatLook::default() };
+                            for expr in Expr::ALL {
+                                let vs: &[f32] =
+                                    if slides && expr.follows() { &vs } else { &[0.0] };
+                                for &v in vs {
+                                    for nod in [0.0, NOD_MAX_DIP] {
+                                        let pose = face_pose_in(
+                                            style, s, clock, centre, scale, expr, look,
+                                            face_pose(expr, v, nod),
+                                        );
+                                        let slide = face_slide(&pose, scale);
+                                        for p in &pieces {
+                                            let what = format!(
+                                                "{style:?} {size:?} {name} {mascot:?} {accessory:?} {expr:?} v {v} nod {nod}: {p:?}"
+                                            );
+                                            for (x, y) in p.corners(slide, pose.nod_dip) {
+                                                assert!(
+                                                    shape_contains(style, s, x, y),
+                                                    "{what} leaves {s:?} at ({x}, {y})"
+                                                );
+                                                // The earcups and the scarf belong to the
+                                                // notch's ends and bottom edge, not the face.
+                                                if let (Some(c), false) = (clock, p.anchor == FaceAnchor::Notch) {
+                                                    assert!(x < c, "{what} reaches the clock at {c}");
+                                                }
+                                            }
+                                            checked += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 200_000, "{checked} pieces checked");
+    }
+
+    #[test]
+    fn typing_on_a_face_is_the_focus_eyes() {
+        use crate::ui::robot::{Expr, Line, Part, TYPING_FACE_DOWN, face_marks};
+        const { assert!(TYPING_FACE_DOWN > 0.0) };
+        for blink in [false, true] {
+            let focus = face_marks(Expr::Focus, blink);
+            let typing = face_marks(Expr::Typing, blink);
+            assert!(!focus.is_empty());
+            assert_eq!(typing.len(), focus.len(), "blink {blink}");
+            for (t, f) in typing.iter().zip(&focus) {
+                assert_eq!((t.part, t.k), (f.part, f.k));
+                assert_eq!(t.at, (f.at.0, f.at.1 + TYPING_FACE_DOWN));
+            }
+            // Only the eyes: no laptop, no paws, nothing beside them.
+            assert!(typing.iter().all(|m| matches!(
+                m.part,
+                Part::Pill { .. } | Part::Stroke(Line::Blink)
+            )));
         }
     }
 

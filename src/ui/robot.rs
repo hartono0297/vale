@@ -39,7 +39,7 @@ use windows_numerics::{Matrix3x2, Vector2};
 use super::cat_style::{CatLook, Placed, RIM_WIDTH, anchors, solid};
 use super::geometry::{EYES_H, Rect, ShapeRect, shape_contains};
 use super::mascot::MascotShape;
-use super::peek_face::{BEAK_PATH, PeekFace, PeekMark, mark_boxes};
+use super::peek_face::{BEAK_PATH, PeekFace, PeekMark, mark_boxes, peek_face};
 use crate::config::Style;
 use crate::greeting::{self, DayPeriod, GreetMark};
 use crate::i18n::Key;
@@ -568,8 +568,7 @@ pub fn face(expr: Expr, blink: bool) -> Face {
 
 /// The grid box `(left, top, right, bottom)` a face mark is drawn in, stroke
 /// width included (a curve's control points bound it). For the tests that
-/// keep the cat clear of what is beside it.
-#[cfg(test)]
+/// keep the cat clear of what is beside it, and the face notch's clamp.
 pub fn mark_bounds(part: &Part) -> (f32, f32, f32, f32) {
     let points = |segs: Vec<Seg>, pad: f32| {
         let mut b = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
@@ -746,29 +745,250 @@ pub fn eyes_offset_in(
             })
         })
     };
-    // The set of slides that fit is convex, so along a line from the middle
-    // it is an interval: bisect for its end.
-    let reach = |want: f32, fits: &dyn Fn(f32) -> bool| {
-        if want.is_nan() || want == 0.0 || !fits(0.0) {
-            return 0.0;
-        }
-        if fits(want) {
-            return want;
-        }
-        let (mut ok, mut bad) = (0.0f32, want);
-        for _ in 0..24 {
-            let mid = (ok + bad) / 2.0;
-            if fits(mid) {
-                ok = mid;
-            } else {
-                bad = mid;
-            }
-        }
-        ok
-    };
     let y = reach(dy, &|v| fits(0.0, v));
     let x = reach(dx, &|v| fits(v, y));
     (x, y)
+}
+
+/// How far a slide toward `want` can go while `fits` holds. The set of
+/// slides that fit is convex, so along a line from the middle it is an
+/// interval: bisect for its end. 0 when nothing fits (or `want` is 0 or NaN).
+fn reach(want: f32, fits: &dyn Fn(f32) -> bool) -> f32 {
+    if want.is_nan() || want == 0.0 || !fits(0.0) {
+        return 0.0;
+    }
+    if fits(want) {
+        return want;
+    }
+    let (mut ok, mut bad) = (0.0f32, want);
+    for _ in 0..24 {
+        let mid = (ok + bad) / 2.0;
+        if fits(mid) {
+            ok = mid;
+        } else {
+            bad = mid;
+        }
+    }
+    ok
+}
+
+// ---- The face notch ("Jadi muka"): the closed notch is the mascot's face ----
+
+/// The face on the notch is this many times the shrunk pill's: one grid unit
+/// is `face_unit(FACE_SCALE)` (1.28) dip wherever the notch has the room
+/// (`geometry::face_scale` gives less on a narrow or low one).
+pub const FACE_SCALE: f32 = 1.6;
+/// How far the typing face's focus eyes look down, in grid units.
+pub const TYPING_FACE_DOWN: f32 = 2.0;
+
+/// Dip per grid unit of a face drawn at `scale` (1 is the shrunk pill's).
+pub fn face_unit(scale: f32) -> f32 {
+    EYES_SCALE * scale
+}
+
+/// A mark of the face on the notch, in the eyes' grid: `part` (one of
+/// `face`'s) drawn with its grid point p at `at + k * p`. The eyes keep their
+/// places (`k` 1, `at` 0); what floats beside the head comes in smaller,
+/// beside the eyes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FaceMark {
+    pub part: Part,
+    pub k: f32,
+    pub at: (f32, f32),
+}
+
+/// The z's: at 0.6, left edge just right of the sleeping right eye, bottom
+/// a little under the eye line.
+const FACE_ZZ: (f32, (f32, f32)) = (0.6, (13.5, 35.9));
+/// The heart: at 0.8, right edge just left of the happy left eye, centred
+/// on the eye line.
+const FACE_HEART: (f32, (f32, f32)) = (0.8, (9.9, 35.9));
+/// The thought dots: at 0.7, rising from beside the right eye.
+const FACE_THINK: (f32, (f32, f32)) = (0.7, (6.38, 33.82));
+/// The heart on a face: raspberry (the bow's), where it reads.
+const FACE_HEART_RGB: u32 = 0xD23F6A;
+
+/// The marks of `expr` on the face notch: its eyes as `face(expr, blink)`
+/// draws them; the z's, the wave's heart and the thought dots smaller and
+/// beside the eyes, never above them; no music note (the face nods
+/// instead). The typing face is the focus eyes looking down
+/// (`TYPING_FACE_DOWN`): no laptop, no paws.
+pub fn face_marks(expr: Expr, blink: bool) -> Vec<FaceMark> {
+    let (shown, down) = match expr {
+        Expr::Typing => (Expr::Focus, TYPING_FACE_DOWN),
+        e => (e, 0.0),
+    };
+    face(shown, blink)
+        .parts
+        .into_iter()
+        .filter_map(|part| {
+            let (k, at) = if is_eye(&part) {
+                (1.0, (0.0, down))
+            } else {
+                match part {
+                    Part::Stroke(Line::Zz) => FACE_ZZ,
+                    Part::Heart { .. } => FACE_HEART,
+                    Part::Dot { .. } if shown == Expr::Think => FACE_THINK,
+                    // The note and its heads.
+                    _ => return None,
+                }
+            };
+            Some(FaceMark { part, k, at })
+        })
+        .collect()
+}
+
+/// What a box of the face is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FaceBoxKind {
+    /// Slides with the look: the eyes, the cheeks and beak, what sits beside
+    /// the eyes.
+    Mark,
+    /// Fixed to the face: the octopus's spots.
+    Spot,
+    /// A calico patch: a big circle the caller clips to the island's outline.
+    Patch,
+}
+
+/// A box of the face as drawn, in dip.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FaceBox {
+    pub l: f32,
+    pub t: f32,
+    pub r: f32,
+    pub b: f32,
+    pub kind: FaceBoxKind,
+}
+
+/// The coat's marks on the face notch, in the eyes' grid: the calico's
+/// patches as on the head (big circles, top-left orange and bottom-right
+/// dark, larger than the notch, so clipped to it), the octopus's spots as
+/// on the shrunk pill.
+pub fn face_coat(look: CatLook) -> Vec<(PeekMark, FaceBoxKind)> {
+    use super::cat_style::{DARK_CIRCLE, ORANGE_CIRCLE, PATCH_DARK, PATCH_ORANGE};
+    match look.mascot {
+        Mascot::Cat if look.color == CatColor::Calico => [
+            (ORANGE_CIRCLE, PATCH_ORANGE),
+            (DARK_CIRCLE, PATCH_DARK),
+        ]
+        .into_iter()
+        .map(|((cx, cy, r), rgb)| (PeekMark::Dot { cx, cy, r, rgb }, FaceBoxKind::Patch))
+        .collect(),
+        Mascot::Octopus => peek_face(look, 0)
+            .coat_marks
+            .into_iter()
+            .map(|m| (m, FaceBoxKind::Spot))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The face's look as a slide in dip: the eyes' own slide
+/// (`Pose::eye_dx_dip`; the head does not turn on a face) and the typing
+/// face's glance (grid units).
+pub fn face_slide(pose: &Pose, scale: f32) -> (f32, f32) {
+    let u = face_unit(scale);
+    (pose.eye_dx_dip + pose.glance_x * u, pose.glance_y * u)
+}
+
+/// Every box `paint_face` draws for `look` and `expr`, centred on `centre`
+/// at `scale`, its marks slid by `slide` (dip) and the whole face nodded
+/// down `nod` dip. Strokes are padded by half their width.
+pub fn face_boxes(
+    look: CatLook,
+    expr: Expr,
+    blink: bool,
+    centre: (f32, f32),
+    scale: f32,
+    slide: (f32, f32),
+    nod: f32,
+) -> Vec<FaceBox> {
+    let u = face_unit(scale);
+    let mut out = Vec::new();
+    let mut push = |(l, t, r, b): (f32, f32, f32, f32), (sx, sy): (f32, f32), kind| {
+        let at = |x: f32, y: f32| (centre.0 + (x - 32.0) * u + sx, centre.1 + (y - Y) * u + nod + sy);
+        let ((l, t), (r, b)) = (at(l, t), at(r, b));
+        out.push(FaceBox { l, t, r, b, kind });
+    };
+    for m in face_marks(expr, blink) {
+        let (l, t, r, b) = mark_bounds(&m.part);
+        let (x, y, k) = (m.at.0, m.at.1, m.k);
+        push((x + k * l, y + k * t, x + k * r, y + k * b), slide, FaceBoxKind::Mark);
+    }
+    for b in mark_boxes(&peek_face(look, 0).face_marks) {
+        push(b, slide, FaceBoxKind::Mark);
+    }
+    for (mark, kind) in face_coat(look) {
+        for b in mark_boxes(&[mark]) {
+            push(b, (0.0, 0.0), kind);
+        }
+    }
+    out
+}
+
+/// `pose` with the face's look (`face_slide`) cut back so that, open or
+/// shut, every mark that slides, and the glasses on them, stay inside
+/// `shape` and left of `clock_left` (what sits right of the face). The cut
+/// slide is in `eye_dx_dip` and `glance_y`; `glance_x` is 0. Like
+/// `eyes_offset_in`, a guard: where the face has its room the look's own
+/// extremes fit.
+#[allow(clippy::too_many_arguments)]
+pub fn face_pose_in(
+    style: Style,
+    shape: ShapeRect,
+    clock_left: Option<f32>,
+    centre: (f32, f32),
+    scale: f32,
+    expr: Expr,
+    look: CatLook,
+    pose: Pose,
+) -> Pose {
+    use super::cat_style::{FaceAnchor, face_pieces};
+    let u = face_unit(scale);
+    let (want_x, want_y) = face_slide(&pose, scale);
+    let still = Pose {
+        eye_dx_dip: 0.0,
+        glance_x: 0.0,
+        glance_y: 0.0,
+        ..pose
+    };
+    if want_x == 0.0 && want_y == 0.0 {
+        return still;
+    }
+    let rect = Rect {
+        x: shape.x,
+        y: shape.y,
+        w: shape.w,
+        h: shape.h,
+    };
+    // The glasses are worn in every view.
+    let glasses: Vec<_> = face_pieces(look.accessory, super::geometry::ShapeKind::Idle, rect, centre, u)
+        .into_iter()
+        .filter(|p| p.anchor == FaceAnchor::Eyes)
+        .collect();
+    // Open and shut: a blink never moves the eyes.
+    let marks: Vec<FaceBox> = [false, true]
+        .into_iter()
+        .flat_map(|blink| face_boxes(look, expr, blink, centre, scale, (0.0, 0.0), pose.nod_dip))
+        .filter(|b| b.kind == FaceBoxKind::Mark)
+        .collect();
+    let inside =
+        |x: f32, y: f32| shape_contains(style, shape, x, y) && clock_left.is_none_or(|c| x < c);
+    let fits = |dx: f32, dy: f32| {
+        marks.iter().all(|b| {
+            let (l, t, r, b) = (b.l + dx, b.t + dy, b.r + dx, b.b + dy);
+            [(l, t), (r, t), (l, b), (r, b)].into_iter().all(|(x, y)| inside(x, y))
+        }) && glasses
+            .iter()
+            .all(|p| p.corners((dx, dy), pose.nod_dip).into_iter().all(|(x, y)| inside(x, y)))
+    };
+    let dy = reach(want_y, &|v| fits(0.0, v));
+    let dx = reach(want_x, &|v| fits(v, dy));
+    Pose {
+        eye_dx_dip: dx,
+        glance_y: if u > 0.0 { dy / u } else { 0.0 },
+        ..still
+    }
 }
 
 pub const EYES_BLINK_MIN_MS: u32 = 3_000;
@@ -993,6 +1213,9 @@ pub struct RobotPainter {
     pub(super) extras: RefCell<Vec<((Mascot, CatAccessory), Rc<Vec<Placed>>)>>,
     /// The falk's and the octopus's still paths (`mascot`).
     pub(super) mascot_paths: RefCell<Vec<(MascotShape, ID2D1Geometry)>>,
+    /// The face notch's accessory paths, by their segments (`cat_style`):
+    /// built once per notch size and kept, a few at most.
+    pub(super) face_paths: RefCell<Vec<(Vec<Seg>, ID2D1PathGeometry)>>,
     pub(super) round: ID2D1StrokeStyle,
 }
 
@@ -1018,6 +1241,7 @@ impl RobotPainter {
             calico: RefCell::new(Vec::new()),
             extras: RefCell::new(Vec::new()),
             mascot_paths: RefCell::new(Vec::new()),
+            face_paths: RefCell::new(Vec::new()),
             round,
         })
     }
@@ -1389,6 +1613,117 @@ impl RobotPainter {
             self.fill_marks(rt, brush, alpha, marks);
             rt.SetTransform(&previous);
         }
+    }
+
+    /// The face on the notch ("Jadi muka"): marks only, no head, ears, body,
+    /// laptop or paws. Its eyes' centre (grid point (32, 40)) sits on
+    /// `centre`, one grid unit `face_unit(scale)` dip. In order: the coat's
+    /// marks fixed to the face (calico patches, octopus spots), the cheeks
+    /// and beak, then `face_marks(expr, pose.blink)`: the eyes in the eye
+    /// colour, the z's and thought dots in the face's ink (dark where it
+    /// reads at 4.5:1, else cream), the heart in raspberry where that holds
+    /// 3:1 on the face, else the ink. The look slides every mark but the
+    /// coat's (`face_slide`; cut it back first with `face_pose_in`) and the
+    /// dance's nod moves the whole face down `pose.nod_dip`; nothing else of
+    /// the pose applies. The calico patches are larger than the notch: the
+    /// caller clips to the island's outline, as it does for the shrunk
+    /// pill's. The render target's transform is restored.
+    #[allow(clippy::too_many_arguments)]
+    pub fn paint_face(
+        &self,
+        rt: &ID2D1RenderTarget,
+        centre: (f32, f32),
+        scale: f32,
+        expr: Expr,
+        pose: &Pose,
+        look: CatLook,
+        alpha: f32,
+    ) -> WinResult<()> {
+        use super::notch_colour::{CREAM as CREAM_TEXT, INK, contrast};
+        let u = face_unit(scale);
+        if u.is_nan() || u <= 0.0 {
+            return Ok(());
+        }
+        let face = peek_face(look, 0);
+        let ink = if contrast(INK, face.fill) >= 4.5 {
+            INK
+        } else {
+            CREAM_TEXT
+        };
+        let heart = if contrast(FACE_HEART_RGB, face.fill) >= 3.0 {
+            FACE_HEART_RGB
+        } else {
+            ink
+        };
+        let (sx, sy) = face_slide(pose, scale);
+        let grid = |dx: f32, dy: f32| {
+            Matrix3x2::scale(u, u)
+                * Matrix3x2::translation(
+                    centre.0 - 32.0 * u + dx,
+                    centre.1 - Y * u + pose.nod_dip + dy,
+                )
+        };
+        unsafe {
+            let brush = rt.CreateSolidColorBrush(&solid(face.eye, alpha), None)?;
+            let mut previous = Matrix3x2::default();
+            rt.GetTransform(&mut previous);
+            rt.SetTransform(&(grid(0.0, 0.0) * previous));
+            let coat: Vec<PeekMark> = face_coat(look).into_iter().map(|(m, _)| m).collect();
+            self.fill_marks(rt, &brush, alpha, &coat);
+            let marks = grid(sx, sy) * previous;
+            rt.SetTransform(&marks);
+            self.fill_marks(rt, &brush, alpha, &face.face_marks);
+            for m in face_marks(expr, pose.blink) {
+                rt.SetTransform(
+                    &(Matrix3x2::scale(m.k, m.k) * Matrix3x2::translation(m.at.0, m.at.1) * marks),
+                );
+                // Every eye mark is espresso ink; the rest float beside them.
+                let rgb = if is_eye(&m.part) { face.eye } else { ink };
+                match m.part {
+                    Part::Pill { x, y, w, h, rx, ry } => {
+                        brush.SetColor(&solid(rgb, alpha));
+                        rt.FillRoundedRectangle(
+                            &D2D1_ROUNDED_RECT {
+                                rect: D2D_RECT_F {
+                                    left: x,
+                                    top: y,
+                                    right: x + w,
+                                    bottom: y + h,
+                                },
+                                radiusX: rx,
+                                radiusY: ry,
+                            },
+                            &brush,
+                        );
+                    }
+                    Part::Dot { cx, cy, r, .. } => {
+                        brush.SetColor(&solid(rgb, alpha));
+                        rt.FillEllipse(
+                            &D2D1_ELLIPSE {
+                                point: Vector2::new(cx, cy),
+                                radiusX: r,
+                                radiusY: r,
+                            },
+                            &brush,
+                        );
+                    }
+                    Part::Stroke(line) => {
+                        if let Some(g) = self.path(Shape::Line(line)) {
+                            brush.SetColor(&solid(rgb, alpha * line.alpha()));
+                            rt.DrawGeometry(&g, &brush, line.width(), &self.round);
+                        }
+                    }
+                    Part::Heart { x, y } => {
+                        if let Some(g) = self.path(Shape::Heart(x, y)) {
+                            brush.SetColor(&solid(heart, alpha));
+                            rt.FillGeometry(&g, &brush, None);
+                        }
+                    }
+                }
+            }
+            rt.SetTransform(&previous);
+        }
+        Ok(())
     }
 
     /// Sets the transform to the 64-unit grid over `area`; returns the one it
@@ -2631,6 +2966,124 @@ pub fn should_greet(
 mod tests {
     use super::*;
     use crate::model::Notice;
+
+    /// 128 x 64 px of the face notch on its own fill, by Direct2D's software
+    /// rasterizer into a WIC bitmap (no window): `paint_face` (and the
+    /// accessory's `paint_face_pieces`) centred on (64, 32) at `FACE_SCALE`.
+    fn face_render(look: CatLook, expr: Expr, pose: Pose) -> (Vec<u32>, u32) {
+        use windows::Win32::Graphics::Direct2D::Common::{
+            D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_PIXEL_FORMAT,
+        };
+        use windows::Win32::Graphics::Direct2D::{
+            D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_RENDER_TARGET_PROPERTIES,
+            D2D1_RENDER_TARGET_TYPE_SOFTWARE, D2D1CreateFactory,
+        };
+        use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
+        use windows::Win32::Graphics::Imaging::{
+            CLSID_WICImagingFactory, GUID_WICPixelFormat32bppPBGRA, IWICImagingFactory,
+            WICBitmapCacheOnLoad,
+        };
+        use windows::Win32::System::Com::{
+            CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
+        };
+        let fill = peek_face(look, 0).fill;
+        let img = unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            let factory: ID2D1Factory =
+                D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None).expect("factory");
+            let painter = RobotPainter::new(&factory).expect("painter");
+            let wic: IWICImagingFactory =
+                CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)
+                    .expect("wic");
+            let bitmap = wic
+                .CreateBitmap(128, 64, &GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad)
+                .expect("bitmap");
+            let props = D2D1_RENDER_TARGET_PROPERTIES {
+                r#type: D2D1_RENDER_TARGET_TYPE_SOFTWARE,
+                pixelFormat: D2D1_PIXEL_FORMAT {
+                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                    alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                },
+                dpiX: 96.0,
+                dpiY: 96.0,
+                ..Default::default()
+            };
+            let rt = factory.CreateWicBitmapRenderTarget(&bitmap, &props).expect("target");
+            rt.BeginDraw();
+            rt.Clear(Some(&solid(fill, 1.0)));
+            painter
+                .paint_face(&rt, (64.0, 32.0), FACE_SCALE, expr, &pose, look, 1.0)
+                .expect("face");
+            let shape = Rect { x: 0.0, y: 0.0, w: 128.0, h: 64.0 };
+            let pieces = super::super::cat_style::face_pieces(
+                look.accessory,
+                super::super::geometry::ShapeKind::Idle,
+                shape,
+                (64.0, 32.0),
+                face_unit(FACE_SCALE),
+            );
+            painter
+                .paint_face_pieces(&rt, &pieces, FACE_SCALE, &pose, look, 1.0)
+                .expect("pieces");
+            rt.EndDraw(None, None).expect("end draw");
+            let mut out = vec![0u8; 128 * 64 * 4];
+            bitmap.CopyPixels(std::ptr::null(), 128 * 4, &mut out).expect("pixels");
+            out.chunks(4)
+                .map(|p| (p[2] as u32) << 16 | (p[1] as u32) << 8 | p[0] as u32)
+                .collect::<Vec<u32>>()
+        };
+        (img, fill)
+    }
+
+    fn face_px(img: &[u32], x: u32, y: u32) -> u32 {
+        img[(y * 128 + x) as usize]
+    }
+
+    #[test]
+    fn the_face_paints_marks_only() {
+        let look = CatLook::default();
+        // Idle: the left eye's pill (grid 24, 40) at 64 - 8 * 1.28 dip.
+        let (img, fill) = face_render(look, Expr::Idle, Pose::default());
+        assert_eq!(face_px(&img, 54, 32), look.eye_rgb());
+        assert_eq!(face_px(&img, 64, 32), fill);
+        // No head, ears or laptop: the left third and the top rows are the fill.
+        for y in 0..64 {
+            for x in 0..30 {
+                assert_eq!(face_px(&img, x, y), fill, "({x}, {y})");
+            }
+        }
+        // Typing is the focus eyes, looking down: the eye line itself is clear.
+        let (focus, _) = face_render(look, Expr::Focus, Pose::default());
+        let (typing, _) = face_render(look, Expr::Typing, Pose::default());
+        assert_eq!(face_px(&focus, 54, 33), look.eye_rgb());
+        assert_eq!(face_px(&typing, 54, 32), fill);
+        assert_eq!(face_px(&typing, 54, 36), look.eye_rgb());
+        for y in 0..64 {
+            for x in 0..30 {
+                assert_eq!(face_px(&typing, x, y), fill, "typing ({x}, {y})");
+            }
+        }
+        // Asleep: the z's beside the right eye, not above the face.
+        let (sleep, _) = face_render(look, Expr::Sleep, Pose::default());
+        let beside = (82..92)
+            .flat_map(|x| (22..34).map(move |y| (x, y)))
+            .filter(|&(x, y)| face_px(&sleep, x, y) != fill)
+            .count();
+        assert!(beside > 10, "{beside} z pixels");
+        assert!((0..128).all(|x| (0..18).all(|y| face_px(&sleep, x, y) == fill)));
+    }
+
+    #[test]
+    fn the_face_wears_its_glasses_on_the_eyes() {
+        let look = CatLook {
+            accessory: CatAccessory::Glasses,
+            ..CatLook::default()
+        };
+        let (img, _) = face_render(look, Expr::Idle, Pose::default());
+        // The left ring (r 6.6 grid) round the left eye at 53.76.
+        let ring = (44..47).any(|x| face_px(&img, x, 32) == look.eye_rgb());
+        assert!(ring);
+    }
 
     fn inputs(spot: Spot) -> RobotInputs {
         RobotInputs {
