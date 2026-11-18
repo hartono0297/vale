@@ -72,13 +72,17 @@ cooldown is on. The user cannot see it or change it.
   - `try_play(Moment::Hour)`; if it did not start and the deadline is not past,
     set the timer 30 s ahead; otherwise set it for `next_hour`;
   - after a start, set it for `next_hour`.
-  The wake, a clock or zone change (`on_clock_jump`) and a settings change
-  recompute it from the new wall clock and open no window: a missed hour is
-  skipped. `check_hour`, `clock_hour` and `hour_rolled` go away, they are replaced.
+  The timer is armed 1 s past the hour (`hour_arm_ms`), so a one-shot that fires
+  a little early never opens a second window for the same hour.
+  The wake, a clock or zone change (`on_clock_jump`, which re-arms at once) and
+  a settings change recompute it from the new wall clock and open no window: a
+  missed hour is skipped. `check_hour`, `clock_hour` and `hour_rolled` go away, they are replaced.
 - **Settings** (`settings_layout.rs`, `settings.rs`, `i18n.rs`): the preset row
-  loses `MascotPlayDesc` for a short line plus a five-line list (one per
-  preset, the active one highlighted, "name: when. gap"), then the shared rule
-  line. A second row "Tiap jam" with a segmented control (Mati / 1 / 2 / 3 / 4 /
+  loses `MascotPlayDesc` for a short line plus an info button (ⓘ,
+  `Hit::MascotPlayInfo`, window state only, closed by default; the owner asked
+  for this mid-build, 2026-11-18, instead of an always-visible list). Opened, it
+  shows the five-line list (one per preset, the active one highlighted, "name:
+  when. gap") and the shared rule line. A second row "Tiap jam" with a segmented control (Mati / 1 / 2 / 3 / 4 /
   6 jam) and the sentence "Jam 02.00, 04.00 ...". The row is dimmed with the
   preset row when the mascot is off, has no ready story, or the preset is
   Mati. New `Hit`/`Action`/`SettingsAction::MascotHours`, `Group::MascotHours`.

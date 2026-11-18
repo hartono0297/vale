@@ -1,0 +1,25 @@
+---
+tags: [decision, mascot, timer, power]
+date: 2026-11-18
+---
+
+# Mascot story on the hour
+
+Spec `docs/superpowers/specs/2026-11-18-jadwal-jam-maskot-design.md`. Part of
+[[mascot-play]].
+
+- `Config::mascot_hours` (0 off, 1, 2, 3, 4, 6; default 1; a bad value reads as
+  1). Hours count from 00:00 local, so every 2 hours is 02:00, 04:00.
+- Its own one-shot `TIMER_MASCOT_HOUR`, wanted only while the hours are on, the
+  preset is not Mati and a story is ready. It does not depend on the idle clock:
+  the old `check_hour` on `TIMER_CLOCK` only ran while the clock was on screen,
+  so with the clock off there was no hour. It is gone.
+- **Arm 1 s past the hour** (`hour_arm_ms` in `app.rs`; `trigger::next_hour` is the pure part). A one-shot can fire a few
+  ms early; armed exactly on the hour it would land before it and open a second
+  window for the same hour.
+- A window of 10 minutes, retried every 30 s while a gate refuses (typing, a
+  panel, a running story). The hour skips the cooldown but needs presence and
+  every other gate.
+- No catch-up: sleep, lock or a missed window skips the hour. `on_clock_jump`
+  re-arms at once from the new wall clock and opens no window.
+- Power: nothing runs at idle between hours ([[bata-idle-power-budget]]).

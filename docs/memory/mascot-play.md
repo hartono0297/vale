@@ -1,6 +1,6 @@
 ---
 tags: [decision, mascot, animation, island, power]
-date: 2026-11-15
+date: 2026-11-18
 ---
 
 # Mascot stories around the island
@@ -27,7 +27,11 @@ hook; serve it over http, a `file:` page loses the hash). Spec
   sapaan, Mati; Settings → Maskot → Otomatis). Idle moments need 15-300 s at
   the PC without typing, a cooldown, the plain idle view, no typing face
   (Claude/CLI/mole working), motion Full, no Energy Saver. Also on the hour
-  (a clock story) and after a greeting. Right-click → "Mainkan maskot" plays
+  (`Config::mascot_hours`, own timer, see [[mascot-hour-schedule]]) and after a
+  greeting. Settings → Maskot → Otomatis has a short line and an ⓘ button
+  (`Hit::MascotPlayInfo`, window state only, closed by default) that lists the
+  five presets; their minutes come from `trigger::wait_range` and `cooldown`,
+  so the text cannot drift. Right-click → "Mainkan maskot" plays
   one any time the island could show it (it closes an open panel first with
   `Event::PanelShut`, then waits for the morph via `pending: Option<Moment>`).
 - **Ends**: only a press on the idle island (`play_press`, from the
@@ -62,8 +66,9 @@ hook; serve it over http, a `file:` page loses the hash). Spec
   head never add up past one mascot (one complementary crossfade).
 - **Carried digits** are placed from the clock character's measured home
   (`Draw::Digit.home`); `DIGIT_X` (one table) only aims, up to 1.6 dip off.
-- **Power**: one one-shot `TIMER_MASCOT_PLAY` (19), armed only while a story
-  could start; the frame clock only while a play runs; a play forces a Full
+- **Power**: two one-shot timers, `TIMER_MASCOT_PLAY` (19, idle stories) and
+  `TIMER_MASCOT_HOUR` (36, the hour), each armed only while a story could
+  start; the frame clock only while a play runs; a play forces a Full
   redraw. Nothing runs at idle ([[bata-idle-power-budget]]).
 - **Notch shoulders** stay fillets on the screen edge; `top_corners` puts
   their feet where the drawn outline crosses (it follows squeeze, swing,

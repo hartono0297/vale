@@ -111,6 +111,7 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[fresh-install-layout]]: a first run (no, empty or BOM-only `config.json`) loads `Config::fresh()`: Notch, 9 shown and 6 hidden pages, 12 tiles, Pintasan first; `Config::default()` untouched (corrupt file still gets it); `State::show_first_page()` at startup; not verified on a clean profile (2026-11-14)
 - [[lyrics-lookup]]: LRCLIB 503 + Retry-After retry (30 s budget), step order (field search, get, free-text search), None vs transient, the Artist - Title split, tight-window consensus pick of the best-synced version, intro shift for a longer video, `.lrc2` / `.none4`
 - [[mascot-play]]: mascot stories around the island (parts 1-2, 2026-11-15): ten stories (four cat, three octopus, three falk), the mockup's layer stack and pure drawables, art in `src/ui/play/art/`, `Stage` real layout, no-pop rules (wind-down paced by time, `cut_at`), `mascot_play` preset, right-click "Mainkan maskot", one one-shot timer; not yet looked at on screen
+- [[mascot-hour-schedule]]: `mascot_hours` (0, 1, 2, 3, 4, 6), own one-shot `TIMER_MASCOT_HOUR` armed 1 s past the hour (an early fire never opens a second window), 10 min window retried every 30 s, skips the cooldown, no catch-up, independent of the idle clock (2026-11-18)
 
 ## Gotchas
 
