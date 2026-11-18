@@ -68,7 +68,8 @@ hook; serve it over http, a `file:` page loses the hash). Spec
   (`Draw::Digit.home`); `DIGIT_X` (one table) only aims, up to 1.6 dip off.
 - **Power**: two one-shot timers, `TIMER_MASCOT_PLAY` (19, idle stories) and
   `TIMER_MASCOT_HOUR` (36, the hour), each armed only while a story could
-  start; the frame clock only while a play runs; a play forces a Full
+  start (the hour one only while the durable gates hold, see
+  [[mascot-hour-schedule]]); the frame clock only while a play runs; a play forces a Full
   redraw. Nothing runs at idle ([[bata-idle-power-budget]]).
 - **Notch shoulders** stay fillets on the screen edge; `top_corners` puts
   their feet where the drawn outline crosses (it follows squeeze, swing,

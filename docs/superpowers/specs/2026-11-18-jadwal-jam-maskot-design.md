@@ -66,8 +66,13 @@ cooldown is on. The user cannot see it or change it.
   cooldown for idle stories as before. Tests: Hour with a cooldown running
   starts; Hour while typing waits; `off_by_one_envs` stays complete.
 - **Timer** (`app.rs`): a new one-shot `TIMER_MASCOT_HOUR`, wanted only while
-  `mascot_hours != 0`, the preset is not Mati and the mascot is on with a ready
-  story (not the pointer, presence or cooldown: judged on fire). Fire:
+  `mascot_hours != 0`, the preset is not Mati and the durable gates hold: mascot
+  on, motion Full, no Energy Saver, Windows animations on, not Jadi muka, a
+  ready story (`hour_timer_wanted`; not the pointer, presence or cooldown:
+  judged on fire). With one failing no timer is armed. Fire:
+  - a tick queued before the timer was stopped is ignored;
+  - `hour_skips` (lock or screen off, fullscreen, recording, asleep, or a
+    durable gate failing) goes straight to `next_hour`: no window, no retry;
   - first fire of an hour opens the window (`hour_deadline = now + 10 min`);
   - `try_play(Moment::Hour)`; if it did not start and the deadline is not past,
     set the timer 30 s ahead; otherwise set it for `next_hour`;
@@ -83,7 +88,7 @@ cooldown is on. The user cannot see it or change it.
   for this mid-build, 2026-11-18, instead of an always-visible list). Opened, it
   shows the five-line list (one per preset, the active one highlighted, "name:
   when. gap") and the shared rule line. A second row "Tiap jam" with a segmented control (Mati / 1 / 2 / 3 / 4 /
-  6 jam) and the sentence "Jam 02.00, 04.00 ...". The row is dimmed with the
+  6 jam) and the sentence "Jam 02.00, 04.00 ..." (step 1: "Setiap jam bulat, 00.00 sampai 23.00."; drawn dimmed with the row). The row is dimmed with the
   preset row when the mascot is off, has no ready story, or the preset is
   Mati. New `Hit`/`Action`/`SettingsAction::MascotHours`, `Group::MascotHours`.
   Strings in both languages; the layout test for the card's rows is updated.
@@ -100,7 +105,7 @@ cooldown is on. The user cannot see it or change it.
 | Owner idle 15 s to 5 min, nothing open | plays now |
 | Typing, a panel or notice open, menu, pointer on the island | waits, tries every 30 s for 10 min, then skips to the next hour |
 | Owner away more than 5 min | no story; if they come back inside the window it plays once they pause 15 s |
-| Sleep, lock, fullscreen, recording, Energy Saver, motion not Full | skipped, never made up |
+| Sleep, lock or screen off, fullscreen, recording, Energy Saver, motion not Full, animations off, Jadi muka, no ready story | skipped, never made up (no retry; with the last five no timer is armed) |
 | Another story is running | waits inside the window |
 
 ## Left to the builder
