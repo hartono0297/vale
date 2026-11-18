@@ -2497,15 +2497,14 @@ impl App {
     /// Sets `TIMER_MASCOT_HOUR` for the next chosen hour of the local clock.
     fn arm_hour_timer(&mut self) {
         let t = Local::now();
-        let Some(wait) = next_hour(t.hour(), t.minute(), t.second(), self.config.mascot_hours)
+        let Some(ms) = hour_arm_ms(t.hour(), t.minute(), t.second(), self.config.mascot_hours)
         else {
             return;
         };
-        self.set_hour_timer(wait);
+        self.set_hour_timer(ms);
     }
 
-    fn set_hour_timer(&mut self, wait: Duration) {
-        let ms = wait.as_millis().min(u128::from(u32::MAX)) as u32;
+    fn set_hour_timer(&mut self, ms: u32) {
         unsafe {
             SetTimer(Some(self.hwnd), TIMER_MASCOT_HOUR, ms, None);
         }
@@ -2535,7 +2534,7 @@ impl App {
         self.try_play(Moment::Hour, now);
         let started = !was && self.play.is_some();
         match hour_wait(started, deadline.saturating_duration_since(now)) {
-            HourWait::Retry => self.set_hour_timer(HOUR_RETRY),
+            HourWait::Retry => self.set_hour_timer(HOUR_RETRY.as_millis() as u32),
             HourWait::Next => {
                 self.hour_deadline = None;
                 // A story that started has already synced the next hour.
@@ -9198,6 +9197,18 @@ fn hour_timer_wanted(mascot_on: bool, preset: MascotPlay, step: u8) -> bool {
     mascot_on && step != 0 && preset != MascotPlay::Mati
 }
 
+/// How far past the hour `TIMER_MASCOT_HOUR` is armed: `next_hour` drops the
+/// sub-second part and a one-shot may fire early, and a fire just before the
+/// hour would open a second window for the same hour.
+const HOUR_ARM_MARGIN: Duration = Duration::from_secs(1);
+
+/// Milliseconds to arm `TIMER_MASCOT_HOUR` for from the local `hour:min:sec`:
+/// the next chosen hour plus `HOUR_ARM_MARGIN`. `None` when `step` is 0.
+fn hour_arm_ms(hour: u32, min: u32, sec: u32, step: u8) -> Option<u32> {
+    let wait = next_hour(hour, min, sec, step)? + HOUR_ARM_MARGIN;
+    Some(wait.as_millis().min(u128::from(u32::MAX)) as u32)
+}
+
 /// What to do once an hour story was tried.
 enum HourWait {
     /// Ask the gate again in `HOUR_RETRY`.
@@ -12155,6 +12166,14 @@ mod tests {
             assert!(!hour_timer_wanted(false, p, 1), "{p:?} mascot off");
         }
         assert!(!hour_timer_wanted(true, Mati, 1));
+    }
+
+    #[test]
+    fn the_hour_timer_is_armed_a_second_past_the_hour_so_an_early_fire_still_lands_after_it() {
+        assert_eq!(hour_arm_ms(9, 59, 59, 1), Some(2_000));
+        assert_eq!(hour_arm_ms(10, 0, 0, 1), Some(3_601_000));
+        assert_eq!(hour_arm_ms(23, 59, 59, 6), Some(2_000));
+        assert_eq!(hour_arm_ms(9, 0, 0, 0), None);
     }
 
     #[test]
