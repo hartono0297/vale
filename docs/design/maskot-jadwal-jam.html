@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jadwal animasi maskot</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&display=swap" rel="stylesheet">
+<style>
+  /* Same cream paper and DM Sans as the other Vale design sheets (warna-notch.html).
+     The faux Settings window uses the app's own window palettes (studio-ui.html: .wl and .wd),
+     so a card here is what the real one would look like. */
+  :root {
+    --paper: #F4EDE4; --card: #FFFBF5; --ink: #231C18; --ink-2: #5E5045;
+    --line: #D9CBBB; --edge: #8C7B6C; --pick: #A8451F;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--paper); color: var(--ink); font: 16px/1.5 "DM Sans", system-ui, sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 32px 16px 80px; }
+  h1 { font-size: 34px; line-height: 1.15; margin: 0 0 8px; letter-spacing: -0.01em; }
+  h2 { font-size: 22px; margin: 48px 0 4px; }
+  h3 { font-size: 16px; margin: 0; }
+  p { margin: 0 0 12px; max-width: 74ch; }
+  .lead { color: var(--ink-2); font-size: 17px; }
+  .muted { color: var(--ink-2); }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  button:focus-visible { outline: 3px solid var(--pick); outline-offset: 2px; }
+
+  .bar { display: flex; flex-wrap: wrap; gap: 14px 24px; align-items: flex-end; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin-top: 20px; position: sticky; top: 8px; z-index: 2; }
+  .bar .g { display: flex; flex-direction: column; gap: 6px; }
+  .bar .l { font-size: 13px; font-weight: 500; color: var(--ink-2); }
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+  .tabs button { border: 1px solid var(--edge); background: var(--card); border-radius: 8px; padding: 6px 12px; min-height: 40px; font-size: 14px; }
+  .tabs button[aria-pressed="true"] { border-color: var(--pick); background: #F6E2D6; color: #7A2E10; font-weight: 500; }
+
+  .opts { display: grid; gap: 16px; margin-top: 16px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .opts.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .opt { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+  .opt.pick { border-color: var(--pick); box-shadow: inset 0 0 0 1px var(--pick); }
+  .cap { font-size: 15px; font-weight: 700; }
+  .why { font-size: 14px; color: var(--ink-2); margin: 0; }
+  .tag { display: inline-block; font-size: 12px; font-weight: 700; color: #7A2E10; background: #F6E2D6; border-radius: 6px; padding: 1px 8px; margin-left: 6px; vertical-align: 1px; }
+
+  /* The faux Settings window. */
+  .win { --wbg: #F4EEE6; --wcard: #FFFBF5; --wtx: #221A14; --wtx2: #6F6154; --wb: rgba(34,26,20,.12); --wsel: #E2683C; --wseli: #17120F; --wtrack: #EADFD1; --wfield: #FFFFFF; --wbtn: #EFE6DA; --wdim: .45;
+         background: var(--wbg); color: var(--wtx); border-radius: 10px; padding: 14px; font-size: 13px; line-height: 1.4; }
+  .win.dark { --wbg: #1E1814; --wcard: #272019; --wtx: #F4EDE4; --wtx2: #A89A8B; --wb: rgba(244,237,228,.12); --wtrack: #332A22; --wfield: #2C241D; --wbtn: #332A22; }
+  .eyebrow { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--wtx2); margin: 0 0 6px 2px; font-weight: 500; }
+  .wcard { background: var(--wcard); border: 1px solid var(--wb); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+  .wcard + .eyebrow { margin-top: 14px; }
+  .row-t { font-size: 13.5px; font-weight: 500; }
+  .row-d { color: var(--wtx2); font-size: 12.5px; margin: 2px 0 0; }
+  .row-d.live { color: var(--wtx); }
+  .sep { height: 1px; background: var(--wb); margin: 2px -12px; }
+  .dim { opacity: var(--wdim); pointer-events: none; }
+
+  .segw { display: inline-flex; flex-wrap: wrap; gap: 2px; background: var(--wtrack); border-radius: 9px; padding: 2px; align-self: flex-start; max-width: 100%; }
+  .segw button { border: 0; background: transparent; color: var(--wtx2); border-radius: 7px; padding: 6px 11px; min-height: 36px; font-size: 13px; }
+  .segw button[aria-pressed="true"] { background: var(--wsel); color: var(--wseli); font-weight: 700; }
+  .segw button:hover:not([aria-pressed="true"]) { background: var(--wb); color: var(--wtx); }
+
+  .legend { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+  .legend li { display: grid; grid-template-columns: 96px 1fr; gap: 10px; padding: 6px 8px; border-radius: 7px; color: var(--wtx2); }
+  .legend li b { font-weight: 500; color: var(--wtx); }
+  .legend li[data-on="1"] { background: var(--wtrack); color: var(--wtx); }
+  .legend li[data-on="1"] b { font-weight: 700; }
+
+  .rules { margin: 0; padding-left: 18px; color: var(--wtx2); font-size: 12.5px; }
+  .rules li { margin: 2px 0; }
+
+  .step { display: inline-flex; align-items: center; gap: 8px; }
+  .step button { width: 36px; height: 36px; border-radius: 8px; border: 1px solid var(--wb); background: var(--wbtn); font-size: 16px; }
+  .step output { min-width: 62px; text-align: center; font-weight: 500; }
+  .two { display: flex; gap: 22px; flex-wrap: wrap; }
+  .two > div { display: flex; flex-direction: column; gap: 4px; }
+  .two .l { font-size: 12.5px; color: var(--wtx2); }
+
+  .chips { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 4px; }
+  .chips button { border: 1px solid var(--wb); background: var(--wbtn); color: var(--wtx2); border-radius: 7px; min-height: 36px; font-size: 12.5px; }
+  .chips button[aria-pressed="true"] { background: var(--wsel); color: var(--wseli); border-color: transparent; font-weight: 700; }
+  .chips-h { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .chips-h .quick { display: flex; gap: 6px; }
+  .chips-h .quick button { border: 1px solid var(--wb); background: var(--wbtn); border-radius: 7px; padding: 4px 10px; min-height: 32px; font-size: 12.5px; color: var(--wtx); }
+
+  .note { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin-top: 14px; }
+  .note ul { margin: 6px 0 0; padding-left: 20px; }
+  .note li { margin: 4px 0; max-width: 80ch; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; margin-top: 8px; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--ink-2); font-weight: 500; }
+
+  @media (max-width: 860px) { .opts, .opts.three { grid-template-columns: 1fr; } }
+  @media (max-width: 640px) {
+    .bar { position: static; }
+    h1 { font-size: 28px; }
+    .chips { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+    .legend li { grid-template-columns: 1fr; gap: 0; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Kapan maskot bermain, dan tiap jam</h1>
+  <p class="lead">Dua hal di Pengaturan, Maskot, kartu Otomatis: <b>penjelasan</b> tiap pilihan supaya jelas artinya, dan <b>jadwal jam</b> supaya maskot bermain tepat di jam yang kamu pilih. Semua kontrol di bawah bisa diklik. Tiap kotak adalah jendela Pengaturan yang sama, cuma kartu Otomatis yang beda.</p>
+
+  <div class="bar" role="group" aria-label="Pengaturan pratinjau">
+    <div class="g"><span class="l" id="lTheme">Jendela Pengaturan</span><div class="tabs" id="themeSeg" aria-labelledby="lTheme"></div></div>
+    <div class="g"><span class="l" id="lPre">Pilihan Animasi maskot otomatis</span><div class="tabs" id="preSeg" aria-labelledby="lPre"></div></div>
+  </div>
+
+  <h2>1. Menjelaskan tiap pilihan</h2>
+  <p class="muted">Sekarang hanya ada satu kalimat pendek di bawah judul, sama untuk kelima pilihan. Pilih preset di bar atas, lalu lihat bedanya.</p>
+  <div class="opts" id="explain"></div>
+
+  <h2>2. Jadwal jam</h2>
+  <p class="muted">Di semua kotak ini, "Tiap jam" jalan di samping preset (preset tetap mengatur cerita acak). Kalau preset <b>Mati</b>, baris jam ikut redup dan tidak jalan. Coba ganti jam dan lihat kalimat contoh di bawahnya berubah.</p>
+  <div class="opts" id="hours"></div>
+
+  <h2>Kapan tepatnya maskot mulai di jam itu</h2>
+  <div class="note">
+    <p>Ini aturan yang sama untuk ketiga pilihan di atas. Jadi yang kamu pilih tinggal tampilannya.</p>
+    <table>
+      <tr><th>Keadaan pas jam itu</th><th>Yang terjadi</th></tr>
+      <tr><td>Kamu diam di PC, tidak ada panel</td><td>Maskot bermain tepat di jam itu.</td></tr>
+      <tr><td>Kamu sedang mengetik, atau panel terbuka</td><td>Maskot menunggu sampai kamu berhenti 15 detik atau panel tertutup, paling lama 10 menit. Lewat itu, dilewati sampai jadwal berikutnya.</td></tr>
+      <tr><td>Kamu tidak di PC (diam lebih dari 5 menit)</td><td>Dilewati, karena tidak ada yang melihat.</td></tr>
+      <tr><td>PC tidur, layar terkunci, atau layar penuh</td><td>Dilewati. Setelah bangun, maskot tidak menyusul cerita yang lewat.</td></tr>
+      <tr><td>Ada cerita yang baru selesai (jeda antar cerita)</td><td>Ikut menunggu, masih di dalam batas 10 menit.</td></tr>
+    </table>
+  </div>
+
+  <h2>Rekomendasi</h2>
+  <div class="note">
+    <p><b>Penjelasan: B (daftar semua pilihan, yang aktif disorot). Jadwal: Pilihan 1 (Mati, 1, 2, 3, 4, 6 jam).</b></p>
+    <ul>
+      <li>B: kamu bisa membandingkan lima pilihan sekaligus tanpa mengklik satu per satu, dan angkanya (menit) tidak mengambang. Kalimat yang berganti (A) lebih ringkas tapi harus dicoba satu-satu.</li>
+      <li>Pilihan 1 memakai kontrol yang sudah ada di Pengaturan (segmented), jadi tidak ada kontrol baru yang perlu digambar. Jam bulat (kelipatan dari 00.00) membuat "jam 1, jam 2, jam 3" dan "tiap 2 jam" pas dengan kata-katamu.</li>
+      <li>Pilihan 2 menambah rentang jam (misal 09.00 sampai 17.00) supaya maskot tidak muncul subuh. Tapi maskot sudah hanya bermain kalau kamu di PC, jadi rentang ini jarang perlu.</li>
+      <li>Pilihan 3 (pilih jam satu per satu) paling bebas, tapi 24 tombol terlalu ramai untuk sebuah baris, dan susah dibaca sekilas.</li>
+      <li>Bawaan: <b>Tiap 1 jam</b>, karena itu yang sekarang sudah terjadi diam-diam. Pengguna lama tidak merasa ada yang berubah.</li>
+    </ul>
+  </div>
+</main>
+
+<script>
+(() => {
+  const PRESETS = [
+    { k: 'sering',   name: 'Sering',        when: 'Tiap 8 sampai 15 menit', gap: 'Jeda minimal 6 menit antar cerita.' },
+    { k: 'sesekali', name: 'Sesekali',      when: 'Tiap 15 sampai 35 menit', gap: 'Jeda minimal 12 menit. Bawaan.' },
+    { k: 'jarang',   name: 'Jarang',        when: 'Tiap 45 sampai 90 menit', gap: 'Jeda minimal 40 menit.' },
+    { k: 'sapaan',   name: 'Hanya sapaan',  when: 'Tidak ada cerita acak', gap: 'Bermain hanya setelah sapaan, dan pada jam di bawah.' },
+    { k: 'mati',     name: 'Mati',          when: 'Tidak pernah sendiri', gap: 'Tetap bisa lewat klik kanan notch, Mainkan maskot.' },
+  ];
+  const RULE_COMMON = 'Maskot hanya mulai kalau kamu ada di PC tapi sedang tidak mengetik, tidak ada panel terbuka, dan tidak layar penuh.';
+  const STEPS = [0, 1, 2, 3, 4, 6];            // 0 = Mati
+  const ST = { theme: 'light', pre: 'sesekali', step: 1, from: 9, to: 17, hrs: new Set([9, 12, 15, 18]) };
+
+  const $ = (s, r = document) => r.querySelector(s);
+  const pad = n => String(n).padStart(2, '0');
+  const el = (tag, attrs = {}, kids = []) => {
+    const e = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) k === 'text' ? e.textContent = v : e.setAttribute(k, v);
+    kids.forEach(c => e.append(c));
+    return e;
+  };
+  const pressed = (b, on) => b.setAttribute('aria-pressed', on ? 'true' : 'false');
+
+  function seg(host, items, getOn, onPick, cls) {
+    host.replaceChildren();
+    host.className = cls;
+    items.forEach(([key, label]) => {
+      const b = el('button', { type: 'button', text: label });
+      pressed(b, getOn(key));
+      b.addEventListener('click', () => onPick(key));
+      host.append(b);
+    });
+  }
+
+  // Hours a "tiap N jam" schedule fires on: multiples of N from 00.00, inside from..to when a range is on.
+  function firing(step, range) {
+    if (!step) return [];
+    const out = [];
+    for (let h = 0; h < 24; h += step) if (!range || (h >= range[0] && h <= range[1])) out.push(h);
+    return out;
+  }
+  const times = hs => hs.map(h => pad(h) + '.00').join(', ');
+  function sentence(hs, none) {
+    if (!hs.length) return none;
+    if (hs.length > 8) return 'Jam ' + times(hs.slice(0, 6)) + ' dan ' + (hs.length - 6) + ' jam lagi.';
+    return 'Jam ' + times(hs) + '.';
+  }
+
+  function presetRow(mode) {
+    const on = PRESETS.find(p => p.k === ST.pre);
+    const wrap = el('div');
+    wrap.append(el('div', { class: 'row-t', text: 'Animasi maskot otomatis' }));
+    if (mode === 'plain') {
+      wrap.append(el('p', { class: 'row-d', text: 'Maskot bermain saat kamu di PC tapi tidak mengetik. Klik kanan island untuk memainkannya kapan saja' }));
+    } else if (mode === 'line') {
+      wrap.append(el('p', { class: 'row-d', text: RULE_COMMON }));
+    } else {
+      wrap.append(el('p', { class: 'row-d', text: 'Seberapa sering maskot bermain sendiri di sekitar notch.' }));
+    }
+    const s = el('div', { role: 'group', 'aria-label': 'Animasi maskot otomatis', style: 'margin-top:8px' });
+    seg(s, PRESETS.map(p => [p.k, p.name]), k => k === ST.pre, k => { ST.pre = k; render(); }, 'segw');
+    wrap.append(s);
+    if (mode === 'line') {
+      wrap.append(el('p', { class: 'row-d live', style: 'margin-top:8px', text: on.name + ': ' + on.when.toLowerCase() + '. ' + on.gap }));
+    }
+    if (mode === 'list') {
+      const ul = el('ul', { class: 'legend', style: 'margin-top:8px' });
+      PRESETS.forEach(p => {
+        const li = el('li', { 'data-on': p.k === ST.pre ? '1' : '0' }, [
+          el('b', { text: p.name }), el('span', { text: p.when + '. ' + p.gap })]);
+        ul.append(li);
+      });
+      wrap.append(ul);
+      wrap.append(el('p', { class: 'row-d', style: 'margin-top:8px', text: RULE_COMMON }));
+    }
+    return wrap;
+  }
+
+  function hourRow(variant) {
+    const off = ST.pre === 'mati';
+    const wrap = el('div', { class: off ? 'dim' : '' });
+    wrap.append(el('div', { class: 'row-t', text: 'Tiap jam' }));
+    const hs = variant === 3 ? [...ST.hrs].sort((a, b) => a - b) : firing(ST.step, variant === 2 ? [ST.from, ST.to] : null);
+
+    if (variant === 3) {
+      wrap.append(el('p', { class: 'row-d', text: 'Pilih jam yang kamu mau. Maskot bermain tepat di jam itu.' }));
+      const h = el('div', { class: 'chips-h', style: 'margin-top:8px' });
+      const q = el('div', { class: 'quick' });
+      [['Jam kerja', [9, 10, 11, 12, 13, 14, 15, 16, 17]], ['Semua', [...Array(24).keys()]], ['Kosongkan', []]].forEach(([n, v]) => {
+        const b = el('button', { type: 'button', text: n });
+        b.addEventListener('click', () => { ST.hrs = new Set(v); render(); });
+        q.append(b);
+      });
+      h.append(el('span', { class: 'row-d', text: ST.hrs.size + ' jam dipilih' }), q);
+      wrap.append(h);
+      const c = el('div', { class: 'chips', style: 'margin-top:6px', role: 'group', 'aria-label': 'Jam dalam sehari' });
+      for (let i = 0; i < 24; i++) {
+        const b = el('button', { type: 'button', text: pad(i), 'aria-label': 'Jam ' + pad(i) + '.00' });
+        pressed(b, ST.hrs.has(i));
+        b.addEventListener('click', () => { ST.hrs.has(i) ? ST.hrs.delete(i) : ST.hrs.add(i); render(); });
+        c.append(b);
+      }
+      wrap.append(c);
+      wrap.append(el('p', { class: 'row-d live', style: 'margin-top:8px', text: sentence(hs, 'Tidak ada jam dipilih, jadi tidak jalan.') }));
+      return wrap;
+    }
+
+    wrap.append(el('p', { class: 'row-d', text: 'Maskot bermain tepat di jam bulat, dihitung dari 00.00.' }));
+    const s = el('div', { role: 'group', 'aria-label': 'Tiap berapa jam', style: 'margin-top:8px' });
+    seg(s, STEPS.map(n => [n, n ? n + ' jam' : 'Mati']), k => k === ST.step, k => { ST.step = k; render(); }, 'segw');
+    wrap.append(s);
+
+    if (variant === 2) {
+      const two = el('div', { class: 'two', style: 'margin-top:10px' });
+      [['from', 'Mulai jam', 0, 23], ['to', 'Sampai jam', 0, 23]].forEach(([key, label, lo, hi]) => {
+        const out = el('output', { 'aria-live': 'polite', text: pad(ST[key]) + '.00' });
+        const mk = (sym, d, aria) => {
+          const b = el('button', { type: 'button', text: sym, 'aria-label': aria + ' ' + label.toLowerCase() });
+          b.addEventListener('click', () => { ST[key] = Math.min(hi, Math.max(lo, ST[key] + d)); if (ST.from > ST.to) { key === 'from' ? ST.to = ST.from : ST.from = ST.to; } render(); });
+          return b;
+        };
+        two.append(el('div', {}, [el('span', { class: 'l', text: label }), el('span', { class: 'step' }, [mk('-', -1, 'Kurangi'), out, mk('+', 1, 'Tambah')])]));
+      });
+      wrap.append(two);
+    }
+    wrap.append(el('p', { class: 'row-d live', style: 'margin-top:8px', text: sentence(hs, 'Mati: maskot tidak bermain di jam tertentu.') }));
+    return wrap;
+  }
+
+  function windowOf(inner) {
+    const w = el('div', { class: 'win' + (ST.theme === 'dark' ? ' dark' : '') });
+    w.append(el('p', { class: 'eyebrow', text: 'Otomatis' }));
+    const card = el('div', { class: 'wcard' });
+    inner.forEach((n, i) => { if (i) card.append(el('div', { class: 'sep' })); card.append(n); });
+    w.append(card);
+    return w;
+  }
+
+  function option(title, why, body, pick) {
+    return el('section', { class: 'opt' + (pick ? ' pick' : '') }, [
+      el('div', { class: 'cap' }, [document.createTextNode(title), ...(pick ? [el('span', { class: 'tag', text: 'Rekomendasi' })] : [])]),
+      el('p', { class: 'why', text: why }),
+      body,
+    ]);
+  }
+
+  function render() {
+    seg($('#themeSeg'), [['light', 'Terang'], ['dark', 'Gelap']], k => k === ST.theme, k => { ST.theme = k; render(); }, 'tabs');
+    seg($('#preSeg'), PRESETS.map(p => [p.k, p.name]), k => k === ST.pre, k => { ST.pre = k; render(); }, 'tabs');
+
+    const ex = $('#explain');
+    ex.replaceChildren(
+      option('Sekarang', 'Satu kalimat untuk semua pilihan. Tidak jelas bedanya Sering dan Jarang, apa itu "Hanya sapaan", dan kapan tepatnya.', windowOf([presetRow('plain')]), false),
+      option('A. Kalimat yang berganti', 'Satu baris di bawah pilihan, isinya ikut pilihan yang aktif. Ringkas, tapi harus mengklik satu per satu untuk membandingkan.', windowOf([presetRow('line')]), false),
+      option('B. Daftar semua pilihan', 'Kelima pilihan dijelaskan sekaligus, yang aktif disorot. Lebih tinggi sedikit, tapi tidak perlu menebak.', windowOf([presetRow('list')]), true),
+    );
+
+    const h = $('#hours');
+    h.replaceChildren(
+      option('Pilihan 1. Kelipatan jam', 'Segmented: Mati, 1, 2, 3, 4, 6 jam. Kontrol yang sudah ada. Kalimat contoh menunjukkan jam persisnya.', windowOf([presetRow('line'), hourRow(1)]), true),
+      option('Pilihan 2. Kelipatan jam + rentang', 'Sama, ditambah "Mulai jam" dan "Sampai jam" supaya tidak muncul di luar jam kerja.', windowOf([presetRow('line'), hourRow(2)]), false),
+      option('Pilihan 3. Pilih jam satu per satu', 'Dua puluh empat tombol. Paling bebas (misal jam 9, 12, 15), tapi ramai dan susah dibaca sekilas.', windowOf([presetRow('line'), hourRow(3)]), false),
+    );
+  }
+  render();
+})();
+</script>
+</body>
+</html>
