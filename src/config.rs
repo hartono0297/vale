@@ -236,6 +236,10 @@ pub struct Config {
     /// How often the mascot plays on its own. A bad value reads as Sesekali.
     #[serde(default, deserialize_with = "mascot_play")]
     pub mascot_play: MascotPlay,
+    /// Every how many hours the mascot tells a story on the hour: 0 (off), 1,
+    /// 2, 3, 4 or 6. A bad value reads as 1.
+    #[serde(deserialize_with = "mascot_hours")]
+    pub mascot_hours: u8,
 }
 
 /// The lyrics card's rectangle in screen coordinates, physical pixels.
@@ -528,6 +532,16 @@ fn mascot_play<'de, D: Deserializer<'de>>(d: D) -> Result<MascotPlay, D::Error> 
     Ok(v.as_str()
         .and_then(MascotPlay::from_name)
         .unwrap_or_default())
+}
+
+/// An hour step for the mascot's stories on the hour: 0, 1, 2, 3, 4 or 6;
+/// anything else is 1.
+fn mascot_hours<'de, D: Deserializer<'de>>(d: D) -> Result<u8, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(match v.as_u64() {
+        Some(n @ (0 | 1 | 2 | 3 | 4 | 6)) => n as u8,
+        _ => 1,
+    })
 }
 
 /// A falk coat name; anything else is Lutino.
@@ -846,6 +860,7 @@ impl Default for Config {
             falk_color: FalkColor::Lutino,
             octopus_color: OctopusColor::Coral,
             mascot_play: MascotPlay::Sesekali,
+            mascot_hours: 1,
             cat_accessory: CatAccessory::None,
             cat_follow_pointer: true,
             cat_dance: true,
@@ -1002,6 +1017,7 @@ pub fn merge_owned(disk: Config, mem: &Config) -> Config {
         falk_color: mem.falk_color,
         octopus_color: mem.octopus_color,
         mascot_play: mem.mascot_play,
+        mascot_hours: mem.mascot_hours,
         cat_accessory: mem.cat_accessory,
         cat_follow_pointer: mem.cat_follow_pointer,
         cat_dance: mem.cat_dance,
@@ -1414,6 +1430,7 @@ mod tests {
             falk_color: FalkColor::Grey,
             octopus_color: OctopusColor::Blue,
             mascot_play: MascotPlay::Sapaan,
+            mascot_hours: 4,
             cat_accessory: CatAccessory::Bow,
             cat_follow_pointer: false,
             cat_dance: false,
@@ -1521,6 +1538,7 @@ mod tests {
             (merged.mascot, merged.falk_color, merged.octopus_color),
             (Mascot::Octopus, FalkColor::Grey, OctopusColor::Blue)
         );
+        assert_eq!(merged.mascot_hours, 4);
     }
 
     #[test]
@@ -3237,6 +3255,24 @@ mod tests {
             (odd.mascot_play, odd.robot_sleep_minutes),
             (MascotPlay::Sesekali, 25)
         );
+    }
+
+    #[test]
+    fn mascot_hours_defaults_to_one_and_reads_leniently() {
+        assert_eq!(Config::default().mascot_hours, 1);
+        for (json, want) in [
+            (r#"{}"#, 1u8),
+            (r#"{"mascot_hours":0}"#, 0),
+            (r#"{"mascot_hours":3}"#, 3),
+            (r#"{"mascot_hours":6}"#, 6),
+            (r#"{"mascot_hours":5}"#, 1),
+            (r#"{"mascot_hours":7}"#, 1),
+            (r#"{"mascot_hours":-1}"#, 1),
+            (r#"{"mascot_hours":"2"}"#, 1),
+            (r#"{"mascot_hours":null}"#, 1),
+        ] {
+            assert_eq!(parse(json).mascot_hours, want, "{json}");
+        }
     }
 
     #[test]
