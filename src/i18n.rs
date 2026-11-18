@@ -933,6 +933,9 @@ keys! {
     // Under the preset list: when any automatic story may start.
     MascotPlayRule => "Maskot hanya mulai kalau kamu ada di PC tapi tidak mengetik, tidak ada panel terbuka, dan tidak layar penuh.",
         "The mascot only starts when you are at the PC but not typing, no panel is open and nothing is fullscreen.";
+    // The tip of the info button that opens and closes that list.
+    TipPlayInfoShow => "Lihat penjelasan", "Show what these mean";
+    TipPlayInfoHide => "Sembunyikan penjelasan", "Hide the explanation";
     MascotHours => "Tiap jam", "On the hour";
     MascotHoursDesc => "Maskot bermain tepat di jam bulat, dihitung dari 00.00",
         "The mascot plays on round hours, counted from 00:00";

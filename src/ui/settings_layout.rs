@@ -428,6 +428,11 @@ pub fn hit_tip(hit: &Hit) -> Option<Tip> {
         Hit::Surface(v) => Some(Tip::named(surface_key(*v))),
         Hit::CatColor(v) => Some(Tip::named(cat_color_key(*v))),
         Hit::CatAccessory(v) => Some(Tip::named(accessory_key(*v))),
+        Hit::MascotPlayInfo(open) => Some(Tip::named(if *open {
+            Key::TipPlayInfoHide
+        } else {
+            Key::TipPlayInfoShow
+        })),
         _ => None,
     }
 }
@@ -565,6 +570,8 @@ pub enum Hit {
     RobotSleep(i32),
     /// "Animasi maskot otomatis".
     MascotPlay(MascotPlay),
+    /// The info button on that row; true while the explanation is open.
+    MascotPlayInfo(bool),
     /// "Tiap jam": every N hours, 0 for off.
     MascotHours(u8),
     /// "Sapaan".
@@ -1529,6 +1536,8 @@ pub struct State<'a> {
     pub robot_motion: Motion,
     pub robot_sleep: u32,
     pub mascot_play: MascotPlay,
+    /// The presets' explanation is open (window state, not saved).
+    pub play_info_open: bool,
     /// "Tiap jam": every N hours, 0 for off.
     pub mascot_hours: u8,
     pub greeting: bool,
@@ -3896,9 +3905,10 @@ fn cat_page(b: &mut Builder, s: &State) {
     }
 }
 
-/// "Otomatis": "Animasi maskot otomatis", its description in the card's
-/// width and the five segments in a block under it, then what each preset
-/// does (the active one brighter) and when any of them may start. Under a
+/// "Otomatis": "Animasi maskot otomatis" with an info button at its right,
+/// its description beside the button and the five segments in a block under
+/// it; the button opens what each preset does (the active one brighter) and
+/// when any of them may start, under the segments. Under a
 /// divider, "Tiap jam" the same way, with the hours it plays at. A mascot
 /// with no ready story (whatever the clock) gets the rows dimmed and says so.
 fn mascot_play_card(b: &mut Builder, s: &State) {
@@ -3917,20 +3927,26 @@ fn mascot_play_card_for(b: &mut Builder, s: &State, ready: bool) {
         Key::MascotPlayComing
     };
     let w = b.g.content_w - 2.0 * INSET;
-    let desc = b.wrap(&b.t(desc_key), Font::Desc, w);
+    // The label and description end before the info button at the right.
+    let desc_w = w - PLAY_INFO - 2.0 * GAP;
+    let desc = b.wrap(&b.t(desc_key), Font::Desc, desc_w);
     let head = wrapped_row_h(desc.len());
-    // Each preset's lines with its tone, then the rule.
+    // While the explanation is open: each preset's lines with its tone,
+    // then the rule.
     let mut list: Vec<(String, Tone)> = Vec::new();
-    for v in MASCOT_PLAY_ORDER {
-        let tone = if v == s.mascot_play {
-            Tone::Primary
-        } else {
-            Tone::Secondary
-        };
-        let info = crate::i18n::mascot_play_info(b.lang, v);
-        list.extend(b.wrap(&info, Font::Desc, w).into_iter().map(|l| (l, tone)));
+    let mut rule = Vec::new();
+    if s.play_info_open {
+        for v in MASCOT_PLAY_ORDER {
+            let tone = if v == s.mascot_play {
+                Tone::Primary
+            } else {
+                Tone::Secondary
+            };
+            let info = crate::i18n::mascot_play_info(b.lang, v);
+            list.extend(b.wrap(&info, Font::Desc, w).into_iter().map(|l| (l, tone)));
+        }
+        rule = b.wrap(&b.t(Key::MascotPlayRule), Font::Desc, w);
     }
-    let rule = b.wrap(&b.t(Key::MascotPlayRule), Font::Desc, w);
     let hours_items: Vec<(Hit, String)> = MASCOT_HOURS_ORDER
         .iter()
         .map(|v| (Hit::MascotHours(*v), crate::i18n::hours_label(b.lang, *v)))
@@ -3938,22 +3954,41 @@ fn mascot_play_card_for(b: &mut Builder, s: &State, ready: bool) {
     let hours_desc = b.wrap(&b.t(Key::MascotHoursDesc), Font::Desc, w);
     let hours_head = wrapped_row_h(hours_desc.len());
     let hours_line = b.wrap(&crate::i18n::hours_line(b.lang, s.mascot_hours), Font::Desc, w);
-    // First row: the segments, the list and the rule under them.
+    // First row: the segments, and the list and the rule under them when
+    // open.
     let list_top = head + CONTROL_H + GAP;
     let rule_top = list_top + list.len() as f32 * DESC_LINE_H + GAP;
-    let first_h = rule_top + rule.len() as f32 * DESC_LINE_H + BLOCK_PAD;
+    let first_h = if s.play_info_open {
+        rule_top + rule.len() as f32 * DESC_LINE_H + BLOCK_PAD
+    } else {
+        head + CONTROL_H + BLOCK_PAD
+    };
     let line_top = hours_head + CONTROL_H + GAP;
     let second_h = line_top + hours_line.len() as f32 * DESC_LINE_H + BLOCK_PAD;
     titled(b, Key::GroupMascotPlay);
     let card = b.card(first_h + second_h);
     let text_end = card.right() - INSET + 2.0 * GAP;
+    // The info button at the row's right edge, centred on the label's line.
+    let info = Rect {
+        x: card.right() - INSET - PLAY_INFO,
+        y: card.y + 17.0 - PLAY_INFO / 2.0,
+        w: PLAY_INFO,
+        h: PLAY_INFO,
+    };
+    b.l.controls.push(Control::IconButton {
+        hit: Hit::MascotPlayInfo(s.play_info_open),
+        rect: info,
+        icon: Icon::Info,
+        enabled: true,
+        bare: true,
+    });
     b.row_text_lines(
         card,
         card.y,
         b.t(Key::MascotPlayLabel),
         desc,
         Tone::Secondary,
-        text_end,
+        info.x,
     );
     let left = card.x + INSET;
     let selected = index_of(&MASCOT_PLAY_ORDER, &s.mascot_play);
@@ -3993,6 +4028,10 @@ fn mascot_play_card_for(b: &mut Builder, s: &State, ready: bool) {
         b.text(line(i, first_h + line_top), t, Font::Desc, Tone::Primary, Align::Left);
     }
 }
+
+/// The click area of the info button on "Animasi maskot otomatis" (its glyph
+/// is drawn 16 px, like the drag handle's).
+const PLAY_INFO: f32 = 24.0;
 
 /// "Tiap jam": off, then every 1, 2, 3, 4 and 6 hours.
 pub const MASCOT_HOURS_ORDER: [u8; 6] = crate::ui::play::trigger::HOUR_STEPS;
@@ -6617,6 +6656,7 @@ mod tests {
                         } else {
                             MascotPlay::Sesekali
                         },
+                        play_info_open: false,
                         mascot_hours: if locked { 0 } else { 1 },
                         greeting: locked,
                         mascot,
@@ -8818,9 +8858,78 @@ mod tests {
         }
     }
 
-    /// Both segmented rows, the preset list, the rule and the hours line
-    /// stay inside the card in both languages at the minimum width; the list
-    /// names every preset, the active one brighter.
+    /// The texts of the explanation: each preset's line and the rule.
+    fn play_info_texts(lang: Lang) -> Vec<String> {
+        let mut all: Vec<String> = MASCOT_PLAY_ORDER
+            .iter()
+            .map(|p| crate::i18n::mascot_play_info(lang, *p))
+            .collect();
+        all.push(text(lang, Key::MascotPlayRule).to_owned());
+        all
+    }
+
+    /// Closed (the default) the card has the info button at the first row's
+    /// right edge and none of the explanation; open it is taller and the
+    /// button says so.
+    #[test]
+    fn the_play_info_is_closed_by_default_and_opens_under_the_segments() {
+        assert!(!states().iter().any(|s| s.play_info_open));
+        for lang in [Lang::Id, Lang::En] {
+            let closed = State {
+                lang,
+                robot: true,
+                ..states()[0].clone()
+            };
+            let open = State {
+                play_info_open: true,
+                ..closed.clone()
+            };
+            let (lc, lo) = (
+                mascot_play_card_alone(&closed, true),
+                mascot_play_card_alone(&open, true),
+            );
+            let info = play_info_texts(lang);
+            // Each explanation's first line would start it.
+            for line in &info {
+                let first = |l: &Layout| l.texts.iter().any(|t| !t.text.is_empty() && line.starts_with(t.text.as_str()));
+                assert!(!first(&lc), "{lang:?} closed: {line}");
+                assert!(first(&lo), "{lang:?} open: {line}");
+            }
+            assert!(lc.cards[0].h < lo.cards[0].h, "{lang:?}");
+            // The hours row stays: its segments and its sentence.
+            assert!(lc.segmented(Group::MascotHours).is_some());
+            assert!(lc.texts.iter().any(|t| t.text == crate::i18n::hours_line(lang, closed.mascot_hours)));
+            for (l, was_open) in [(&lc, false), (&lo, true)] {
+                let button = l
+                    .controls
+                    .iter()
+                    .find_map(|c| match c {
+                        Control::IconButton { hit: Hit::MascotPlayInfo(o), rect, icon, .. } => {
+                            Some((*o, *rect, *icon))
+                        }
+                        _ => None,
+                    })
+                    .expect("the info button");
+                assert_eq!(button.0, was_open, "{lang:?}");
+                assert_eq!(button.2, Icon::Info);
+                let label = l
+                    .texts
+                    .iter()
+                    .find(|t| t.text == text(lang, Key::MascotPlayLabel))
+                    .expect("label");
+                let (_, r, _) = button;
+                // At the row's right edge, past the label's text, on its line.
+                assert!(r.x >= label.rect.right(), "{lang:?}");
+                assert_eq!(r.right(), l.cards[0].right() - INSET, "{lang:?}");
+                assert!(r.y <= label.rect.y + label.rect.h / 2.0 && label.rect.y + label.rect.h / 2.0 <= r.bottom());
+                assert!(r.right() <= l.cards[0].right() && r.y >= l.cards[0].y);
+            }
+        }
+    }
+
+    /// Open, both segmented rows, the preset list, the rule and the hours
+    /// line stay inside the card in both languages at the minimum width; the
+    /// list names every preset, the active one brighter.
     #[test]
     fn the_play_card_stays_inside_the_card_in_both_languages() {
         for lang in [Lang::Id, Lang::En] {
@@ -8831,6 +8940,7 @@ mod tests {
                         robot: true,
                         mascot_play: preset,
                         mascot_hours: step,
+                        play_info_open: true,
                         ..states()[0].clone()
                     };
                     let l = mascot_play_card_alone(&s, true);
@@ -13816,7 +13926,22 @@ mod tests {
                 Hit::Surface(Surface::Plum),
                 Hit::CatColor(CatColor::Calico),
                 Hit::CatAccessory(CatAccessory::Bow),
+                Hit::MascotPlayInfo(false),
+                Hit::MascotPlayInfo(true),
             ]
+        }
+
+        #[test]
+        fn the_play_info_button_says_whether_it_shows_or_hides() {
+            for (lang, show, hide) in [
+                (Lang::Id, "Lihat penjelasan", "Sembunyikan penjelasan"),
+                (Lang::En, "Show what these mean", "Hide the explanation"),
+            ] {
+                crate::i18n::set_lang(lang);
+                let name = |open| hit_tip(&Hit::MascotPlayInfo(open)).unwrap().name;
+                assert_eq!(name(false).as_deref(), Some(show), "{lang:?}");
+                assert_eq!(name(true).as_deref(), Some(hide), "{lang:?}");
+            }
         }
 
         #[test]

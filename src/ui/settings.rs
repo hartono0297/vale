@@ -430,6 +430,13 @@ fn mascot_hours_click(v: u8, m: &Model) -> Vec<After> {
     }
 }
 
+/// A click on Otomatis's info button (`open`: the explanation is open now):
+/// it opens or closes. Window state only, like the preview's face: nothing
+/// is posted or saved.
+fn play_info_click(open: bool) -> (bool, Vec<After>) {
+    (!open, Vec::new())
+}
+
 /// What a click on the "Pindah ke PC lain" card does, or `None` for a hit that
 /// is not on the card. The island owns the dialogs and the pending file.
 fn transfer_click(hit: Hit) -> Option<Vec<After>> {
@@ -968,6 +975,8 @@ struct Settings {
     has_battery: bool,
     /// The face the Kucing preview shows (the chips; not saved).
     cat_face: CatFace,
+    /// Otomatis's explanation of the presets is open (not saved).
+    play_info_open: bool,
     hooks: Option<install::HookState>,
     google_note: Option<(String, Tone)>,
     hook_note: Option<(String, Tone)>,
@@ -1459,6 +1468,7 @@ pub fn open(owner: HWND, model: Model, section: Option<Section>) -> Result<HWND>
         focused: None,
         has_battery: battery_present(),
         cat_face: CatFace::default(),
+        play_info_open: false,
         hooks: install::hook_state(),
         google_note: None,
         hook_note: None,
@@ -1839,6 +1849,7 @@ impl Settings {
             robot_motion: m.robot_motion,
             robot_sleep: m.robot_sleep,
             mascot_play: m.mascot_play,
+            play_info_open: self.play_info_open,
             mascot_hours: m.mascot_hours,
             greeting: m.greeting,
             cat_color: m.cat_color,
@@ -2771,6 +2782,15 @@ impl Settings {
             }
             Hit::MascotPlay(v) if v != m.mascot_play => post(Action::MascotPlay(v)),
             Hit::MascotHours(v) => mascot_hours_click(v, &m),
+            Hit::MascotPlayInfo(open) => {
+                let (now_open, after) = play_info_click(open);
+                self.play_info_open = now_open;
+                // The button under the pointer is the new one now.
+                if self.hover == Some(hit) {
+                    self.hover = Some(Hit::MascotPlayInfo(self.play_info_open));
+                }
+                after
+            }
             Hit::Greeting => post(Action::Greeting(!m.greeting)),
             Hit::Mascot(v) if v != m.mascot => post(Action::Mascot(v)),
             Hit::CatColor(v) if v != m.cat_color => post(Action::CatColor(v)),
@@ -5419,6 +5439,12 @@ mod tests {
         );
         m.mascot_hours = 3;
         assert!(mascot_hours_click(3, &m).is_empty());
+    }
+
+    #[test]
+    fn the_play_info_button_toggles_and_posts_nothing() {
+        assert_eq!(play_info_click(false), (true, Vec::new()));
+        assert_eq!(play_info_click(true), (false, Vec::new()));
     }
 
     #[test]

@@ -869,7 +869,8 @@ impl Painter<'_> {
                     bare,
                 } => {
                     if *bare {
-                        // A drag handle: only dots, darker under the pointer.
+                        // A drag handle or Otomatis's info button: only the
+                        // glyph, darker under the pointer.
                         let near = s.hover == Some(*hit) || s.pressed == Some(*hit);
                         let ink = if near { self.p.text } else { self.p.secondary };
                         self.icon(*icon, *rect, 16.0, ink, 1.0, false);
