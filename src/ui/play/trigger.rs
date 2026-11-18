@@ -159,16 +159,48 @@ fn pick_from(pool: &[Story], mascot: Mascot, last: Option<Story>, moment: Moment
     fresh[roll as usize % fresh.len()]
 }
 
+/// A preset's idle wait in minutes, `(low, high)`, `None` when it has no timer.
+pub fn wait_range(preset: MascotPlay) -> Option<(u64, u64)> {
+    match preset {
+        MascotPlay::Sering => Some((8, 15)),
+        MascotPlay::Sesekali => Some((15, 35)),
+        MascotPlay::Jarang => Some((45, 90)),
+        MascotPlay::Sapaan | MascotPlay::Mati => None,
+    }
+}
+
 /// How long to wait before an idle story, `None` when the preset has no timer.
 pub fn wait_for(preset: MascotPlay, roll: u32) -> Option<Duration> {
-    let (lo, hi) = match preset {
-        MascotPlay::Sering => (8, 15),
-        MascotPlay::Sesekali => (15, 35),
-        MascotPlay::Jarang => (45, 90),
-        MascotPlay::Sapaan | MascotPlay::Mati => return None,
-    };
+    let (lo, hi) = wait_range(preset)?;
     let (lo, hi) = (lo * 60, hi * 60);
     Some(Duration::from_secs(lo + u64::from(roll) % (hi - lo + 1)))
+}
+
+/// The steps, in hours, the owner can pick for the stories on the hour (0 is off).
+pub const HOUR_STEPS: [u8; 6] = [0, 1, 2, 3, 4, 6];
+/// How long past the hour a story on the hour may still start.
+pub const HOUR_WINDOW: Duration = Duration::from_secs(10 * 60);
+/// How soon to ask the gate again while it refuses an hour story.
+pub const HOUR_RETRY: Duration = Duration::from_secs(30);
+
+/// Time from the local `hour:min:sec` to the next multiple of `step` hours
+/// strictly after it, clamped to 24:00. `None` when `step` is 0.
+pub fn next_hour(hour: u32, min: u32, sec: u32, step: u8) -> Option<Duration> {
+    if step == 0 {
+        return None;
+    }
+    let step = u32::from(step);
+    let target = ((hour / step + 1) * step).min(24);
+    let now = hour * 3600 + min * 60 + sec;
+    Some(Duration::from_secs(u64::from(target * 3600 - now)))
+}
+
+/// The hours of the day (0 to 23) that are multiples of `step`, none for 0.
+pub fn hours_of(step: u8) -> Vec<u32> {
+    if step == 0 {
+        return Vec::new();
+    }
+    (0..24).step_by(usize::from(step)).collect()
 }
 
 /// The least time between two automatic stories.
@@ -392,6 +424,45 @@ mod tests {
         ] {
             assert_eq!(cooldown(p), Duration::from_secs(mins * 60), "{p:?}");
         }
+    }
+
+    #[test]
+    fn next_hour_counts_to_the_next_multiple_strictly_after_now() {
+        let m = |h, mi, s| (h, mi, s);
+        let cases = [
+            (m(1, 30, 0), 1u8, 30 * 60),
+            (m(1, 0, 0), 1, 3600),
+            (m(23, 59, 59), 2, 1),
+            (m(23, 59, 59), 6, 1),
+            (m(18, 0, 0), 6, 6 * 3600),
+            (m(17, 59, 59), 6, 1),
+            (m(0, 0, 0), 3, 3 * 3600),
+            (m(13, 10, 0), 4, 2 * 3600 + 50 * 60),
+            (m(21, 0, 0), 5, 3 * 3600), // 5 does not divide 24: clamps at 24:00
+        ];
+        for ((h, mi, s), step, secs) in cases {
+            assert_eq!(next_hour(h, mi, s, step), Some(Duration::from_secs(secs)), "{h}:{mi}:{s} step {step}");
+        }
+        assert_eq!(next_hour(10, 0, 0, 0), None);
+    }
+
+    #[test]
+    fn hours_of_lists_the_multiples_from_midnight() {
+        assert_eq!(hours_of(0), Vec::<u32>::new());
+        assert_eq!(hours_of(1).len(), 24);
+        assert_eq!(hours_of(2), vec![0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22]);
+        assert_eq!(hours_of(3), vec![0, 3, 6, 9, 12, 15, 18, 21]);
+        assert_eq!(hours_of(4), vec![0, 4, 8, 12, 16, 20]);
+        assert_eq!(hours_of(6), vec![0, 6, 12, 18]);
+    }
+
+    #[test]
+    fn wait_range_is_the_table_wait_for_draws_from() {
+        assert_eq!(wait_range(MascotPlay::Sering), Some((8, 15)));
+        assert_eq!(wait_range(MascotPlay::Sesekali), Some((15, 35)));
+        assert_eq!(wait_range(MascotPlay::Jarang), Some((45, 90)));
+        assert_eq!(wait_range(MascotPlay::Sapaan), None);
+        assert_eq!(wait_range(MascotPlay::Mati), None);
     }
 
     #[test]

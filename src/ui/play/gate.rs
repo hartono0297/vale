@@ -65,6 +65,7 @@ fn transient_ok(env: &Env) -> bool {
 
 /// Whether a play may begin. `Manual` skips the presence rule, the cooldown and
 /// the transient gates, nothing else. `Greeting` skips the presence rule only.
+/// `Hour` skips the cooldown: the clock chose its time, not the idle timer.
 pub fn may_start(
     env: &Env,
     moment: Moment,
@@ -86,7 +87,8 @@ pub fn may_start(
     // A greeting fires just after the owner touched the PC: it stands in for
     // the presence rule. The cooldown and every gate still bind it.
     let present = moment == Moment::Greeting || presence_ok(since_input);
-    allowed && transient_ok(env) && present && since_last >= cooldown(preset)
+    allowed && transient_ok(env) && present
+        && (moment == Moment::Hour || since_last >= cooldown(preset))
 }
 
 /// Whether a running play has to end. It winds down unless `instant_stop`.
@@ -262,6 +264,22 @@ mod tests {
         for (name, env) in off_by_one_envs() {
             assert!(!may_start(&env, Moment::Greeting, p, Duration::ZERO, cooled), "{name}");
         }
+    }
+
+    #[test]
+    fn an_hour_story_ignores_the_cooldown_but_not_presence_or_the_gates() {
+        let p = MascotPlay::Sesekali;
+        let (input, none) = (Duration::from_secs(60), Duration::ZERO);
+        assert!(may_start(&ok_env(), Moment::Hour, p, input, none), "cooldown skipped");
+        assert!(!may_start(&ok_env(), Moment::Idle, p, input, none), "idle still cools down");
+        assert!(!may_start(&ok_env(), Moment::Greeting, p, input, none), "greeting still cools down");
+        assert!(!may_start(&ok_env(), Moment::Hour, p, Duration::from_secs(5), none), "mid-keystroke");
+        assert!(!may_start(&ok_env(), Moment::Hour, p, Duration::from_secs(600), none), "away");
+        for (name, env) in off_by_one_envs() {
+            assert!(!may_start(&env, Moment::Hour, p, input, none), "{name}");
+        }
+        assert!(!may_start(&ok_env(), Moment::Hour, MascotPlay::Mati, input, none));
+        assert!(may_start(&ok_env(), Moment::Hour, MascotPlay::Sapaan, input, none));
     }
 
     #[test]
