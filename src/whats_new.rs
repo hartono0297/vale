@@ -16,6 +16,19 @@ pub struct Entry {
 /// Newest first. Add the entry for a version before bumping it.
 pub static ENTRIES: &[Entry] = &[
     Entry {
+        version: "5.5.5",
+        id: &[
+            "Notch kini punya warna sendiri: Pengaturan → Tampilan → Warna notch.",
+            "Polos tetap gelap seperti bezel. Gradasi memudar ke warna maskot.",
+            "Jadi muka mengubah notch jadi wajah maskot, lengkap dengan aksesorinya.",
+        ],
+        en: &[
+            "The notch can have its own colour: Settings → Appearance → Notch colour.",
+            "Plain stays dark like the bezel. Gradient fades into your mascot's colour.",
+            "Face turns the notch into your mascot's face, accessories included.",
+        ],
+    },
+    Entry {
         version: "5.5.2",
         id: &[
             "Shelf: salin link HP dari tampilan QR, lalu buka di browser laptop lain.",
