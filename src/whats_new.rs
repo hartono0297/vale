@@ -16,6 +16,17 @@ pub struct Entry {
 /// Newest first. Add the entry for a version before bumping it.
 pub static ENTRIES: &[Entry] = &[
     Entry {
+        version: "5.5.6",
+        id: &[
+            "Maskot bisa bermain tiap jam bulat: Pengaturan → Maskot → Tiap jam.",
+            "Tombol info di Pengaturan → Maskot menjelaskan tiap pilihan animasi otomatis.",
+        ],
+        en: &[
+            "The mascot can play on the hour: Settings → Mascot → On the hour.",
+            "The info button in Settings → Mascot explains each automatic animation choice.",
+        ],
+    },
+    Entry {
         version: "5.5.5",
         id: &[
             "Notch kini punya warna sendiri: Pengaturan → Tampilan → Warna notch.",
