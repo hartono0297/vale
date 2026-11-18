@@ -420,6 +420,16 @@ fn notch_style_click(v: NotchStyle, m: &Model) -> Vec<After> {
     }
 }
 
+/// A click on a "Tiap jam" segment: a new step is posted, the current one
+/// again changes nothing.
+fn mascot_hours_click(v: u8, m: &Model) -> Vec<After> {
+    if v == m.mascot_hours {
+        Vec::new()
+    } else {
+        vec![After::Post(Action::MascotHours(v))]
+    }
+}
+
 /// What a click on the "Pindah ke PC lain" card does, or `None` for a hit that
 /// is not on the card. The island owns the dialogs and the pending file.
 fn transfer_click(hit: Hit) -> Option<Vec<After>> {
@@ -1829,6 +1839,7 @@ impl Settings {
             robot_motion: m.robot_motion,
             robot_sleep: m.robot_sleep,
             mascot_play: m.mascot_play,
+            mascot_hours: m.mascot_hours,
             greeting: m.greeting,
             cat_color: m.cat_color,
             mascot: m.mascot,
@@ -2038,6 +2049,10 @@ impl Settings {
                     .iter()
                     .position(|v| *v == m.mascot_play)
                     .unwrap_or(0) as f32,
+                Group::MascotHours => crate::ui::settings_layout::MASCOT_HOURS_ORDER
+                    .iter()
+                    .position(|v| *v == m.mascot_hours)
+                    .unwrap_or(0) as f32,
                 Group::ShotIgnore => usize::from(m.shot.on_ignore == ShotIgnore::Delete) as f32,
                 // The form's own choice, not the model's.
                 Group::TileKind => 0.0,
@@ -2085,6 +2100,7 @@ impl Settings {
             Group::Shell,
             Group::Motion,
             Group::MascotPlay,
+            Group::MascotHours,
             Group::ShotIgnore,
             Group::ShotTool,
             Group::ShotAfterCapture,
@@ -2754,6 +2770,7 @@ impl Settings {
                 }
             }
             Hit::MascotPlay(v) if v != m.mascot_play => post(Action::MascotPlay(v)),
+            Hit::MascotHours(v) => mascot_hours_click(v, &m),
             Hit::Greeting => post(Action::Greeting(!m.greeting)),
             Hit::Mascot(v) if v != m.mascot => post(Action::Mascot(v)),
             Hit::CatColor(v) if v != m.cat_color => post(Action::CatColor(v)),
@@ -5386,6 +5403,33 @@ mod tests {
             notch_style_click(NotchStyle::Plain, &m),
             vec![After::Post(Action::NotchStyle(NotchStyle::Plain))]
         );
+    }
+
+    #[test]
+    fn clicking_an_hour_step_posts_it_once() {
+        let cfg = crate::config::Config {
+            mascot_hours: 1,
+            ..Default::default()
+        };
+        let mut m = Model::from_config(&cfg);
+        assert_eq!(m.mascot_hours, 1);
+        assert_eq!(
+            mascot_hours_click(3, &m),
+            vec![After::Post(Action::MascotHours(3))]
+        );
+        m.mascot_hours = 3;
+        assert!(mascot_hours_click(3, &m).is_empty());
+    }
+
+    #[test]
+    fn the_model_takes_the_hour_step_from_the_config() {
+        // The island applies `Action::MascotHours` to its config and hands
+        // the window a model built from it.
+        let cfg = crate::config::Config {
+            mascot_hours: 3,
+            ..Default::default()
+        };
+        assert_eq!(Model::from_config(&cfg).mascot_hours, 3);
     }
 
     #[test]

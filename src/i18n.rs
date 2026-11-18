@@ -14,6 +14,7 @@ use crate::clean::CleanCat;
 use crate::greeting::{DayPeriod, GreetCounts};
 use crate::recorder::prefs::VideoQuality;
 use crate::reminders::{self, Repeat};
+use crate::theme::MascotPlay;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Lang {
@@ -927,8 +928,14 @@ keys! {
     // Settings -> Maskot -> Otomatis: how often the mascot plays on its own.
     GroupMascotPlay => "Otomatis", "Automatic";
     MascotPlayLabel => "Animasi maskot otomatis", "Automatic mascot animation";
-    MascotPlayDesc => "Maskot bermain saat kamu di PC tapi tidak mengetik. Klik kanan island untuk memainkannya kapan saja",
-        "The mascot plays when you are at the PC but not typing. Right-click the island to play one any time";
+    MascotPlayDesc => "Seberapa sering maskot bermain sendiri di sekitar notch. Klik kanan island untuk memainkannya kapan saja",
+        "How often the mascot plays on its own around the notch. Right-click the island to play one any time";
+    // Under the preset list: when any automatic story may start.
+    MascotPlayRule => "Maskot hanya mulai kalau kamu ada di PC tapi tidak mengetik, tidak ada panel terbuka, dan tidak layar penuh.",
+        "The mascot only starts when you are at the PC but not typing, no panel is open and nothing is fullscreen.";
+    MascotHours => "Tiap jam", "On the hour";
+    MascotHoursDesc => "Maskot bermain tepat di jam bulat, dihitung dari 00.00",
+        "The mascot plays on round hours, counted from 00:00";
     // The same row's line for a mascot with no ready animation yet.
     MascotPlayComing => "Animasi untuk maskot ini menyusul.", "Animations for this mascot are coming.";
     PlayOften => "Sering", "Often";
@@ -1760,6 +1767,84 @@ pub fn greeting_periods_line(lang: Lang) -> String {
         })
         .collect::<Vec<_>>()
         .join(" · ")
+}
+
+/// One preset's line in Settings → Maskot → Otomatis: its name and what it
+/// does. The minutes come from `trigger` so they cannot drift from the timers.
+pub fn mascot_play_info(lang: Lang, preset: MascotPlay) -> String {
+    use crate::ui::play::trigger::{cooldown, wait_range};
+    let name = text(
+        lang,
+        match preset {
+            MascotPlay::Sering => Key::PlayOften,
+            MascotPlay::Sesekali => Key::PlaySometimes,
+            MascotPlay::Jarang => Key::PlayRarely,
+            MascotPlay::Sapaan => Key::PlayGreeting,
+            MascotPlay::Mati => Key::PlayOff,
+        },
+    );
+    let rest = match (preset, lang) {
+        (MascotPlay::Sapaan, Lang::Id) => {
+            "tidak ada cerita acak. Bermain setelah sapaan dan pada jam di bawah.".to_owned()
+        }
+        (MascotPlay::Sapaan, Lang::En) => {
+            "no random stories. Plays after the greeting and on the hours below.".to_owned()
+        }
+        (MascotPlay::Mati, Lang::Id) => {
+            "tidak pernah bermain sendiri. Klik kanan notch tetap bisa.".to_owned()
+        }
+        (MascotPlay::Mati, Lang::En) => {
+            "never plays on its own. Right-click on the notch still works.".to_owned()
+        }
+        _ => {
+            let (lo, hi) = wait_range(preset).unwrap_or_default();
+            let gap = cooldown(preset).as_secs() / 60;
+            match lang {
+                Lang::Id => format!("tiap {lo} sampai {hi} menit. Jeda minimal {gap} menit."),
+                Lang::En => format!("every {lo} to {hi} minutes. At least {gap} minutes apart."),
+            }
+        }
+    };
+    format!("{name}: {rest}")
+}
+
+/// A "Tiap jam" segment: "Mati" for 0, else "3 jam" / "3 h".
+pub fn hours_label(lang: Lang, step: u8) -> String {
+    match (step, lang) {
+        (0, Lang::Id) => "Mati".into(),
+        (0, Lang::En) => "Off".into(),
+        (n, Lang::Id) => format!("{n} jam"),
+        (n, Lang::En) => format!("{n} h"),
+    }
+}
+
+/// The hours a "Tiap jam" step plays at, from `trigger::hours_of`: all of
+/// them up to eight, else the first six and how many more.
+pub fn hours_line(lang: Lang, step: u8) -> String {
+    let hours = crate::ui::play::trigger::hours_of(step);
+    if hours.is_empty() {
+        return match lang {
+            Lang::Id => "Mati: maskot tidak bermain di jam tertentu.",
+            Lang::En => "Off: no story at set hours.",
+        }
+        .into();
+    }
+    let shown = if hours.len() > 8 { &hours[..6] } else { &hours[..] };
+    let times = shown
+        .iter()
+        .map(|h| match lang {
+            Lang::Id => format!("{h:02}.00"),
+            Lang::En => format!("{h:02}:00"),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let more = hours.len() - shown.len();
+    match (lang, more) {
+        (Lang::Id, 0) => format!("Jam {times}."),
+        (Lang::En, 0) => format!("At {times}."),
+        (Lang::Id, n) => format!("Jam {times} dan {n} jam lagi."),
+        (Lang::En, n) => format!("At {times} and {n} more."),
+    }
 }
 
 /// The greeting's line for `period`, from `counts` (never a "0 acara": a zero
@@ -4642,6 +4727,13 @@ mod tests {
                 }
             }
             all.push(greeting_periods_line(lang));
+            for preset in crate::ui::settings_layout::MASCOT_PLAY_ORDER {
+                all.push(mascot_play_info(lang, preset));
+            }
+            for step in crate::ui::play::trigger::HOUR_STEPS {
+                all.push(hours_label(lang, step));
+                all.push(hours_line(lang, step));
+            }
             for period in ALL_PERIODS {
                 all.push(greeting_title(lang, period).into());
                 all.push(greeting_period_name(lang, period).into());
@@ -4939,6 +5031,118 @@ mod tests {
         assert_eq!(
             greeting_periods_line(Lang::En),
             "Morning 04-10 Good morning · Noon 11-14 Good afternoon · Afternoon 15-17 Good afternoon · Evening 18-23 Good evening · Late night 00-03 Up late?"
+        );
+    }
+
+    #[test]
+    fn hours_line_lists_the_hours_or_counts_the_rest() {
+        assert_eq!(
+            hours_line(Lang::Id, 3),
+            "Jam 00.00, 03.00, 06.00, 09.00, 12.00, 15.00, 18.00, 21.00."
+        );
+        assert_eq!(
+            hours_line(Lang::Id, 1),
+            "Jam 00.00, 01.00, 02.00, 03.00, 04.00, 05.00 dan 18 jam lagi."
+        );
+        assert_eq!(hours_line(Lang::En, 6), "At 00:00, 06:00, 12:00, 18:00.");
+        assert_eq!(
+            hours_line(Lang::En, 1),
+            "At 00:00, 01:00, 02:00, 03:00, 04:00, 05:00 and 18 more."
+        );
+        assert_eq!(hours_line(Lang::Id, 0), "Mati: maskot tidak bermain di jam tertentu.");
+        assert_eq!(hours_line(Lang::En, 0), "Off: no story at set hours.");
+    }
+
+    #[test]
+    fn hours_label_is_off_or_the_hours() {
+        assert_eq!(hours_label(Lang::Id, 0), "Mati");
+        assert_eq!(hours_label(Lang::Id, 1), "1 jam");
+        assert_eq!(hours_label(Lang::Id, 6), "6 jam");
+        assert_eq!(hours_label(Lang::En, 0), "Off");
+        assert_eq!(hours_label(Lang::En, 1), "1 h");
+        assert_eq!(hours_label(Lang::En, 6), "6 h");
+    }
+
+    #[test]
+    fn mascot_play_info_names_the_minutes_the_timers_use() {
+        use crate::theme::MascotPlay as P;
+        use crate::ui::play::trigger::{cooldown, wait_range};
+        for p in [P::Sering, P::Sesekali, P::Jarang] {
+            let (lo, hi) = wait_range(p).expect("a timed preset");
+            let gap = cooldown(p).as_secs() / 60;
+            for lang in [Lang::Id, Lang::En] {
+                let info = mascot_play_info(lang, p);
+                let numbers: Vec<u64> = info
+                    .split(|c: char| !c.is_ascii_digit())
+                    .filter_map(|n| n.parse().ok())
+                    .collect();
+                for n in [lo, hi, gap] {
+                    assert!(numbers.contains(&n), "{lang:?} {p:?} {n}: {info}");
+                }
+            }
+        }
+        let both = |p| [Lang::Id, Lang::En].map(|l| mascot_play_info(l, p));
+        assert_eq!(
+            both(P::Sering),
+            [
+                "Sering: tiap 8 sampai 15 menit. Jeda minimal 6 menit.",
+                "Often: every 8 to 15 minutes. At least 6 minutes apart."
+            ]
+        );
+        assert_eq!(
+            both(P::Sesekali),
+            [
+                "Sesekali: tiap 15 sampai 35 menit. Jeda minimal 12 menit.",
+                "Sometimes: every 15 to 35 minutes. At least 12 minutes apart."
+            ]
+        );
+        assert_eq!(
+            both(P::Jarang),
+            [
+                "Jarang: tiap 45 sampai 90 menit. Jeda minimal 40 menit.",
+                "Rarely: every 45 to 90 minutes. At least 40 minutes apart."
+            ]
+        );
+        assert_eq!(
+            both(P::Sapaan),
+            [
+                "Hanya sapaan: tidak ada cerita acak. Bermain setelah sapaan dan pada jam di bawah.",
+                "Greeting only: no random stories. Plays after the greeting and on the hours below."
+            ]
+        );
+        assert_eq!(
+            both(P::Mati),
+            [
+                "Mati: tidak pernah bermain sendiri. Klik kanan notch tetap bisa.",
+                "Off: never plays on its own. Right-click on the notch still works."
+            ]
+        );
+    }
+
+    #[test]
+    fn the_mascot_hour_texts_in_both_languages() {
+        let both = |k: Key| [Lang::Id, Lang::En].map(|l| text(l, k));
+        assert_eq!(
+            both(Key::MascotPlayDesc),
+            [
+                "Seberapa sering maskot bermain sendiri di sekitar notch. Klik kanan island untuk memainkannya kapan saja",
+                "How often the mascot plays on its own around the notch. Right-click the island to play one any time"
+            ]
+        );
+        assert_eq!(
+            both(Key::MascotPlayRule),
+            [
+                "Maskot hanya mulai kalau kamu ada di PC tapi tidak mengetik, tidak ada panel terbuka, dan tidak layar penuh.",
+                "The mascot only starts when you are at the PC but not typing, no panel is open and nothing is fullscreen."
+            ]
+        );
+        assert_eq!(both(Key::MascotHours), ["Tiap jam", "On the hour"]);
+        assert_eq!(
+            both(Key::MascotHoursDesc),
+            [
+                "Maskot bermain tepat di jam bulat, dihitung dari 00.00",
+                "The mascot plays on round hours, counted from 00:00"
+            ]
         );
     }
 

@@ -565,6 +565,8 @@ pub enum Hit {
     RobotSleep(i32),
     /// "Animasi maskot otomatis".
     MascotPlay(MascotPlay),
+    /// "Tiap jam": every N hours, 0 for off.
+    MascotHours(u8),
     /// "Sapaan".
     Greeting,
     /// Settings → Clipboard: "Riwayat clipboard", "Jumlah item" (−1 / +1),
@@ -796,6 +798,7 @@ pub enum Group {
     Shell,
     Motion,
     MascotPlay,
+    MascotHours,
     ShotIgnore,
     /// The own-shortcut form's Jenis.
     TileKind,
@@ -1526,6 +1529,8 @@ pub struct State<'a> {
     pub robot_motion: Motion,
     pub robot_sleep: u32,
     pub mascot_play: MascotPlay,
+    /// "Tiap jam": every N hours, 0 for off.
+    pub mascot_hours: u8,
     pub greeting: bool,
     /// The cat's coat and accessory, "Ikuti kursor" and "Mengecil jadi mata".
     pub cat_color: CatColor,
@@ -3892,8 +3897,10 @@ fn cat_page(b: &mut Builder, s: &State) {
 }
 
 /// "Otomatis": "Animasi maskot otomatis", its description in the card's
-/// width and the five segments in a block under it. A mascot with no ready
-/// story (whatever the clock) gets the row dimmed and says so.
+/// width and the five segments in a block under it, then what each preset
+/// does (the active one brighter) and when any of them may start. Under a
+/// divider, "Tiap jam" the same way, with the hours it plays at. A mascot
+/// with no ready story (whatever the clock) gets the rows dimmed and says so.
 fn mascot_play_card(b: &mut Builder, s: &State) {
     mascot_play_card_for(b, s, crate::ui::play::trigger::has_ready(s.mascot, true));
 }
@@ -3909,14 +3916,36 @@ fn mascot_play_card_for(b: &mut Builder, s: &State, ready: bool) {
     } else {
         Key::MascotPlayComing
     };
-    let desc = b.wrap(
-        &b.t(desc_key),
-        Font::Desc,
-        b.g.content_w - 2.0 * INSET,
-    );
+    let w = b.g.content_w - 2.0 * INSET;
+    let desc = b.wrap(&b.t(desc_key), Font::Desc, w);
     let head = wrapped_row_h(desc.len());
+    // Each preset's lines with its tone, then the rule.
+    let mut list: Vec<(String, Tone)> = Vec::new();
+    for v in MASCOT_PLAY_ORDER {
+        let tone = if v == s.mascot_play {
+            Tone::Primary
+        } else {
+            Tone::Secondary
+        };
+        let info = crate::i18n::mascot_play_info(b.lang, v);
+        list.extend(b.wrap(&info, Font::Desc, w).into_iter().map(|l| (l, tone)));
+    }
+    let rule = b.wrap(&b.t(Key::MascotPlayRule), Font::Desc, w);
+    let hours_items: Vec<(Hit, String)> = MASCOT_HOURS_ORDER
+        .iter()
+        .map(|v| (Hit::MascotHours(*v), crate::i18n::hours_label(b.lang, *v)))
+        .collect();
+    let hours_desc = b.wrap(&b.t(Key::MascotHoursDesc), Font::Desc, w);
+    let hours_head = wrapped_row_h(hours_desc.len());
+    let hours_line = b.wrap(&crate::i18n::hours_line(b.lang, s.mascot_hours), Font::Desc, w);
+    // First row: the segments, the list and the rule under them.
+    let list_top = head + CONTROL_H + GAP;
+    let rule_top = list_top + list.len() as f32 * DESC_LINE_H + GAP;
+    let first_h = rule_top + rule.len() as f32 * DESC_LINE_H + BLOCK_PAD;
+    let line_top = hours_head + CONTROL_H + GAP;
+    let second_h = line_top + hours_line.len() as f32 * DESC_LINE_H + BLOCK_PAD;
     titled(b, Key::GroupMascotPlay);
-    let card = b.card(head + CONTROL_H + BLOCK_PAD);
+    let card = b.card(first_h + second_h);
     let text_end = card.right() - INSET + 2.0 * GAP;
     b.row_text_lines(
         card,
@@ -3931,7 +3960,42 @@ fn mascot_play_card_for(b: &mut Builder, s: &State, ready: bool) {
     let right = left + b.segmented_w(&items);
     let cy = card.y + head + CONTROL_H / 2.0;
     b.segmented_if(Group::MascotPlay, right, cy, items, selected, s.robot && ready);
+    let line = |i: usize, top: f32| Rect {
+        x: left,
+        y: card.y + top + i as f32 * DESC_LINE_H,
+        w,
+        h: 16.0,
+    };
+    for (i, (t, tone)) in list.into_iter().enumerate() {
+        b.text(line(i, list_top), t, Font::Desc, tone, Align::Left);
+    }
+    for (i, t) in rule.into_iter().enumerate() {
+        b.text(line(i, rule_top), t, Font::Desc, Tone::Secondary, Align::Left);
+    }
+
+    // "Tiap jam": dimmed with the first row, and with the preset Mati.
+    let y = card.y + first_h;
+    b.divider(card, y);
+    b.row_text_lines(
+        card,
+        y,
+        b.t(Key::MascotHours),
+        hours_desc,
+        Tone::Secondary,
+        text_end,
+    );
+    let selected = index_of(&MASCOT_HOURS_ORDER, &s.mascot_hours);
+    let right = left + b.segmented_w(&hours_items);
+    let cy = y + hours_head + CONTROL_H / 2.0;
+    let on = s.robot && ready && s.mascot_play != MascotPlay::Mati;
+    b.segmented_if(Group::MascotHours, right, cy, hours_items, selected, on);
+    for (i, t) in hours_line.into_iter().enumerate() {
+        b.text(line(i, first_h + line_top), t, Font::Desc, Tone::Primary, Align::Left);
+    }
 }
+
+/// "Tiap jam": off, then every 1, 2, 3, 4 and 6 hours.
+pub const MASCOT_HOURS_ORDER: [u8; 6] = crate::ui::play::trigger::HOUR_STEPS;
 
 /// Frequent to rare, then greeting only and off (the enum starts at the
 /// default, so its own order is not the display order).
@@ -6553,6 +6617,7 @@ mod tests {
                         } else {
                             MascotPlay::Sesekali
                         },
+                        mascot_hours: if locked { 0 } else { 1 },
                         greeting: locked,
                         mascot,
                         falk_color: if locked {
@@ -8676,6 +8741,149 @@ mod tests {
                 let (desc, enabled) = mascot_play_row(&layout(Section::Cat, &s, &Estimate), lang);
                 assert!(enabled, "{lang:?} {mascot:?}");
                 assert_eq!(desc, text(lang, Key::MascotPlayDesc), "{lang:?} {mascot:?}");
+            }
+        }
+    }
+
+    /// The "Otomatis" card alone, as `mascot_play_card_for` lays it out at
+    /// the minimum window size.
+    fn mascot_play_card_alone(s: &State, ready: bool) -> Layout {
+        let mut b = Builder {
+            m: &Estimate,
+            lang: s.lang,
+            l: Layout::default(),
+            y: FIRST_CARD_Y,
+            g: Geom::new((CLIENT_W, CLIENT_H)),
+        };
+        mascot_play_card_for(&mut b, s, ready);
+        b.l
+    }
+
+    /// "Tiap jam": six segments, Mati then 1, 2, 3, 4 and 6 hours, the
+    /// state's step selected.
+    #[test]
+    fn mascot_hours_row_has_its_own_order() {
+        use crate::theme::MascotPlay as P;
+        assert_eq!(MASCOT_HOURS_ORDER, crate::ui::play::trigger::HOUR_STEPS);
+        for lang in [Lang::Id, Lang::En] {
+            for step in MASCOT_HOURS_ORDER {
+                let s = State {
+                    lang,
+                    robot: true,
+                    mascot_play: P::Sesekali,
+                    mascot_hours: step,
+                    mascot: Mascot::Falk,
+                    scroll: 1e6,
+                    ..states()[0].clone()
+                };
+                let l = layout(Section::Cat, &s, &Estimate);
+                let (_, items, selected) = l.segmented(Group::MascotHours).expect("the row");
+                let hits: Vec<Hit> = items.iter().map(|i| i.hit).collect();
+                assert_eq!(hits, MASCOT_HOURS_ORDER.map(Hit::MascotHours));
+                assert_eq!(items[selected].hit, Hit::MascotHours(step), "{lang:?} {step}");
+                let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+                let want = MASCOT_HOURS_ORDER.map(|v| crate::i18n::hours_label(lang, v));
+                assert_eq!(labels, want);
+            }
+        }
+    }
+
+    /// The hours row takes clicks only while the first row does and the
+    /// preset is not Mati.
+    #[test]
+    fn mascot_hours_row_is_dimmed_with_preset_mati_a_mascot_with_no_story_or_the_mascot_off() {
+        for lang in [Lang::Id, Lang::En] {
+            for preset in MASCOT_PLAY_ORDER {
+                for ready in [false, true] {
+                    for robot in [false, true] {
+                        let s = State {
+                            lang,
+                            robot,
+                            mascot_play: preset,
+                            ..states()[0].clone()
+                        };
+                        let l = mascot_play_card_alone(&s, ready);
+                        let want = robot && ready && preset != MascotPlay::Mati;
+                        let found = l.controls.iter().any(|c| {
+                            matches!(
+                                c,
+                                Control::Segmented { group: Group::MascotHours, enabled, .. }
+                                    if *enabled == want
+                            )
+                        });
+                        assert!(found, "{lang:?} {preset:?} ready={ready} robot={robot}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Both segmented rows, the preset list, the rule and the hours line
+    /// stay inside the card in both languages at the minimum width; the list
+    /// names every preset, the active one brighter.
+    #[test]
+    fn the_play_card_stays_inside_the_card_in_both_languages() {
+        for lang in [Lang::Id, Lang::En] {
+            for preset in MASCOT_PLAY_ORDER {
+                for step in MASCOT_HOURS_ORDER {
+                    let s = State {
+                        lang,
+                        robot: true,
+                        mascot_play: preset,
+                        mascot_hours: step,
+                        ..states()[0].clone()
+                    };
+                    let l = mascot_play_card_alone(&s, true);
+                    assert_eq!(l.cards.len(), 1);
+                    let card = l.cards[0];
+                    let what = format!("{lang:?} {preset:?} {step}");
+                    for group in [Group::MascotPlay, Group::MascotHours] {
+                        let (track, items, _) = l.segmented(group).expect("the row");
+                        assert!(track.right() <= card.right(), "{what} {group:?}");
+                        assert!(track.bottom() <= card.bottom(), "{what} {group:?}");
+                        for i in items {
+                            assert!(i.rect.right() <= card.right(), "{what} {:?}", i.label);
+                        }
+                    }
+                    for t in &l.texts {
+                        let end = t.rect.x + Estimate.width(&t.text, t.font);
+                        assert!(end <= card.right(), "{what} {:?}", t.text);
+                        assert!(t.rect.right() <= card.right(), "{what} {:?}", t.text);
+                        assert!(t.rect.bottom() <= card.bottom(), "{what} {:?}", t.text);
+                    }
+                    // The list under the first row: each preset's lines in
+                    // order, the active one in the primary tone.
+                    let (first, _, _) = l.segmented(Group::MascotPlay).unwrap();
+                    let (hours, _, _) = l.segmented(Group::MascotHours).unwrap();
+                    let mut under = l
+                        .texts
+                        .iter()
+                        .filter(|t| t.rect.y > first.bottom() && t.rect.y < hours.y);
+                    let mut read = |want: &str, tone: Tone| {
+                        let mut got = String::new();
+                        while got.len() < want.len() {
+                            let t = under.next().unwrap_or_else(|| panic!("{what}: {want}"));
+                            assert_eq!(t.tone, tone, "{what} {:?}", t.text);
+                            if !got.is_empty() {
+                                got.push(' ');
+                            }
+                            got.push_str(&t.text);
+                        }
+                        assert_eq!(got, want, "{what}");
+                    };
+                    for p in MASCOT_PLAY_ORDER {
+                        let tone = if p == preset { Tone::Primary } else { Tone::Secondary };
+                        read(&crate::i18n::mascot_play_info(lang, p), tone);
+                    }
+                    read(text(lang, Key::MascotPlayRule), Tone::Secondary);
+                    let next = under.next().expect("the hours row's label");
+                    assert_eq!(next.text, text(lang, Key::MascotHours), "{what}");
+                    // The live line under the hours row, in the primary tone.
+                    let live: Vec<&Text> = l.texts.iter().filter(|t| t.rect.y > hours.bottom()).collect();
+                    let line = live.iter().map(|t| t.text.as_str()).collect::<Vec<_>>().join(" ");
+                    assert_eq!(line, crate::i18n::hours_line(lang, step), "{what}");
+                    assert!(live.iter().all(|t| t.tone == Tone::Primary), "{what}");
+                }
             }
         }
     }
