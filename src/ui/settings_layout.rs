@@ -4024,8 +4024,9 @@ fn mascot_play_card_for(b: &mut Builder, s: &State, ready: bool) {
     let cy = y + hours_head + CONTROL_H / 2.0;
     let on = s.robot && ready && s.mascot_play != MascotPlay::Mati;
     b.segmented_if(Group::MascotHours, right, cy, hours_items, selected, on);
+    let hours_tone = if on { Tone::Primary } else { Tone::Secondary };
     for (i, t) in hours_line.into_iter().enumerate() {
-        b.text(line(i, first_h + line_top), t, Font::Desc, Tone::Primary, Align::Left);
+        b.text(line(i, first_h + line_top), t, Font::Desc, hours_tone, Align::Left);
     }
 }
 
@@ -8988,11 +8989,13 @@ mod tests {
                     read(text(lang, Key::MascotPlayRule), Tone::Secondary);
                     let next = under.next().expect("the hours row's label");
                     assert_eq!(next.text, text(lang, Key::MascotHours), "{what}");
-                    // The live line under the hours row, in the primary tone.
+                    // The live line under the hours row: primary while the row
+                    // is on, secondary once it is dimmed (preset Mati).
+                    let live_tone = if preset == MascotPlay::Mati { Tone::Secondary } else { Tone::Primary };
                     let live: Vec<&Text> = l.texts.iter().filter(|t| t.rect.y > hours.bottom()).collect();
                     let line = live.iter().map(|t| t.text.as_str()).collect::<Vec<_>>().join(" ");
                     assert_eq!(line, crate::i18n::hours_line(lang, step), "{what}");
-                    assert!(live.iter().all(|t| t.tone == Tone::Primary), "{what}");
+                    assert!(live.iter().all(|t| t.tone == live_tone), "{what}");
                 }
             }
         }

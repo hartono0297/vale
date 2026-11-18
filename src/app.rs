@@ -314,9 +314,10 @@ const TIMER_ROBOT: usize = 15;
 const TIMER_MASCOT_PLAY: usize = 19;
 /// One-shot to the next hour the owner chose (`mascot_hours`, every N hours
 /// from midnight): the mascot may play a story on the hour. Armed only while
-/// one could start (`hour_timer_wanted`); a fire re-checks every gate, retries
-/// every `HOUR_RETRY` for up to `HOUR_WINDOW` while one refuses, then waits
-/// for the next hour. Never repeating, and never catches up a missed hour.
+/// the durable gates hold (`hour_timer_wanted`); a fire re-checks every gate,
+/// skips the hour under the never-made-up ones (`hour_skips`), retries every
+/// `HOUR_RETRY` for up to `HOUR_WINDOW` while another refuses, then waits for
+/// the next hour. Never repeating, and never catches up a missed hour.
 const TIMER_MASCOT_HOUR: usize = 36;
 /// One-shot: a lyric line too long for the notch starts scrolling
 /// (`LYRIC_HOLD_MS` after it showed); the frame clock then runs until its end.
@@ -2482,8 +2483,9 @@ impl App {
     /// Arms or kills `TIMER_MASCOT_HOUR` so it matches `hour_timer_wanted`. A
     /// timer that is already set is never set again.
     fn sync_hour_timer(&mut self) {
+        let env = self.play_env(Instant::now(), false);
         let wanted = hour_timer_wanted(
-            self.config.robot,
+            &env,
             self.config.mascot_play,
             self.config.mascot_hours,
         );
@@ -2522,13 +2524,23 @@ impl App {
 
     /// `TIMER_MASCOT_HOUR` fired: gone unless re-armed. The gates are checked
     /// now; while one refuses, it asks again every `HOUR_RETRY` until the
-    /// hour's window is over, then waits for the next chosen hour.
+    /// hour's window is over, then waits for the next chosen hour. A gate that
+    /// is never made up (`hour_skips`) goes straight to the next hour.
     fn on_hour_timer(&mut self) {
         unsafe {
             let _ = KillTimer(Some(self.hwnd), TIMER_MASCOT_HOUR);
         }
+        if !self.hour_timer {
+            // A tick posted just before the timer was killed.
+            return;
+        }
         self.hour_timer = false;
         let now = Instant::now();
+        if hour_skips(&self.play_env(now, false)) {
+            self.hour_deadline = None;
+            self.sync_hour_timer();
+            return;
+        }
         let deadline = *self.hour_deadline.get_or_insert(now + HOUR_WINDOW);
         let was = self.play.is_some();
         self.try_play(Moment::Hour, now);
@@ -9190,11 +9202,29 @@ fn since_last_play(last: Option<Instant>, now: Instant) -> Duration {
     last.map_or(Duration::MAX, |at| now.saturating_duration_since(at))
 }
 
-/// `TIMER_MASCOT_HOUR` should be set: the mascot is on, an hour step is
-/// chosen and the preset is not Mati. The pointer, presence, motion, panels
-/// and the cooldown are judged when it fires.
-fn hour_timer_wanted(mascot_on: bool, preset: MascotPlay, step: u8) -> bool {
-    mascot_on && step != 0 && preset != MascotPlay::Mati
+/// The gates that last for hours: none of them can clear inside an hour's
+/// retry window, so no hour timer runs while one fails.
+fn hour_durable_ok(env: &Env) -> bool {
+    env.mascot_on
+        && env.motion_full
+        && !env.energy_saver
+        && env.win_anim
+        && !env.face
+        && env.has_story
+}
+
+/// `TIMER_MASCOT_HOUR` should be set: an hour step is chosen, the preset is
+/// not Mati and the durable gates hold. The rest (pointer, presence, panels,
+/// the lock, fullscreen, the cooldown) is judged when it fires.
+fn hour_timer_wanted(env: &Env, preset: MascotPlay, step: u8) -> bool {
+    step != 0 && preset != MascotPlay::Mati && hour_durable_ok(env)
+}
+
+/// The hour is skipped, never made up, and never retried: the owner is away
+/// (lock or screen off), a window is fullscreen, a recording runs, the cat
+/// sleeps, or a durable gate fails. Every other refusal waits and retries.
+fn hour_skips(env: &Env) -> bool {
+    env.screen_away || env.fullscreen || env.recording || env.asleep || !hour_durable_ok(env)
 }
 
 /// How far past the hour `TIMER_MASCOT_HOUR` is armed: `next_hour` drops the
@@ -12157,15 +12187,72 @@ mod tests {
     }
 
     #[test]
-    fn the_hour_timer_is_wanted_only_with_a_step_a_live_preset_and_the_mascot_on() {
+    fn the_hour_timer_is_wanted_only_with_a_step_a_live_preset_and_every_durable_gate() {
         use crate::theme::MascotPlay::{Jarang, Mati, Sapaan, Sering, Sesekali};
+        use crate::ui::play::testing::ok_env;
         for p in [Sering, Sesekali, Jarang, Sapaan] {
-            assert!(hour_timer_wanted(true, p, 1), "{p:?}");
-            assert!(hour_timer_wanted(true, p, 6), "{p:?}");
-            assert!(!hour_timer_wanted(true, p, 0), "{p:?} step off");
-            assert!(!hour_timer_wanted(false, p, 1), "{p:?} mascot off");
+            assert!(hour_timer_wanted(&ok_env(), p, 1), "{p:?}");
+            assert!(hour_timer_wanted(&ok_env(), p, 6), "{p:?}");
+            assert!(!hour_timer_wanted(&ok_env(), p, 0), "{p:?} step off");
         }
-        assert!(!hour_timer_wanted(true, Mati, 1));
+        assert!(!hour_timer_wanted(&ok_env(), Mati, 1));
+        let flips: [(&str, fn(&mut Env)); 6] = [
+            ("mascot_on", |e| e.mascot_on = false),
+            ("motion_full", |e| e.motion_full = false),
+            ("energy_saver", |e| e.energy_saver = true),
+            ("win_anim", |e| e.win_anim = false),
+            ("face", |e| e.face = true),
+            ("has_story", |e| e.has_story = false),
+        ];
+        for (name, flip) in flips {
+            let mut env = ok_env();
+            flip(&mut env);
+            assert!(!hour_timer_wanted(&env, Sesekali, 1), "{name}");
+        }
+        // The transient and per-moment gates never unarm it.
+        let mut env = ok_env();
+        env.panel_open = true;
+        env.fullscreen = true;
+        env.screen_away = true;
+        env.pointer_near = true;
+        assert!(hour_timer_wanted(&env, Sesekali, 1));
+    }
+
+    #[test]
+    fn a_fire_skips_the_hour_under_the_gates_that_are_never_made_up() {
+        use crate::ui::play::testing::ok_env;
+        assert!(!hour_skips(&ok_env()));
+        let skip: [(&str, fn(&mut Env)); 10] = [
+            ("screen_away", |e| e.screen_away = true),
+            ("fullscreen", |e| e.fullscreen = true),
+            ("recording", |e| e.recording = true),
+            ("asleep", |e| e.asleep = true),
+            ("mascot_on", |e| e.mascot_on = false),
+            ("motion_full", |e| e.motion_full = false),
+            ("energy_saver", |e| e.energy_saver = true),
+            ("win_anim", |e| e.win_anim = false),
+            ("face", |e| e.face = true),
+            ("has_story", |e| e.has_story = false),
+        ];
+        for (name, flip) in skip {
+            let mut env = ok_env();
+            flip(&mut env);
+            assert!(hour_skips(&env), "{name}");
+        }
+        let wait: [(&str, fn(&mut Env)); 7] = [
+            ("idle_view", |e| e.idle_view = false),
+            ("panel_open", |e| e.panel_open = true),
+            ("menu_open", |e| e.menu_open = true),
+            ("pointer_near", |e| e.pointer_near = true),
+            ("shrunk", |e| e.shrunk = true),
+            ("working", |e| e.working = true),
+            ("mascot_changed", |e| e.mascot_changed = true),
+        ];
+        for (name, flip) in wait {
+            let mut env = ok_env();
+            flip(&mut env);
+            assert!(!hour_skips(&env), "{name}");
+        }
     }
 
     #[test]

@@ -1803,8 +1803,8 @@ pub fn mascot_play_info(lang: Lang, preset: MascotPlay) -> String {
             let (lo, hi) = wait_range(preset).unwrap_or_default();
             let gap = cooldown(preset).as_secs() / 60;
             match lang {
-                Lang::Id => format!("tiap {lo} sampai {hi} menit. Jeda minimal {gap} menit."),
-                Lang::En => format!("every {lo} to {hi} minutes. At least {gap} minutes apart."),
+                Lang::Id => format!("tiap {lo} sampai {hi} menit. Jeda minimal {gap} menit antar cerita acak."),
+                Lang::En => format!("every {lo} to {hi} minutes. At least {gap} minutes between random stories."),
             }
         }
     };
@@ -1829,6 +1829,13 @@ pub fn hours_line(lang: Lang, step: u8) -> String {
         return match lang {
             Lang::Id => "Mati: maskot tidak bermain di jam tertentu.",
             Lang::En => "Off: no story at set hours.",
+        }
+        .into();
+    }
+    if hours.len() == 24 {
+        return match lang {
+            Lang::Id => "Setiap jam bulat, 00.00 sampai 23.00.",
+            Lang::En => "Every round hour, 00:00 to 23:00.",
         }
         .into();
     }
@@ -5045,12 +5052,12 @@ mod tests {
         );
         assert_eq!(
             hours_line(Lang::Id, 1),
-            "Jam 00.00, 01.00, 02.00, 03.00, 04.00, 05.00 dan 18 jam lagi."
+            "Setiap jam bulat, 00.00 sampai 23.00."
         );
         assert_eq!(hours_line(Lang::En, 6), "At 00:00, 06:00, 12:00, 18:00.");
         assert_eq!(
             hours_line(Lang::En, 1),
-            "At 00:00, 01:00, 02:00, 03:00, 04:00, 05:00 and 18 more."
+            "Every round hour, 00:00 to 23:00."
         );
         assert_eq!(hours_line(Lang::Id, 0), "Mati: maskot tidak bermain di jam tertentu.");
         assert_eq!(hours_line(Lang::En, 0), "Off: no story at set hours.");
@@ -5088,22 +5095,22 @@ mod tests {
         assert_eq!(
             both(P::Sering),
             [
-                "Sering: tiap 8 sampai 15 menit. Jeda minimal 6 menit.",
-                "Often: every 8 to 15 minutes. At least 6 minutes apart."
+                "Sering: tiap 8 sampai 15 menit. Jeda minimal 6 menit antar cerita acak.",
+                "Often: every 8 to 15 minutes. At least 6 minutes between random stories."
             ]
         );
         assert_eq!(
             both(P::Sesekali),
             [
-                "Sesekali: tiap 15 sampai 35 menit. Jeda minimal 12 menit.",
-                "Sometimes: every 15 to 35 minutes. At least 12 minutes apart."
+                "Sesekali: tiap 15 sampai 35 menit. Jeda minimal 12 menit antar cerita acak.",
+                "Sometimes: every 15 to 35 minutes. At least 12 minutes between random stories."
             ]
         );
         assert_eq!(
             both(P::Jarang),
             [
-                "Jarang: tiap 45 sampai 90 menit. Jeda minimal 40 menit.",
-                "Rarely: every 45 to 90 minutes. At least 40 minutes apart."
+                "Jarang: tiap 45 sampai 90 menit. Jeda minimal 40 menit antar cerita acak.",
+                "Rarely: every 45 to 90 minutes. At least 40 minutes between random stories."
             ]
         );
         assert_eq!(
