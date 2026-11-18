@@ -181,6 +181,7 @@ pub enum Action {
     RobotMotion(Motion),
     RobotSleep(u32),
     MascotPlay(MascotPlay),
+    MascotHours(u8),
     Greeting(bool),
     /// Settings → Maskot: the mascot, each mascot's own coat, the accessory
     /// (shared by all three), "Ikuti kursor" and "Mengecil jadi mata".
@@ -583,6 +584,7 @@ pub struct Model {
     pub robot_motion: Motion,
     pub robot_sleep: u32,
     pub mascot_play: MascotPlay,
+    pub mascot_hours: u8,
     pub greeting: bool,
     pub cat_color: CatColor,
     /// Which mascot, and the falk's and octopus's coats.
@@ -683,6 +685,7 @@ impl Model {
             robot_motion: cfg.robot_animation,
             robot_sleep: cfg.robot_sleep_minutes,
             mascot_play: cfg.mascot_play,
+            mascot_hours: cfg.mascot_hours,
             greeting: cfg.morning_greeting,
             cat_color: cfg.cat_color,
             mascot: cfg.mascot,
@@ -4963,6 +4966,7 @@ pub fn run_demo(args: &[String]) {
             Action::RobotMotion(v) => m.robot_motion = v,
             Action::RobotSleep(v) => m.robot_sleep = v,
             Action::MascotPlay(v) => m.mascot_play = v,
+            Action::MascotHours(v) => m.mascot_hours = v,
             Action::Greeting(v) => m.greeting = v,
             Action::Mascot(_)
             | Action::CatColor(_)

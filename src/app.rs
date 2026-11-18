@@ -137,7 +137,10 @@ use crate::ui::play::{click_through, swallows};
 use crate::ui::play::gate::{Env, instant_stop, may_start, must_stop};
 use crate::ui::play::state::Play;
 use crate::ui::play::stories::{self, Stage};
-use crate::ui::play::trigger::{Moment, PRESENCE_MIN, Story, cooldown, has_ready, pick, wait_for};
+use crate::ui::play::trigger::{
+    HOUR_RETRY, HOUR_WINDOW, Moment, PRESENCE_MIN, Story, cooldown, has_ready, next_hour, pick,
+    wait_for,
+};
 use crate::ui::settings_layout::{CardId, MonitorRow};
 use crate::ui::robot::{
     self, Brain, Expr, EyesBlink, EyesPose, GreetSettings, Motion, Rng, Spot, TypingPaws,
@@ -309,6 +312,12 @@ const TIMER_ROBOT: usize = 15;
 /// fresh wait. While a story runs the frame clock draws it, not this timer.
 /// 19 is the id left free between 18 and 20.
 const TIMER_MASCOT_PLAY: usize = 19;
+/// One-shot to the next hour the owner chose (`mascot_hours`, every N hours
+/// from midnight): the mascot may play a story on the hour. Armed only while
+/// one could start (`hour_timer_wanted`); a fire re-checks every gate, retries
+/// every `HOUR_RETRY` for up to `HOUR_WINDOW` while one refuses, then waits
+/// for the next hour. Never repeating, and never catches up a missed hour.
+const TIMER_MASCOT_HOUR: usize = 36;
 /// One-shot: a lyric line too long for the notch starts scrolling
 /// (`LYRIC_HOLD_MS` after it showed); the frame clock then runs until its end.
 const TIMER_LYRIC_SCROLL: usize = 16;
@@ -619,9 +628,10 @@ pub fn run(media_log_flag: bool, start: Start) {
             last_story: None,
             last_play_at: None,
             mascot_timer: false,
+            hour_timer: false,
+            hour_deadline: None,
             greeting_up: false,
             pending: None,
-            clock_hour: Local::now().hour(),
             play_clock_jumped: false,
             eq_capture: None,
             eq_capture_on: false,
@@ -1130,13 +1140,15 @@ struct App {
     last_play_at: Option<Instant>,
     /// `TIMER_MASCOT_PLAY` is set.
     mascot_timer: bool,
+    /// `TIMER_MASCOT_HOUR` is set.
+    hour_timer: bool,
+    /// While an hour story is being retried: when the hour's window ends.
+    hour_deadline: Option<Instant>,
     /// A greeting notice was on screen at the last refresh.
     greeting_up: bool,
     /// The next fire of `TIMER_MASCOT_PLAY` is this moment's (the greeting's,
     /// or a play picked in the menu), set for when the island's morph ends.
     pending: Option<Moment>,
-    /// The hour the idle clock last showed (`TIMER_CLOCK`), to see it roll.
-    clock_hour: u32,
     /// The wall clock jumped under a running story (`on_clock_jump`).
     play_clock_jumped: bool,
     /// The loopback capture behind the equalizer bars (`eq_audio`), created
@@ -2423,6 +2435,7 @@ impl App {
     /// here (`pointer_near` may be stale with the pointer poll off) and, like
     /// the presence rule and the cooldown, is judged when it fires.
     fn sync_mascot_timer(&mut self, now: Instant) {
+        self.sync_hour_timer();
         // The timer is a pending moment's for now; its fire checks every gate.
         if self.pending.is_some() {
             return;
@@ -2464,6 +2477,73 @@ impl App {
             self.try_play(Moment::Idle, now);
         }
         self.sync_mascot_timer(now);
+    }
+
+    /// Arms or kills `TIMER_MASCOT_HOUR` so it matches `hour_timer_wanted`. A
+    /// timer that is already set is never set again.
+    fn sync_hour_timer(&mut self) {
+        let wanted = hour_timer_wanted(
+            self.config.robot,
+            self.config.mascot_play,
+            self.config.mascot_hours,
+        );
+        match timer_change(self.hour_timer, wanted) {
+            Some(true) => self.arm_hour_timer(),
+            Some(false) => self.stop_hour_timer(),
+            None => {}
+        }
+    }
+
+    /// Sets `TIMER_MASCOT_HOUR` for the next chosen hour of the local clock.
+    fn arm_hour_timer(&mut self) {
+        let t = Local::now();
+        let Some(wait) = next_hour(t.hour(), t.minute(), t.second(), self.config.mascot_hours)
+        else {
+            return;
+        };
+        self.set_hour_timer(wait);
+    }
+
+    fn set_hour_timer(&mut self, wait: Duration) {
+        let ms = wait.as_millis().min(u128::from(u32::MAX)) as u32;
+        unsafe {
+            SetTimer(Some(self.hwnd), TIMER_MASCOT_HOUR, ms, None);
+        }
+        self.hour_timer = true;
+    }
+
+    /// Kills `TIMER_MASCOT_HOUR` and forgets any hour in retry.
+    fn stop_hour_timer(&mut self) {
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), TIMER_MASCOT_HOUR);
+        }
+        self.hour_timer = false;
+        self.hour_deadline = None;
+    }
+
+    /// `TIMER_MASCOT_HOUR` fired: gone unless re-armed. The gates are checked
+    /// now; while one refuses, it asks again every `HOUR_RETRY` until the
+    /// hour's window is over, then waits for the next chosen hour.
+    fn on_hour_timer(&mut self) {
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), TIMER_MASCOT_HOUR);
+        }
+        self.hour_timer = false;
+        let now = Instant::now();
+        let deadline = *self.hour_deadline.get_or_insert(now + HOUR_WINDOW);
+        let was = self.play.is_some();
+        self.try_play(Moment::Hour, now);
+        let started = !was && self.play.is_some();
+        match hour_wait(started, deadline.saturating_duration_since(now)) {
+            HourWait::Retry => self.set_hour_timer(HOUR_RETRY),
+            HourWait::Next => {
+                self.hour_deadline = None;
+                // A story that started has already synced the next hour.
+                if !self.hour_timer {
+                    self.arm_hour_timer();
+                }
+            }
+        }
     }
 
     /// `moment`'s story starts once the island has reached its idle shape (the
@@ -2613,15 +2693,6 @@ impl App {
             };
             PlayFrame::of(stories::shot(active.play.story(), &stage), beat)
         })
-    }
-
-    /// The hour changed since the idle clock last showed: the hour moment.
-    fn check_hour(&mut self, now: Instant) {
-        let hour = Local::now().hour();
-        if hour_rolled(self.clock_hour, hour) {
-            self.clock_hour = hour;
-            self.try_play(Moment::Hour, now);
-        }
     }
 
     /// The shrunk notch's eyes this frame: where they look, and shut for a
@@ -4826,7 +4897,6 @@ impl App {
         if clock != self.clock_timer {
             self.clock_timer = clock;
             if clock {
-                self.clock_hour = Local::now().hour();
                 self.arm_clock();
             } else {
                 unsafe {
@@ -5822,7 +5892,10 @@ impl App {
         self.sticky_remind_fire();
         // A running story ends; a jump over an hour is not the hour moment.
         self.play_clock_jumped = self.play.is_some();
-        self.clock_hour = Local::now().hour();
+        // The hour timer was set for the old wall clock: set it again for the
+        // new one, with no catch-up of an hour that was jumped over.
+        self.stop_hour_timer();
+        self.sync_hour_timer();
         if !self.clock_timer {
             return;
         }
@@ -5960,7 +6033,6 @@ impl App {
                 self.sync_lyric_scroll(Instant::now());
             }
             TIMER_CLOCK => {
-                self.check_hour(Instant::now());
                 if !self.animating() {
                     self.draw(Instant::now());
                 }
@@ -6002,6 +6074,7 @@ impl App {
             TIMER_POINTER => self.on_pointer_timer(),
             TIMER_TYPING => self.on_typing_timer(),
             TIMER_MASCOT_PLAY => self.on_mascot_play_timer(),
+            TIMER_MASCOT_HOUR => self.on_hour_timer(),
             TIMER_HALO => self.on_halo_poll(),
             TIMER_BLINK => self.on_blink(),
             TIMER_ROBOT => {
@@ -7210,6 +7283,14 @@ impl App {
                     }
                     self.mascot_timer = false;
                 }
+                self.refresh(now);
+            }
+            SettingsAction::MascotHours(step) => {
+                self.config.mascot_hours = step;
+                self.save_config();
+                // The armed wait was for the old step: drop it so the next
+                // sync arms the new one.
+                self.stop_hour_timer();
                 self.refresh(now);
             }
             SettingsAction::RobotSleep(minutes) => {
@@ -9110,9 +9191,29 @@ fn since_last_play(last: Option<Instant>, now: Instant) -> Duration {
     last.map_or(Duration::MAX, |at| now.saturating_duration_since(at))
 }
 
-/// The clock moved on to another hour.
-fn hour_rolled(shown: u32, now: u32) -> bool {
-    shown != now
+/// `TIMER_MASCOT_HOUR` should be set: the mascot is on, an hour step is
+/// chosen and the preset is not Mati. The pointer, presence, motion, panels
+/// and the cooldown are judged when it fires.
+fn hour_timer_wanted(mascot_on: bool, preset: MascotPlay, step: u8) -> bool {
+    mascot_on && step != 0 && preset != MascotPlay::Mati
+}
+
+/// What to do once an hour story was tried.
+enum HourWait {
+    /// Ask the gate again in `HOUR_RETRY`.
+    Retry,
+    /// On to the next hour.
+    Next,
+}
+
+/// `Retry` only while no story started and the window still has room for
+/// another try.
+fn hour_wait(started: bool, window_left: Duration) -> HourWait {
+    if !started && window_left >= HOUR_RETRY {
+        HourWait::Retry
+    } else {
+        HourWait::Next
+    }
 }
 
 /// A greeting notice was on screen at the last call and is not now.
@@ -12014,6 +12115,7 @@ mod tests {
             crate::widgets::list_win::TIMER_LIST_UNDO,
             clip::TIMER_CLIP_DRAG,
             TIMER_MASCOT_PLAY,
+            TIMER_MASCOT_HOUR,
         ];
         assert_eq!(clip::TIMER_CLIP_DRAG, 55);
         assert_eq!(TIMER_PHONE, 48);
@@ -12036,6 +12138,33 @@ mod tests {
     #[test]
     fn the_mascot_play_timer_has_its_own_id() {
         assert_eq!(TIMER_MASCOT_PLAY, 19);
+    }
+
+    #[test]
+    fn the_hour_timer_has_its_own_id() {
+        assert_eq!(TIMER_MASCOT_HOUR, 36);
+    }
+
+    #[test]
+    fn the_hour_timer_is_wanted_only_with_a_step_a_live_preset_and_the_mascot_on() {
+        use crate::theme::MascotPlay::{Jarang, Mati, Sapaan, Sering, Sesekali};
+        for p in [Sering, Sesekali, Jarang, Sapaan] {
+            assert!(hour_timer_wanted(true, p, 1), "{p:?}");
+            assert!(hour_timer_wanted(true, p, 6), "{p:?}");
+            assert!(!hour_timer_wanted(true, p, 0), "{p:?} step off");
+            assert!(!hour_timer_wanted(false, p, 1), "{p:?} mascot off");
+        }
+        assert!(!hour_timer_wanted(true, Mati, 1));
+    }
+
+    #[test]
+    fn a_busy_hour_retries_inside_the_window_and_gives_up_after_it() {
+        let s = |n| Duration::from_secs(n);
+        assert!(matches!(hour_wait(false, s(600)), HourWait::Retry));
+        assert!(matches!(hour_wait(false, s(30)), HourWait::Retry));
+        assert!(matches!(hour_wait(false, s(29)), HourWait::Next));
+        assert!(matches!(hour_wait(false, Duration::ZERO), HourWait::Next));
+        assert!(matches!(hour_wait(true, s(600)), HourWait::Next), "started: on to the next hour");
     }
 
     /// An `Env` from 18 bits, one per field, in declaration order.
@@ -12382,14 +12511,6 @@ mod tests {
         assert_eq!(settle_plan(None, true), Settle::Now);
         // Nothing may start, so nothing waits for a fire.
         assert_eq!(settle_plan(Some(ms(250)), false), Settle::Never);
-    }
-
-    #[test]
-    fn the_hour_moment_fires_when_the_hour_rolls_over_and_not_within_it() {
-        assert!(hour_rolled(9, 10));
-        assert!(hour_rolled(23, 0));
-        assert!(!hour_rolled(10, 10));
-        assert!(!hour_rolled(0, 0));
     }
 
     #[test]
