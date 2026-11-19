@@ -478,6 +478,16 @@ pub fn is_real_toast(notice: &Notice) -> bool {
     matches!(notice.kind, NoticeKind::App { toast: Some(_), .. })
 }
 
+/// A notice that may tuck into the slot beside a compact view: a real toast,
+/// or a Claude hook notice.
+pub fn is_tuckable(notice: &Notice) -> bool {
+    is_real_toast(notice)
+        || matches!(
+            notice.kind,
+            NoticeKind::ClaudeDone { .. } | NoticeKind::ClaudeWaiting { .. }
+        )
+}
+
 impl IslandState {
     pub fn new(today: NaiveDate, pomo: PomoSettings) -> Self {
         Self {
@@ -655,13 +665,17 @@ impl IslandState {
                     self.queue.push_back(notice);
                 }
                 // A real toast over a busy notch that already shows one (a
-                // strip or a slot), with nothing waiting: the newest replaces
+                // strip or a slot; a Claude notice in the slot is never
+                // replaced), with nothing waiting: the newest replaces
                 // it where it stands and runs its own time. Behind a full
                 // toast or any other notice, or with others queued (a run of
                 // toasts must not hold them back, nor jump ahead of older
                 // toasts), it queues, as every notice does.
                 NoticeKind::App { toast: Some(_), .. } => {
-                    if self.toast_tucked() && self.queue.is_empty() {
+                    if self.toast_tucked()
+                        && self.queue.is_empty()
+                        && self.current.as_ref().is_some_and(|(n, _)| is_real_toast(n))
+                    {
                         if !self.toast_seen && self.toast_style == ToastStyle::Compact {
                             self.toast_dot = true;
                         }
@@ -878,8 +892,9 @@ impl IslandState {
                     .current
                     .as_ref()
                     .is_some_and(|(n, _)| self.notice_held(n));
-                self.toast_pointer =
-                    on && self.current.as_ref().is_some_and(|(n, _)| is_real_toast(n));
+                self.toast_pointer = on
+                    && (self.current.as_ref().is_some_and(|(n, _)| is_tuckable(n))
+                        || (self.current.is_none() && self.sticky_slot_candidate()));
                 if !on
                     && held
                     && let Some((_, expires)) = &mut self.current
@@ -1313,9 +1328,17 @@ impl IslandState {
         if panel && self.panel_open() {
             return View::Panel(self.page);
         }
-        if let Some(notice) = self.sticky.last() {
+        if let Some(notice) = self.sticky.last()
+            && !self.sticky_tucked()
+        {
             return View::Notice(notice.clone());
         }
+        self.compact_view()
+    }
+
+    /// The view under the sticky notice: a recording, the pomodoro, a caption
+    /// line, the music or the idle view.
+    fn compact_view(&self) -> View {
         // A recording outranks the pomodoro and the music: it must show.
         if self.rec.is_some() {
             return View::RecordCompact;
@@ -1449,7 +1472,7 @@ impl IslandState {
             || (self.arrange_naming && matches!(notice.kind, NoticeKind::Arranged { .. }))
             // The pointer on the toast's strip, or peeking at it: it waits.
             || (self.toast_pointer
-                && is_real_toast(notice)
+                && is_tuckable(notice)
                 && (self.toast_form() == Some(ToastForm::Strip) || self.toast_peeking()))
     }
 
@@ -2957,6 +2980,7 @@ impl IslandState {
         if let Some((n, expires)) = &self.current {
             let held = self.notice_held(n);
             if !held && *expires <= now {
+                let tuckable = is_tuckable(n);
                 let real_toast = is_real_toast(n);
                 if let NoticeKind::Screenshot {
                     shot,
@@ -2967,8 +2991,8 @@ impl IslandState {
                 {
                     effects.push(Effect::Shot(ShotAction::DeleteIgnored(shot)));
                 }
-                if real_toast {
-                    self.toast_left();
+                if tuckable {
+                    self.toast_left(real_toast);
                 }
                 self.current = None;
             }
@@ -3110,6 +3134,9 @@ impl IslandState {
         let Some((notice, _)) = self.current.take() else {
             return self.dismiss_newest_sticky();
         };
+        // The toast is gone: the pointer that held it must not turn into a
+        // peek of the sticky notice that comes back under it.
+        self.toast_pointer = false;
         match notice.kind {
             NoticeKind::App { app_id, toast } if toast.is_some() || app_id.is_some() => {
                 Some(Effect::OpenTarget(OpenTarget {
@@ -3174,38 +3201,74 @@ impl IslandState {
 impl IslandState {
     /// The current real toast could be tucked: Compact, not shown full
     /// already, and the notch under it is busy (a panel or a compact view).
-    /// Idle, Hidden and a sticky notice give Full, as a toast always did.
+    /// Idle, Hidden and a sticky notice give Full, as a toast always did. A
+    /// Claude notice tucks only beside the music (MediaLyric, MediaCompact).
     fn toast_candidate(&self) -> bool {
+        let Some((n, _)) = &self.current else {
+            return false;
+        };
+        let base = self.base_view();
         self.toast_style == ToastStyle::Compact
             && !self.toast_full
-            && self
-                .current
-                .as_ref()
-                .is_some_and(|(n, _)| is_real_toast(n))
-            && matches!(
-                self.base_view(),
-                View::Panel(_)
-                    | View::MediaLyric
-                    | View::MediaCompact
-                    | View::PomodoroCompact
-                    | View::RecordCompact
-                    | View::ScreenCountdown(_)
-            )
+            && is_tuckable(n)
+            && if is_real_toast(n) {
+                matches!(
+                    base,
+                    View::Panel(_)
+                        | View::MediaLyric
+                        | View::MediaCompact
+                        | View::PomodoroCompact
+                        | View::RecordCompact
+                        | View::ScreenCountdown(_)
+                )
+            } else {
+                matches!(base, View::MediaLyric | View::MediaCompact)
+            }
     }
 
     /// The pointer is on the slot's logo (or still on the island since): the
     /// full toast shows for as long as it stays. Not latched. Never over the
     /// countdown before a screen recording: its number stays in view.
     fn toast_peeking(&self) -> bool {
-        self.toast_pointer
-            && self.toast_candidate()
-            && !matches!(
-                self.base_view(),
-                View::Panel(_) | View::ScreenCountdown(_)
-            )
+        self.sticky_peeking()
+            || (self.toast_pointer
+                && self.toast_candidate()
+                && !matches!(
+                    self.base_view(),
+                    View::Panel(_) | View::ScreenCountdown(_)
+                ))
     }
 
-    /// The current real toast is tucked (a strip or a slot), the view being
+    /// The newest sticky notice is a "Claude waiting" that could tuck beside
+    /// the music: Compact, with the music view under it (not behind a
+    /// fullscreen app or the screen countdown).
+    fn sticky_slot_candidate(&self) -> bool {
+        self.toast_style == ToastStyle::Compact
+            && !self.fullscreen
+            && self.screen_countdown.is_none()
+            && self
+                .sticky
+                .last()
+                .is_some_and(|n| matches!(n.kind, NoticeKind::ClaudeWaiting { .. }))
+            && matches!(self.compact_view(), View::MediaLyric | View::MediaCompact)
+    }
+
+    /// The pointer peeks at the tucked sticky notice. Only with nothing in
+    /// `current`: a tucked `current` owns the pointer, so the toast peeks and
+    /// the sticky one stays put (else the toast would latch Full).
+    fn sticky_peeking(&self) -> bool {
+        self.toast_pointer
+            && self.current.is_none()
+            && !self.panel_open()
+            && self.sticky_slot_candidate()
+    }
+
+    /// The sticky notice sits tucked in the slot, the music view showing.
+    fn sticky_tucked(&self) -> bool {
+        self.sticky_slot_candidate() && !self.sticky_peeking()
+    }
+
+    /// The current tuckable notice is tucked (a strip or a slot), the view being
     /// the one under it.
     fn toast_tucked(&self) -> bool {
         self.toast_candidate() && !self.toast_peeking()
@@ -3216,10 +3279,10 @@ impl IslandState {
         self.current.is_some() && !self.toast_tucked()
     }
 
-    /// How the current real toast shows; `None` when there is none.
+    /// How the current tuckable notice shows; `None` when there is none.
     pub fn toast_form(&self) -> Option<ToastForm> {
         let (n, _) = self.current.as_ref()?;
-        if !is_real_toast(n) {
+        if !is_tuckable(n) {
             return None;
         }
         if !self.toast_tucked() {
@@ -3242,10 +3305,14 @@ impl IslandState {
             && !self.toast_tucked()
     }
 
-    /// The toast whose logo sits beside the compact view.
+    /// The notice whose logo sits beside the compact view: the tucked current
+    /// one, else the tucked sticky "Claude waiting".
     pub fn toast_slot(&self) -> Option<&Notice> {
         if self.toast_form() == Some(ToastForm::Slot) {
             return self.current.as_ref().map(|(n, _)| n);
+        }
+        if self.sticky_tucked() && !self.notice_covers() && !self.panel_open() {
+            return self.sticky.last();
         }
         None
     }
@@ -3302,19 +3369,20 @@ impl IslandState {
         self.toast_peeking()
     }
 
-    /// A real toast leaves `current` (expired, replaced): unseen, it leaves
-    /// the dot. A click counts as seen and takes another way out.
-    fn toast_left(&mut self) {
-        if !self.toast_seen && self.toast_style == ToastStyle::Compact {
+    /// A tuckable notice leaves `current` (expired, replaced): an unseen real
+    /// toast leaves the dot (a Claude notice never does). A click counts as
+    /// seen and takes another way out.
+    fn toast_left(&mut self, real: bool) {
+        if real && !self.toast_seen && self.toast_style == ToastStyle::Compact {
             self.toast_dot = true;
         }
         self.toast_full = false;
         self.toast_seen = false;
     }
 
-    /// Where the pointer can rest on the current real toast: its strip, or
-    /// its slot (peeking at it counts as the slot); `Full` and `None` have no
-    /// such spot.
+    /// Where the pointer can rest on the tucked notice: its strip, or its
+    /// slot (peeking at it, a sticky peek included, counts as the slot);
+    /// `Full` and `None` have no such spot.
     fn toast_spot(&self) -> Option<ToastForm> {
         if self.toast_peeking() {
             return Some(ToastForm::Slot);
@@ -3322,8 +3390,9 @@ impl IslandState {
         self.toast_form()
     }
 
-    /// The spot where the pointer holds the current toast: its strip, or
-    /// its slot while peeking (`toast_spot()` with `toast_pointer`).
+    /// The spot where the pointer holds the tucked notice: its strip, or its
+    /// slot while peeking, a sticky peek included (`toast_spot()` with
+    /// `toast_pointer`).
     fn toast_held_spot(&self) -> Option<ToastForm> {
         if !self.toast_pointer {
             return None;
@@ -3342,7 +3411,7 @@ impl IslandState {
         }
         self.toast_pointer = false;
         if let Some((n, expires)) = &mut self.current
-            && is_real_toast(n)
+            && is_tuckable(n)
         {
             *expires = (*expires).max(now + SHOT_LEAVE_GRACE);
         }
@@ -3354,11 +3423,11 @@ impl IslandState {
     fn settle_toast(&mut self, held: Option<ToastForm>, now: Instant) {
         // The latch or the linger's end moved the held toast.
         self.toast_hold_moved(held, now);
-        let real = self
+        let tuckable = self
             .current
             .as_ref()
-            .is_some_and(|(n, _)| is_real_toast(n));
-        if real {
+            .is_some_and(|(n, _)| is_tuckable(n));
+        if tuckable {
             let peek = self.toast_peeking();
             let tucked = self.toast_tucked();
             // Full because of the context: it stays full until it ends.
@@ -3369,18 +3438,20 @@ impl IslandState {
             if !tucked {
                 self.toast_seen = true;
             }
-            if peek {
+            // Only a real toast's dot is answered by a peek.
+            if peek && self.current.as_ref().is_some_and(|(n, _)| is_real_toast(n)) {
                 self.toast_dot = false;
             }
         } else {
             self.toast_full = false;
             self.toast_seen = false;
-            self.toast_pointer = false;
+            // The pointer on a tucked sticky notice stays while it does.
+            self.toast_pointer = self.toast_pointer && self.sticky_slot_candidate();
         }
         // The Notifikasi page lists it: nothing left to tell.
         if self.view() == View::Panel(Page::Notifications) {
             self.toast_dot = false;
-            if real {
+            if tuckable {
                 self.toast_seen = true;
             }
         }
@@ -4261,7 +4332,10 @@ mod tests {
         let mut s = st();
         s.apply(Event::Media(Some(media(true))), t0);
         s.apply(Event::Notice(waiting("s1")), t0);
-        assert_eq!(s.apply(Event::Click(Hit::Body), t0), open_session("s1"));
+        assert_eq!(
+            s.apply(Event::Click(Hit::ToastSlot), t0),
+            open_session("s1")
+        );
         assert_eq!(s.view(), View::MediaCompact);
     }
 
@@ -11711,12 +11785,260 @@ mod tests {
     }
 
     #[test]
+    fn claude_done_over_lyrics_is_a_slot_not_a_cover() {
+        let t0 = Instant::now();
+        let mut s = busy("lyric", t0);
+        s.apply(Event::Notice(done("s1")), t0);
+        assert_eq!(s.view(), View::MediaLyric);
+        assert_eq!(s.toast_form(), Some(ToastForm::Slot));
+        assert_eq!(
+            s.toast_slot().map(|n| n.title.as_str()),
+            Some("Claude is done")
+        );
+    }
+
+    #[test]
+    fn claude_done_over_media_is_a_slot() {
+        let t0 = Instant::now();
+        let mut s = busy("media", t0);
+        s.apply(Event::Notice(done("s1")), t0);
+        assert_eq!(s.view(), View::MediaCompact);
+        assert_eq!(s.toast_form(), Some(ToastForm::Slot));
+        assert_eq!(
+            s.toast_slot().map(|n| n.title.as_str()),
+            Some("Claude is done")
+        );
+    }
+
+    #[test]
+    fn claude_done_slot_peeks_and_a_click_opens_its_session() {
+        let t0 = Instant::now();
+        let mut s = busy("media", t0);
+        s.apply(Event::Notice(done("s1")), t0);
+        s.apply(Event::ToastPointer(true), t0 + secs(1));
+        assert_eq!(s.view(), View::Notice(done("s1")));
+        assert_eq!(s.toast_form(), Some(ToastForm::Full));
+        s.apply(Event::ToastPointer(false), t0 + secs(2));
+        assert_eq!(s.view(), View::MediaCompact);
+        assert_eq!(s.toast_form(), Some(ToastForm::Slot));
+        let fx = s.apply(Event::Click(Hit::ToastSlot), t0 + secs(3));
+        assert_eq!(
+            fx,
+            vec![Effect::OpenClaudeSession {
+                session_id: "s1".into()
+            }]
+        );
+        assert_eq!(s.view(), View::MediaCompact);
+    }
+
+    #[test]
+    fn claude_done_slot_ends_after_the_notice_time_without_a_dot() {
+        let t0 = Instant::now();
+        let mut s = busy("media", t0);
+        s.apply(Event::Notice(done("s1")), t0);
+        s.apply(Event::Tick, t0 + NOTICE_DURATION);
+        assert_eq!(s.view(), View::MediaCompact);
+        assert!(s.toast_slot().is_none());
+        assert!(!s.toast_dot_shown());
+    }
+
+    #[test]
+    fn claude_done_stays_full_over_the_panel_idle_and_with_penuh() {
+        let t0 = Instant::now();
+        for context in ["idle", "panel"] {
+            let mut s = busy(context, t0);
+            s.apply(Event::Notice(done("s1")), t0);
+            assert_eq!(s.view(), View::Notice(done("s1")), "{context}");
+        }
+        let mut s = busy("lyric", t0);
+        s.apply(Event::ToastStyle(ToastStyle::Full), t0);
+        s.apply(Event::Notice(done("s1")), t0);
+        assert_eq!(s.view(), View::Notice(done("s1")));
+        assert_eq!(s.toast_form(), Some(ToastForm::Full));
+    }
+
+    #[test]
+    fn a_real_toast_queues_behind_a_tucked_claude_done() {
+        let t0 = Instant::now();
+        let mut s = busy("media", t0);
+        s.apply(Event::Notice(done("s1")), t0);
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0 + secs(1));
+        assert_eq!(
+            s.toast_slot().map(|n| n.title.as_str()),
+            Some("Claude is done")
+        );
+        s.apply(Event::Tick, t0 + NOTICE_DURATION);
+        assert!(!s.toast_dot_shown());
+        assert_eq!(s.toast_slot().map(|n| n.title.as_str()), Some("Ibu"));
+    }
+
+    #[test]
+    fn a_peek_at_a_claude_notice_keeps_the_unread_dot_of_a_real_toast() {
+        let t0 = Instant::now();
+        let mut s = busy("media", t0);
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0);
+        s.apply(Event::Tick, t0 + NOTICE_DURATION);
+        assert!(s.toast_dot_shown());
+        s.apply(Event::Notice(done("s1")), t0 + secs(6));
+        assert!(!s.toast_dot_shown(), "the slot is on screen");
+        s.apply(Event::ToastPointer(true), t0 + secs(7));
+        s.apply(Event::ToastPointer(false), t0 + secs(8));
+        s.apply(Event::Tick, t0 + secs(30));
+        assert!(s.toast_dot_shown());
+    }
+
+    #[test]
+    fn claude_waiting_over_lyrics_is_a_slot() {
+        let t0 = Instant::now();
+        let mut s = busy("lyric", t0);
+        s.apply(Event::Notice(waiting("s1")), t0);
+        assert_eq!(s.view(), View::MediaLyric);
+        assert_eq!(s.toast_slot(), Some(&waiting("s1")));
+        assert_eq!(s.toast_form(), None);
+        assert_eq!(s.next_deadline(), None);
+        assert!(!s.toast_dot_shown());
+    }
+
+    #[test]
+    fn claude_waiting_slot_peeks_and_a_click_opens_its_session() {
+        let t0 = Instant::now();
+        let mut s = busy("lyric", t0);
+        s.apply(Event::Notice(waiting("s1")), t0);
+        s.apply(Event::ToastPointer(true), t0 + secs(1));
+        assert_eq!(s.view(), View::Notice(waiting("s1")));
+        s.apply(Event::ToastPointer(false), t0 + secs(2));
+        assert_eq!(s.view(), View::MediaLyric);
+        let fx = s.apply(Event::Click(Hit::ToastSlot), t0 + secs(3));
+        assert_eq!(
+            fx,
+            vec![Effect::OpenClaudeSession {
+                session_id: "s1".into()
+            }]
+        );
+        assert_eq!(s.view(), View::MediaLyric);
+        assert!(s.toast_slot().is_none());
+    }
+
+    #[test]
+    fn claude_activity_clears_the_waiting_slot_even_while_peeking() {
+        let t0 = Instant::now();
+        let mut s = busy("lyric", t0);
+        s.apply(Event::Notice(waiting("s1")), t0);
+        s.apply(Event::ToastPointer(true), t0 + secs(1));
+        s.apply(
+            Event::ClaudeActivity {
+                session_id: "s1".into(),
+            },
+            t0 + secs(2),
+        );
+        assert_eq!(s.view(), View::MediaLyric);
+        assert!(s.toast_slot().is_none());
+        assert!(!s.toast_is_peeking());
+    }
+
+    #[test]
+    fn claude_waiting_yields_the_slot_to_a_toast_and_comes_back() {
+        let t0 = Instant::now();
+        let mut s = busy("lyric", t0);
+        s.apply(Event::Notice(waiting("s1")), t0);
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0);
+        assert_eq!(s.toast_slot().map(|n| n.title.as_str()), Some("Ibu"));
+        assert_eq!(s.toast_form(), Some(ToastForm::Slot));
+        s.apply(Event::Tick, t0 + NOTICE_DURATION);
+        assert_eq!(s.toast_slot(), Some(&waiting("s1")));
+    }
+
+    #[test]
+    fn a_toast_arriving_under_a_sticky_peek_leaves_the_peek_and_tucks() {
+        let t0 = Instant::now();
+        let mut s = busy("lyric", t0);
+        s.apply(Event::Notice(waiting("s1")), t0);
+        s.apply(Event::ToastPointer(true), t0 + secs(1));
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0 + secs(2));
+        assert_eq!(s.toast_form(), Some(ToastForm::Slot));
+        assert!(!s.toast_is_peeking());
+        assert_eq!(s.toast_slot().map(|n| n.title.as_str()), Some("Ibu"));
+        s.apply(Event::Tick, t0 + secs(2) + NOTICE_DURATION);
+        assert_eq!(s.toast_slot(), Some(&waiting("s1")));
+    }
+
+    #[test]
+    fn clicking_a_toast_over_a_waiting_slot_does_not_peek_the_waiting_notice() {
+        let t0 = Instant::now();
+        let mut s = busy("lyric", t0);
+        s.apply(Event::Notice(waiting("s1")), t0);
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0 + secs(1));
+        s.apply(Event::ToastPointer(true), t0 + secs(2));
+        let fx = s.apply(Event::Click(Hit::ToastSlot), t0 + secs(3));
+        assert_eq!(fx, vec![Effect::OpenTarget(chrome_target("Ibu"))]);
+        assert_eq!(s.view(), View::MediaLyric);
+        assert!(!s.toast_is_peeking());
+        assert_eq!(s.toast_slot(), Some(&waiting("s1")));
+        let fx = s.apply(Event::Click(Hit::Body), t0 + secs(4));
+        assert!(!fx.iter().any(|e| matches!(e, Effect::OpenClaudeSession { .. })));
+        assert_eq!(s.toast_slot(), Some(&waiting("s1")));
+    }
+
+    #[test]
+    fn claude_waiting_covers_as_before_with_penuh_idle_pomodoro_and_the_panel() {
+        let t0 = Instant::now();
+        let mut s = busy("lyric", t0);
+        s.apply(Event::ToastStyle(ToastStyle::Full), t0);
+        s.apply(Event::Notice(waiting("s1")), t0);
+        assert_eq!(s.view(), View::Notice(waiting("s1")));
+        assert!(s.toast_slot().is_none());
+        for context in ["idle", "pomodoro"] {
+            let mut s = busy(context, t0);
+            s.apply(Event::Notice(waiting("s1")), t0);
+            assert_eq!(s.view(), View::Notice(waiting("s1")), "{context}");
+            assert!(s.toast_slot().is_none(), "{context}");
+        }
+        let mut s = busy("panel", t0);
+        s.apply(Event::Notice(waiting("s1")), t0);
+        assert_eq!(s.view(), View::Panel(Page::Calendar));
+        assert_eq!(s.waiting_strip(), Some(&waiting("s1")));
+        assert!(s.toast_slot().is_none());
+    }
+
+    #[test]
+    fn a_fullscreen_copy_of_the_waiting_notice_gives_one_open_effect() {
+        let t0 = Instant::now();
+        let opens = |fx: &[Effect]| {
+            fx.iter()
+                .filter(|e| matches!(e, Effect::OpenClaudeSession { .. }))
+                .count()
+        };
+        // The brief copy still on screen when the app ends: it appeared
+        // while hidden, so it shows whole (Hit::Body), over the music.
+        let mut s = busy("lyric", t0);
+        s.apply(Event::Fullscreen(true), t0);
+        s.apply(Event::Notice(waiting("s1")), t0);
+        s.apply(Event::Fullscreen(false), t0 + secs(1));
+        assert_eq!(s.view(), View::Notice(waiting("s1")));
+        let fx = s.apply(Event::Click(Hit::Body), t0 + secs(2));
+        assert_eq!(opens(&fx), 1, "{fx:?}");
+        assert!(s.sticky.is_empty());
+        assert!(s.current.is_none());
+        // The copy over before the app ends: the sticky one tucks in the
+        // slot, and its click opens the session once.
+        let mut s = busy("lyric", t0);
+        s.apply(Event::Fullscreen(true), t0);
+        s.apply(Event::Notice(waiting("s1")), t0);
+        s.apply(Event::Tick, t0 + NOTICE_DURATION);
+        s.apply(Event::Fullscreen(false), t0 + secs(6));
+        assert_eq!(s.toast_slot(), Some(&waiting("s1")));
+        let fx = s.apply(Event::Click(Hit::ToastSlot), t0 + secs(7));
+        assert_eq!(opens(&fx), 1, "{fx:?}");
+        assert!(s.sticky.is_empty());
+        assert!(s.current.is_none());
+    }
+
+    #[test]
     fn island_notices_and_toasts_without_an_origin_still_cover_a_panel() {
         let t0 = Instant::now();
         for notice in [
             app_notice("a"),
             copied("c"),
-            done("s"),
             Notice {
                 kind: NoticeKind::BatteryLow,
                 ..copied("b")
