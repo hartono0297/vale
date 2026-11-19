@@ -110,7 +110,7 @@ use crate::ui::frame_clock::{FrameClock, WM_APP_FRAME};
 use crate::ui::geometry::{
     AA_MARGIN, ANIM_MS, LYRIC_HOLD_MS, LYRIC_MAX_W, LYRIC_MIN_W, NOTCH_H_DEFAULT, NOTCH_W_DEFAULT,
     IdleLayout, NotchSize, ShapeKind, ShapeRect, TOAST_SLOT_EXTRA, Under, WINDOW_W, idle_layout_lead,
-    idle_shape_typing,
+    idle_shape_typing, face_content_trim,
     island_contains, lerp_shape, lyric_box_w, lyric_cap, lyric_max_w, lyric_scroll_end_ms,
     lyric_scroll_offset, lyric_shape_sized, lyric_slot_width, lyric_target_w, lyric_width_min,
     panel_kind, shape_for, shape_sized, shape_with_robot_sized, toast_peek_reaches, typing_lead,
@@ -4660,6 +4660,7 @@ impl App {
     /// the last one) and arms `TIMER_LYRIC` for the next change. Outside
     /// the lyric view the timer stops. True when the line changed.
     fn sync_lyric_line(&mut self, now: Instant) -> bool {
+        self.lyric_fit.set_trim(self.lyric_trim());
         let view = self.state.view();
         let (position, rate, playing, reach) = match (self.state.timeline(), self.state.media()) {
             (Some(t), Some(m)) if view == View::MediaLyric => (
@@ -4704,6 +4705,16 @@ impl App {
         self.set_lyric_timer(wait);
         self.sync_lyric_scroll(now);
         changed
+    }
+
+    /// The room the face's earcups take off the lyric line's box: only in
+    /// Jadi muka (`face_content_trim`).
+    fn lyric_trim(&self) -> f32 {
+        if self.notch_style() == NotchStyle::Face {
+            face_content_trim(ShapeKind::MediaLyric, self.config.cat_accessory)
+        } else {
+            0.0
+        }
     }
 
     /// The widest lyric notch on this screen.
@@ -7335,7 +7346,12 @@ impl App {
             SettingsAction::CatAccessory(accessory) => {
                 self.config.cat_accessory = accessory;
                 self.save_config();
-                self.draw(now);
+                // The Headphone's earcups change the lyric notch's width
+                // (`lyric_trim`).
+                self.refresh(now);
+                if !self.animating() {
+                    self.draw(now);
+                }
             }
             SettingsAction::CatFollow(on) => {
                 self.config.cat_follow_pointer = on;
@@ -8471,9 +8487,19 @@ struct LyricFit {
     /// A busy toast's logo sits at the notch's right (`TOAST_SLOT_EXTRA`):
     /// the width, the line's box and its scroll are worked out with it.
     slot: bool,
+    /// Room the face's earcups take off the line's box at the right
+    /// (`face_content_trim`); the notch is wider by it.
+    trim: f32,
 }
 
 impl LyricFit {
+    /// The face's earcups take `trim` off the line's box (zero off Jadi muka):
+    /// the notch is that much wider, the box and the scroll stay as they were.
+    fn set_trim(&mut self, trim: f32) {
+        self.trim = trim;
+    }
+
+
     /// The user's notch width changed: the same line is fitted to the new
     /// floor.
     fn set_min(&mut self, min_w: f32) {
@@ -8514,8 +8540,13 @@ impl LyricFit {
         }
     }
 
-    /// The notch's width, the logo's room included while the slot shows.
+    /// The notch's width, the logo's room included while the slot shows and
+    /// the earcups' room (`trim`) on top.
     fn width(&self) -> f32 {
+        self.width_before_trim() + self.trim
+    }
+
+    fn width_before_trim(&self) -> f32 {
         let w = self.line_side_w();
         if self.slot {
             lyric_slot_width(w, self.robot, self.min_w, self.max_w)
@@ -8533,9 +8564,9 @@ impl LyricFit {
     /// width less the logo's room.
     fn content_w(&self) -> f32 {
         if self.slot {
-            self.width() - TOAST_SLOT_EXTRA
+            self.width_before_trim() - TOAST_SLOT_EXTRA
         } else {
-            self.width()
+            self.width_before_trim()
         }
     }
 
@@ -11734,6 +11765,45 @@ mod tests {
             assert!(span.1 > plain_span.expect("scrolls without the slot").1);
             fit.set_slot(false);
             assert_eq!(fit.scroll_span(), plain_span);
+        }
+    }
+
+    /// Under Jadi muka the Headphone's earcups take room off the line's box
+    /// (`face_content_wearing`): the notch is wider by that room, so a line
+    /// that fits the notch is not clipped or faded at the right end.
+    #[test]
+    fn lyric_fit_in_face_mode_keeps_the_line_box_for_every_accessory() {
+        use crate::theme::CatAccessory;
+        use crate::ui::geometry::{
+            face_content_trim, face_content_wearing, lyric_layout_robot, lyric_overflow, NOTCH_H_MAX, NOTCH_W_MAX,
+        };
+        let t0 = Instant::now();
+        for style in [Style::Pill, Style::Notch] {
+            for notch in [NotchSize::DEFAULT, NotchSize::from_px(NOTCH_W_MAX, NOTCH_H_MAX)] {
+                for &acc in CatAccessory::ALL {
+                    for text_w in [10.0, 150.0, 260.0, 380.0] {
+                        let mut fit = LyricFit::default();
+                        fit.set_min(notch.w);
+                        fit.set_trim(face_content_trim(ShapeKind::MediaLyric, acc));
+                        fit.line(Some(text_w), t0, true, LYRIC_MAX_W);
+                        let drawn = face_shaped(
+                            NotchStyle::Face,
+                            ShapeKind::MediaLyric,
+                            false,
+                            lyric_shape_sized(style, notch, fit.width()),
+                        );
+                        let line = lyric_layout_robot(face_content_wearing(
+                            drawn,
+                            ShapeKind::MediaLyric,
+                            acc,
+                        ))
+                        .1;
+                        let what = format!("{style:?} {notch:?} {acc:?} line {text_w}");
+                        assert!(!lyric_overflow(text_w, line.w), "{what}: box {}", line.w);
+                        assert!((fit.box_w() - line.w).abs() < 1e-3, "{what}: {} vs {}", fit.box_w(), line.w);
+                    }
+                }
+            }
         }
     }
 

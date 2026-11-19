@@ -405,6 +405,21 @@ pub fn face_content(s: ShapeRect, kind: ShapeKind) -> ShapeRect {
 /// notch wearing the earcups (dip).
 const TEXT_AIR: f32 = 0.5;
 
+/// How much narrower `face_content_wearing` makes the content of a `kind`
+/// view for `accessory` than `face_content` (the earcups' and the unread
+/// dot's room at the right end).
+pub fn face_content_trim(kind: ShapeKind, accessory: crate::theme::CatAccessory) -> f32 {
+    if accessory != crate::theme::CatAccessory::Headphone || face_extra(kind) == 0.0 {
+        return 0.0;
+    }
+    // The dot's place depends on the shape's right end only, so any shape
+    // gives the same room.
+    let s = ShapeRect { x: 0.0, y: 0.0, w: 100.0, h: 34.0, radius: 0.0 };
+    let ((cx, _), r) = face_toast_dot(s, super::robot::face_unit(super::robot::FACE_SCALE), kind);
+    let dot_room = s.x + s.w - (cx - r - TOAST_DOT_RING);
+    (dot_room + TEXT_AIR - COMPACT_INSET).max(0.0)
+}
+
 /// `face_content` for a face wearing `accessory`. With the earcups on a
 /// narrow view, the content also ends short of the right earcup and the
 /// unread dot moved in past it (`face_toast_dot`), so no text box runs under
@@ -418,14 +433,8 @@ pub fn face_content_wearing(
     accessory: crate::theme::CatAccessory,
 ) -> ShapeRect {
     let c = face_content(s, kind);
-    if accessory != crate::theme::CatAccessory::Headphone || face_extra(kind) == 0.0 {
-        return c;
-    }
-    let ((cx, _), r) = face_toast_dot(s, super::robot::face_unit(super::robot::FACE_SCALE), kind);
-    let dot_room = s.x + s.w - (cx - r - TOAST_DOT_RING);
-    let trim = (dot_room + TEXT_AIR - COMPACT_INSET).max(0.0);
     ShapeRect {
-        w: (c.w - trim).max(0.0),
+        w: (c.w - face_content_trim(kind, accessory)).max(0.0),
         ..c
     }
 }
@@ -5214,6 +5223,36 @@ mod tests {
             }
         }
         assert!(checked > 1_000, "{checked}");
+    }
+
+    /// `face_content_trim` is what `face_content_wearing` takes off the content's
+    /// width: the earcups' room, for the Headphone on a narrow view only.
+    #[test]
+    fn the_face_content_trim_is_what_the_earcups_take_off_the_content() {
+        use crate::theme::CatAccessory;
+        for style in [Style::Pill, Style::Notch] {
+            for size in notch_sizes() {
+                for kind in [
+                    ShapeKind::MediaCompact,
+                    ShapeKind::MediaLyric,
+                    ShapeKind::PomodoroCompact,
+                    ShapeKind::RecordCompact,
+                    ShapeKind::Idle,
+                ] {
+                    let s = with_face_extra(shape_with_robot_sized(style, size, kind, true), kind);
+                    for &acc in CatAccessory::ALL {
+                        let taken = face_content(s, kind).w - face_content_wearing(s, kind, acc).w;
+                        let trim = face_content_trim(kind, acc);
+                        assert!(
+                            (taken - trim).abs() < 1e-3,
+                            "{style:?} {size:?} {kind:?} {acc:?}: took {taken}, trim {trim}"
+                        );
+                        let wants = acc == CatAccessory::Headphone && face_extra(kind) > 0.0;
+                        assert_eq!(trim > 0.0, wants, "{kind:?} {acc:?}: {trim}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]
