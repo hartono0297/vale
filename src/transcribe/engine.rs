@@ -461,6 +461,8 @@ fn check(api: &Api) -> Result<(), EngineError> {
 pub struct Model {
     engine: &'static Engine,
     raw: *mut RawModel,
+    /// Loaded with `cpu: true`, whatever name the library gives the backend.
+    cpu: bool,
 }
 
 // SAFETY: transcribe_model_* functions are thread-safe; the handle is
@@ -487,7 +489,7 @@ impl Model {
             }
             return Err(EngineError::Model(why));
         }
-        Ok(Model { engine, raw })
+        Ok(Model { engine, raw, cpu })
     }
 
     pub fn is_asr(&self) -> bool {
@@ -624,7 +626,8 @@ impl<'m> Session<'m> {
             language: (!detected.is_empty()).then_some(detected),
             partial,
         };
-        screen(out, !self.model.backend().eq_ignore_ascii_case("cpu"))
+        let on_gpu = !self.model.cpu && !self.model.backend().eq_ignore_ascii_case("cpu");
+        screen(out, on_gpu)
     }
 }
 
@@ -634,21 +637,20 @@ impl Drop for Session<'_> {
     }
 }
 
-/// Fewest non-blank characters before a single repeated one counts as junk.
+/// Fewest non-blank characters before a run of "!" counts as junk.
 const JUNK_MIN_CHARS: usize = 8;
 
-/// Whether `text` is one character repeated ("!!!!..."): what a decoder
-/// whose logits are all NaN writes (token 0 is "!"), with status OK. The
-/// Radeon 530 under Vulkan did this on every chunk.
+/// Whether `text` is (nearly) all "!": what a decoder whose logits are all
+/// NaN writes (token 0 is "!"), with status OK. The Radeon 530 under Vulkan
+/// did this on every chunk. Only "!" counts: a music note, "....." or a
+/// long "aaah" is real output and must not move a job off the GPU.
 fn is_junk(text: &str) -> bool {
-    let mut counts = std::collections::HashMap::new();
-    let mut total = 0usize;
+    let (mut bangs, mut total) = (0usize, 0usize);
     for c in text.chars().filter(|c| !c.is_whitespace()) {
-        *counts.entry(c).or_insert(0usize) += 1;
         total += 1;
+        bangs += usize::from(c == '!');
     }
-    let top = counts.values().copied().max().unwrap_or(0);
-    total >= JUNK_MIN_CHARS && top * 10 >= total * 9
+    total >= JUNK_MIN_CHARS && bangs * 10 >= total * 9
 }
 
 /// A run's result, or the failure that makes it junk: on a GPU a
@@ -838,6 +840,10 @@ mod tests {
         assert!(!is_junk("Ya!"));
         assert!(!is_junk("..."));
         assert!(!is_junk("Hahahahaha"));
+        assert!(!is_junk("♪ ♪ ♪ ♪ ♪ ♪ ♪ ♪"));
+        assert!(!is_junk("........"));
+        assert!(!is_junk("哈哈哈哈哈哈哈哈"));
+        assert!(!is_junk("Aaaaaaaaaaaaaaaaaaaaaaah"));
         assert!(!is_junk("Oh, internetnya lagi mati nih."));
         assert!(!is_junk("Oke!!! Silakan lanjutkan, Pak, kita mulai sekarang juga."));
     }
