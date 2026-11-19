@@ -14,8 +14,9 @@ the field is the island's own (`merge_owned` keeps `notifications`), applied
 live from Settings, at startup and from a hand edit (`adopt_config`) through
 `Event::ToastStyle`. Only a notice made by `sources::notifications::to_notice`
 (`NoticeKind::App { toast: Some(_) }`, `state::is_real_toast`) is touched.
-Clipboard preview, Disalin, reminders, Claude, pomodoro, update, screenshot,
-devices, greeting and `App { toast: None }` notices are unchanged. Background:
+Clipboard preview, Disalin, reminders, pomodoro, update, screenshot,
+devices, greeting and `App { toast: None }` notices are unchanged. Since 2026-11-19 the two Claude notices tuck beside a music view too
+([[claude-notice-slot]]). Background:
 [[notification-history]] (the toast, its logo, the history).
 
 ## The form rule (`state.rs`, pure)
