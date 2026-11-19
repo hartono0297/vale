@@ -2101,7 +2101,7 @@ mod tests {
         use crate::ui::robot::{GLANCE_Y, face_marks};
         // Every eye, open and shut, in every expression: 13 units across
         // each way from the eye line's centre and 7 up (the thinking eyes
-        // look up). The typing eyes glance up only from lower down.
+        // look up). The typing eyes glance up by `GLANCE_Y` more.
         let mut widest = 0.0f32;
         let mut highest = 0.0f32;
         for expr in Expr::ALL {
