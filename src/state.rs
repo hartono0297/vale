@@ -3134,6 +3134,9 @@ impl IslandState {
         let Some((notice, _)) = self.current.take() else {
             return self.dismiss_newest_sticky();
         };
+        // The toast is gone: the pointer that held it must not turn into a
+        // peek of the sticky notice that comes back under it.
+        self.toast_pointer = false;
         match notice.kind {
             NoticeKind::App { app_id, toast } if toast.is_some() || app_id.is_some() => {
                 Some(Effect::OpenTarget(OpenTarget {
@@ -11946,7 +11949,7 @@ mod tests {
     }
 
     #[test]
-    fn a_toast_arriving_under_a_sticky_peek_tucks_as_a_slot() {
+    fn a_toast_arriving_under_a_sticky_peek_leaves_the_peek_and_tucks() {
         let t0 = Instant::now();
         let mut s = busy("lyric", t0);
         s.apply(Event::Notice(waiting("s1")), t0);
@@ -11956,6 +11959,23 @@ mod tests {
         assert!(!s.toast_is_peeking());
         assert_eq!(s.toast_slot().map(|n| n.title.as_str()), Some("Ibu"));
         s.apply(Event::Tick, t0 + secs(2) + NOTICE_DURATION);
+        assert_eq!(s.toast_slot(), Some(&waiting("s1")));
+    }
+
+    #[test]
+    fn clicking_a_toast_over_a_waiting_slot_does_not_peek_the_waiting_notice() {
+        let t0 = Instant::now();
+        let mut s = busy("lyric", t0);
+        s.apply(Event::Notice(waiting("s1")), t0);
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0 + secs(1));
+        s.apply(Event::ToastPointer(true), t0 + secs(2));
+        let fx = s.apply(Event::Click(Hit::ToastSlot), t0 + secs(3));
+        assert_eq!(fx, vec![Effect::OpenTarget(chrome_target("Ibu"))]);
+        assert_eq!(s.view(), View::MediaLyric);
+        assert!(!s.toast_is_peeking());
+        assert_eq!(s.toast_slot(), Some(&waiting("s1")));
+        let fx = s.apply(Event::Click(Hit::Body), t0 + secs(4));
+        assert!(!fx.iter().any(|e| matches!(e, Effect::OpenClaudeSession { .. })));
         assert_eq!(s.toast_slot(), Some(&waiting("s1")));
     }
 
