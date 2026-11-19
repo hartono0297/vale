@@ -4677,7 +4677,9 @@ fn scene_shape(
     accessory: CatAccessory,
 ) -> ShapeRect {
     let s = scene_shape_plain(renderer, win, style, notch, scene, lyric_at, notch_style);
-    let s = ShapeRect { w: s.w + scene_lyric_trim(notch_style, scene, accessory), ..s };
+    let trim = scene_lyric_trim(notch_style, scene, accessory);
+    // Wider by the trim, still centred.
+    let s = ShapeRect { x: s.x - trim / 2.0, w: s.w + trim, ..s };
     // Jadi muka widens the narrow views for the face, as in the app.
     if scene_face(notch_style, scene) {
         with_face_extra(s, scene.kind)

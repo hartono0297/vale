@@ -7346,7 +7346,12 @@ impl App {
             SettingsAction::CatAccessory(accessory) => {
                 self.config.cat_accessory = accessory;
                 self.save_config();
-                self.draw(now);
+                // The Headphone's earcups change the lyric notch's width
+                // (`lyric_trim`).
+                self.refresh(now);
+                if !self.animating() {
+                    self.draw(now);
+                }
             }
             SettingsAction::CatFollow(on) => {
                 self.config.cat_follow_pointer = on;
