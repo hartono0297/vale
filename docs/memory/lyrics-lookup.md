@@ -113,9 +113,9 @@ The returned `Answer::Synced` text is the shifted LRC (`format_lrc`: one
 memory cache and the display agree. An unshifted pick returns the upload's
 text unchanged. There is no user offset setting on purpose (removed in v3.9).
 
-## Cache version: `.lrc2`, `.none4`
+## Cache version: `.lrc3`, `.none4`
 
-`LRC_EXT` is `lrc2` and `NONE_EXT` is `none4`. Old `<hash>.lrc` and
+`LRC_EXT` is `lrc3` (was `lrc2` until 2026-11-19, see the end of this note) and `NONE_EXT` is `none4`. Old `<hash>.lrc`, `<hash>.lrc2` and
 `.none` .. `.none3` files are ignored (never read, not cleaned up), so every
 track is looked up once more with the new pick: lyrics cached by the old
 choice may be early or late, and a music video with a `.none3` marker may now
@@ -137,4 +137,4 @@ above). Perfect at 282 s still shifts (its nearest entry is 280 s, outside the
 window). Residual risk: a mislabelled upload at exactly the video's length.
 Fixture `src/testdata/lrclib-heaven-bryan-adams.json`, test
 `an_upload_of_the_playing_length_is_not_shifted`. Lyrics cached before the fix
-stay wrong until the `.lrc2` file is deleted.
+were wrong until the cache version went to `.lrc3` the same day: `.lrc2` files are ignored, so every track is looked up once more with the fixed rule, and nobody has to delete cache files.
