@@ -40,6 +40,24 @@ the line on screen instead of a fixed 300 × 34. Math in `src/ui/geometry.rs`
   `lyric-instrumental`, `lyric-long`, `bata-lirik-long`;
   `DI_LYRIC_SCROLL=ms` freezes the long line that long after it showed.
 
-Related: [[studio-media-progress-timer]], [[screenshot-capture-script]]
+## Jadi muka with the Headphone (2026-11-19)
+
+Report: "notch mode face, lyric masih banyak yang kepotong". Root cause: under
+Jadi muka the Headphone's earcups make `face_content_wearing` end the content
+`face_content_trim` (about 5.3 dip) short of the right end, so the line's box
+was that much narrower than the width `lyric_width_min` sized for the line. A
+line that exactly filled its notch (every line wider than the user's notch
+width) overflowed by the trim: it drew from the box's left, faded the last 32
+px and the last letter was cut. Other accessories never trim, so only the
+Headphone showed it.
+
+Fix: `LyricFit.trim` (`set_trim`, `App::lyric_trim`: Face style only) makes the
+notch `trim` wider (`width()`); `box_w`/`content_w` and the scroll plan stay as
+without it. The demo does the same (`scene_lyric_trim`). Tests:
+`lyric_fit_in_face_mode_keeps_the_line_box_for_every_accessory`,
+`the_face_content_trim_is_what_the_earcups_take_off_the_content`. A line wider
+than the cap still scrolls and fades by design.
+
+Related: [[studio-media-progress-timer]], [[screenshot-capture-script]], [[notch-colour-style]]
 
 Part of [[v3-studio-overview]]. Listed in [[index]].

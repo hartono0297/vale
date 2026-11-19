@@ -296,7 +296,7 @@ use super::geometry::{
     ANIM_MS, IdleLayout, NOTCH_OPACITY_DEFAULT, NotchSize, ShapeKind, ShapeRect, TOAST_SLOT_EXTRA, Under,
     ease_out_back, idle_layout_lead, idle_shape_typing, lerp_shape, lyric_box_w, lyric_max_w, lyric_scroll_offset,
     lyric_shape_sized, lyric_slot_width, lyric_width_min, shape_with_robot_sized, typing_lead,
-    with_face_extra, with_rec_caption, with_toast_slot, FACE_EXTRA,
+    with_face_extra, with_rec_caption, with_toast_slot, face_content_trim, FACE_EXTRA,
 };
 use super::motion::{
     CloseFade, PAGE_FADE_MS, REVEAL_MS, RevealDir, Transit, close_fade_ms, content_alpha,
@@ -3120,14 +3120,16 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
         let now = Instant::now();
         let at = lyric_at.unwrap_or(scene.lyric_at);
         let lyric_state = demo_lyrics(at, lyric_fade, now);
-        let to = scene_shape(&renderer, &win, (style, notch_style), notch, &scene, at);
+        let accessory = cat.accessory;
+        let to = scene_shape(&renderer, &win, (style, notch_style), notch, &scene, at, accessory);
         // How far a long line has scrolled: frozen, or live from the step's start.
         let scroll = match scene.view {
             View0::MediaLyric => {
                 let text = lyric_state.shown(now).map_or("", |l| l.text);
                 let slot_w = if scene.slot { TOAST_SLOT_EXTRA } else { 0.0 };
                 let face_w = if scene_face(notch_style, &scene) { FACE_EXTRA } else { 0.0 };
-                let box_w = lyric_box_w(to.w - slot_w - face_w, scene.robot.is_some());
+                let trim = scene_lyric_trim(notch_style, &scene, accessory);
+                let box_w = lyric_box_w(to.w - slot_w - face_w - trim, scene.robot.is_some());
                 renderer.lyric_text_width(text).map_or(0.0, |text_w| {
                     lyric_scroll_offset(text_w, box_w, lyric_scroll.unwrap_or(into as u64))
                 })
@@ -3160,8 +3162,15 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
             }
             let (prev_style, prev) = self::scene(scenes, (step + steps - 1) % steps);
             let prev_at = lyric_at.unwrap_or(prev.lyric_at);
-            let from =
-                scene_shape(&renderer, &win, (prev_style, notch_style), notch, &prev, prev_at);
+            let from = scene_shape(
+                &renderer,
+                &win,
+                (prev_style, notch_style),
+                notch,
+                &prev,
+                prev_at,
+                accessory,
+            );
             let shape = lerp_shape(from, to, ease_out_back(t));
             // The fill follows the morph as the island does (`App::fill_at`).
             let fill_alpha =
@@ -4665,8 +4674,10 @@ fn scene_shape(
     notch: NotchSize,
     scene: &Scene,
     lyric_at: u64,
+    accessory: CatAccessory,
 ) -> ShapeRect {
     let s = scene_shape_plain(renderer, win, style, notch, scene, lyric_at, notch_style);
+    let s = ShapeRect { w: s.w + scene_lyric_trim(notch_style, scene, accessory), ..s };
     // Jadi muka widens the narrow views for the face, as in the app.
     if scene_face(notch_style, scene) {
         with_face_extra(s, scene.kind)
@@ -4687,6 +4698,16 @@ fn scene_face(notch_style: NotchStyle, scene: &Scene) -> bool {
                 | ShapeKind::PomodoroCompact
                 | ShapeKind::RecordCompact
         )
+}
+
+/// The room the face's earcups take off the lyric line's box in a lyric
+/// scene (`App::lyric_trim`); zero in any other scene.
+fn scene_lyric_trim(notch_style: NotchStyle, scene: &Scene, accessory: CatAccessory) -> f32 {
+    if scene.kind == ShapeKind::MediaLyric && scene_face(notch_style, scene) {
+        face_content_trim(ShapeKind::MediaLyric, accessory)
+    } else {
+        0.0
+    }
 }
 
 /// `scene_shape` before Jadi muka's widening.
