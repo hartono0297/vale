@@ -778,8 +778,6 @@ fn reach(want: f32, fits: &dyn Fn(f32) -> bool) -> f32 {
 /// is `face_unit(FACE_SCALE)` (1.28) dip wherever the notch has the room
 /// (`geometry::face_scale` gives less on a narrow or low one).
 pub const FACE_SCALE: f32 = 1.6;
-/// How far the typing face's focus eyes look down, in grid units.
-pub const TYPING_FACE_DOWN: f32 = 2.0;
 /// How far inside the outline a cut move of the face stops (dip,
 /// `face_pose_in`): far under a pixel, far over a rounding error.
 const FACE_CUT_MARGIN: f32 = 0.01;
@@ -828,19 +826,18 @@ const FACE_HEART_RGB: u32 = 0xD23F6A;
 /// The marks of `expr` on the face notch: its eyes as `face(expr, blink)`
 /// draws them; the z's, the wave's heart and the thought dots smaller and
 /// beside the eyes, never above them; no music note (the face nods
-/// instead). The typing face is the focus eyes looking down
-/// (`TYPING_FACE_DOWN`): no laptop, no paws.
+/// instead). The typing face is the idle eyes: no laptop, no paws.
 pub fn face_marks(expr: Expr, blink: bool) -> Vec<FaceMark> {
-    let (shown, down) = match expr {
-        Expr::Typing => (Expr::Focus, TYPING_FACE_DOWN),
-        e => (e, 0.0),
+    let shown = match expr {
+        Expr::Typing => Expr::Idle,
+        e => e,
     };
     face(shown, blink)
         .parts
         .into_iter()
         .filter_map(|part| {
             let (k, at) = if is_eye(&part) {
-                (1.0, (0.0, down))
+                (1.0, (0.0, 0.0))
             } else {
                 match part {
                     Part::Stroke(Line::Zz) => FACE_ZZ,
@@ -3115,12 +3112,10 @@ mod tests {
                 assert_eq!(face_px(&img, x, y), fill, "({x}, {y})");
             }
         }
-        // Typing is the focus eyes, looking down: the eye line itself is clear.
-        let (focus, _) = face_render(look, Expr::Focus, Pose::default());
+        // Typing is the idle eyes, not the squat focus ones: the same pixels.
         let (typing, _) = face_render(look, Expr::Typing, Pose::default());
-        assert_eq!(face_px(&focus, 54, 33), look.eye_rgb());
-        assert_eq!(face_px(&typing, 54, 32), fill);
-        assert_eq!(face_px(&typing, 54, 36), look.eye_rgb());
+        assert_eq!(face_px(&typing, 54, 32), look.eye_rgb());
+        assert!(img == typing);
         for y in 0..64 {
             for x in 0..30 {
                 assert_eq!(face_px(&typing, x, y), fill, "typing ({x}, {y})");
