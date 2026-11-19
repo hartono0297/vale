@@ -16,6 +16,23 @@ pub struct Entry {
 /// Newest first. Add the entry for a version before bumping it.
 pub static ENTRIES: &[Entry] = &[
     Entry {
+        version: "5.5.7",
+        id: &[
+            "Transkrip tidak lagi berisi tanda seru saja: hasil GPU yang rusak diulang di CPU.",
+            "Notch Jadi muka: mata maskot tidak lagi gepeng saat Claude bekerja.",
+            "Notifikasi Claude kini kecil di samping lirik, tidak lagi menutupi barisnya.",
+            "Lirik yang terlambat (contoh: Heaven, Bryan Adams) kini pas, diambil ulang sekali.",
+            "Lirik di notch Jadi muka dengan Headphone tidak lagi terpotong.",
+        ],
+        en: &[
+            "Transcripts no longer come out as only exclamation marks: a broken GPU run retries on CPU.",
+            "Notch Face: the mascot's eyes are no longer flat while Claude works.",
+            "A Claude notice is now small beside the lyric, so it no longer covers the line.",
+            "Late lyrics (for example Heaven by Bryan Adams) are now in time, fetched once more.",
+            "Lyrics on the Face notch with the Headphone are no longer cut off.",
+        ],
+    },
+    Entry {
         version: "5.5.6",
         id: &[
             "Maskot bisa bermain tiap jam bulat: Pengaturan → Maskot → Tiap jam.",
