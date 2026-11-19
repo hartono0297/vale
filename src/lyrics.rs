@@ -49,8 +49,10 @@ const API: &str = "https://lrclib.net/api/get";
 const SEARCH_API: &str = "https://lrclib.net/api/search";
 /// LRC files use this extension. The older `.lrc` files (written by a pick
 /// that ignored how the playing version differs from the upload, and without
-/// the intro shift) are never read, so those tracks are looked up again once.
-const LRC_EXT: &str = "lrc2";
+/// the intro shift) and `.lrc2` files (which may be shifted by an intro that
+/// was really a longer tail) are never read, so those tracks are looked up
+/// again once.
+const LRC_EXT: &str = "lrc3";
 /// Not-found markers use this extension: ones written by an older, weaker
 /// lookup (`.none` .. `.none3`: no retry of a busy server, no free-text
 /// search, no "Artist - Title" split, no intro shift for a music video whose
@@ -3025,7 +3027,7 @@ mod lookup_tests {
     #[test]
     fn markers_of_the_older_lookups_are_ignored() {
         assert_eq!(NONE_EXT, "none4");
-        assert_eq!(LRC_EXT, "lrc2");
+        assert_eq!(LRC_EXT, "lrc3");
         let dir = std::env::temp_dir().join(format!("vale-lookup-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -3040,6 +3042,10 @@ mod lookup_tests {
         let old_lrc = dir.join(format!("{}.lrc", key_hash("oldlrc")));
         std::fs::write(old_lrc, "[00:01.00] hi").unwrap();
         assert_eq!(cache.read("oldlrc", now), Cached::Miss);
+        // So is an `.lrc2`, which may hold lyrics shifted by the old intro rule.
+        let old_lrc2 = dir.join(format!("{}.lrc2", key_hash("oldlrc2")));
+        std::fs::write(old_lrc2, "[00:01.00] hi").unwrap();
+        assert_eq!(cache.read("oldlrc2", now), Cached::Miss);
         cache.write_nothing("new", now);
         assert_eq!(cache.read("new", now), Cached::Nothing(now));
         let _ = std::fs::remove_dir_all(&dir);
