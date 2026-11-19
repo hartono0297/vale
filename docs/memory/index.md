@@ -130,6 +130,7 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[test-spawns-no-window]]: tests spawn console children with CREATE_NO_WINDOW and never show windows (editor `ON_SCREEN`), or Windows Terminal windows pop up
 - [[controlled-folder-access]]: Windows' ransomware protection refuses unsigned Vale in Documents/Videos with "not found"; recordings fall back to `%USERPROFILE%\Vale\Rekaman\{Audio,Video}` and the default root moves there
 - [[transcript-defender-toast]]: the first GPU transcript can raise a Windows Security "Unauthorised changes blocked" toast (AMD Vulkan driver under Controlled folder access); it still completes, allow `vale.exe`
+- [[transcript-gpu-junk]]: a transcript of only "!" comes from a GPU (Radeon 530, Vulkan) that returns status OK with token 0; `engine::screen` turns a one-character run into a `Backend` failure so the job reloads on the CPU (dropped as empty on the CPU); no memory of the bad GPU yet
 - [[light-accent-contrast]]: `#FFFBF5` on the plain light accent is 4.26:1; use `primary_fill` / `segment_fill` for any accent fill with text; the Confirm ("Yakin?") hover/pressed fill is `confirm_fill`
 - [[media-foundation-dynamic-load]]: Media Foundation is loaded with LoadLibraryExW, never imported, or vale.exe will not start on Windows N; one loader now, `src/mf.rs` (`MfSession`: COM MTA + MFStartup)
 - [[wasapi-capture-timestamps]]: GetBuffer's QPC position is in 100 ns units; loopback sends no packets in silence
