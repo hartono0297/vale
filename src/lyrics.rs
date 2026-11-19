@@ -615,6 +615,14 @@ fn intro_shift(
     chosen: usize,
     duration_ms: u64,
 ) -> Option<u64> {
+    // An upload that carries the playing length is the evidence that its timing
+    // belongs to this recording (a longer tail, not a longer intro).
+    if cands[chosen]
+        .duration_ms
+        .is_some_and(|d| d.abs_diff(duration_ms) <= TIGHT_DURATION_MS)
+    {
+        return None;
+    }
     let mut lengths: Vec<u64> = (0..cands.len())
         .filter(|&x| {
             x == chosen
@@ -3143,6 +3151,21 @@ mod lookup_tests {
             "{lengths:?}"
         );
         assert_ne!(first_worded(&got).at_ms, 18_410);
+    }
+
+    #[test]
+    fn an_upload_of_the_playing_length_is_not_shifted() {
+        // Heaven (Classic Version), 263.17 s: one upload is 263 s and times the
+        // first line at 16.15 s like the 240-251 s album entries. Its own length
+        // says the timing belongs to this recording; the family's 245 s median
+        // must not read as an 18 s longer intro.
+        const HEAVEN: &str = include_str!("testdata/lrclib-heaven-bryan-adams.json");
+        let got = pick_best(candidates(HEAVEN), 263_170).expect("lyrics");
+        assert_eq!(first_worded(&got).at_ms, 16_150);
+        assert!(
+            uploads(HEAVEN).iter().any(|u| u.1 == got),
+            "an upload as it is"
+        );
     }
 
     #[test]
