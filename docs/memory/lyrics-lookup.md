@@ -1,6 +1,6 @@
 ---
 tags: [decision, gotcha, lyrics, lrclib]
-date: 2026-11-01
+date: 2026-11-19
 ---
 
 # Lyrics lookup: retry, steps, consensus pick
@@ -88,7 +88,8 @@ used by the tests in `lookup_tests`):
    lines per pair); each candidate's score is the median of its absolute
    shifts to the others. Lowest wins; ties go to the closest length, then
    the first. A shifted upload loses even when its length is the closest.
-3. **Intro shift** of the winner C. Its family is every candidate of the
+3. **Intro shift** of the winner C (none when C's own length is within 1.5 s
+   of the playing one, see "Exact-length upload" at the end). Its family is every candidate of the
    reply, any length, C included, whose timing is within `FAMILY_MS` (500 ms)
    of C's (measured against C, not chained). The reference is the lower
    median of the family's lengths (none known: no shift). When
@@ -120,3 +121,20 @@ track is looked up once more with the new pick: lyrics cached by the old
 choice may be early or late, and a music video with a `.none3` marker may now
 get shifted lyrics. Markers keep their rules: 24 h TTL, removed when expired
 or future-dated, and `write_lrc` removes the marker.
+
+## Exact-length upload: no intro shift (2026-11-19)
+
+Bryan Adams "Heaven (Classic Version)" plays 263.17 s. One search entry is 263 s
+and times the first line at 16.15 s, like the 240-251 s album entries; the
+family's lower median was 245 s, so step 3 shifted every line **+18 s** (cache
+showed the first line at 34.3 s): far too late. A recording longer by a tail, not
+an intro, looks the same as a longer intro in the data.
+
+`intro_shift` now returns `None` when the chosen upload's own length is within
+`TIGHT_DURATION_MS` (1.5 s) of the playing length: an upload that carries the
+playing length says its timing belongs to this recording (as for Superman
+above). Perfect at 282 s still shifts (its nearest entry is 280 s, outside the
+window). Residual risk: a mislabelled upload at exactly the video's length.
+Fixture `src/testdata/lrclib-heaven-bryan-adams.json`, test
+`an_upload_of_the_playing_length_is_not_shifted`. Lyrics cached before the fix
+stay wrong until the `.lrc2` file is deleted.
