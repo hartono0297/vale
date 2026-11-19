@@ -3140,18 +3140,13 @@ mod tests {
     }
 
     #[test]
-    fn typing_on_a_face_is_the_focus_eyes() {
-        use crate::ui::robot::{Expr, Line, Part, TYPING_FACE_DOWN, face_marks};
-        const { assert!(TYPING_FACE_DOWN > 0.0) };
+    fn typing_on_a_face_is_the_idle_eyes() {
+        use crate::ui::robot::{Expr, Line, Part, face_marks};
         for blink in [false, true] {
-            let focus = face_marks(Expr::Focus, blink);
+            let idle = face_marks(Expr::Idle, blink);
             let typing = face_marks(Expr::Typing, blink);
-            assert!(!focus.is_empty());
-            assert_eq!(typing.len(), focus.len(), "blink {blink}");
-            for (t, f) in typing.iter().zip(&focus) {
-                assert_eq!((t.part, t.k), (f.part, f.k));
-                assert_eq!(t.at, (f.at.0, f.at.1 + TYPING_FACE_DOWN));
-            }
+            assert!(!idle.is_empty());
+            assert_eq!(typing, idle, "blink {blink}");
             // Only the eyes: no laptop, no paws, nothing beside them.
             assert!(typing.iter().all(|m| matches!(
                 m.part,

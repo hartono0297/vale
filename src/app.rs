@@ -5390,7 +5390,7 @@ impl App {
     /// The idle shape at the user's size: grown on the left for the typing
     /// cat's laptop while the cat is on and `typing_wanted` (the hover's Happy
     /// face does not count), else the plain one. Jadi muka has no laptop (the
-    /// face looks down instead): its idle island never grows.
+    /// face wears the idle eyes instead): its idle island never grows.
     fn idle_shape(&self, now: Instant) -> ShapeRect {
         let (style, robot, notch) = (self.config.style, self.config.robot, self.notch_size());
         if self.typing_shape(now) && self.notch_style() != NotchStyle::Face {

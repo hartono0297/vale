@@ -92,7 +92,9 @@ Pure functions, no drawing.
   beside the eyes, never above). `face_marks`, `face_coat`, `face_slide`,
   `face_boxes`, `face_pose_in` (clamps the look like `eyes_offset_in`; both share
   `reach`). The look slides the eyes only; the beat nods the whole face. Typing
-  draws the Focus eyes lower (`TYPING_FACE_DOWN`).
+  draws the Idle eyes (tall pills, blinking) like the Settings preview. It drew
+  the squat Focus eyes lower until 2026-11-19: with Claude or a CLI working, the
+  notch looked permanently squinting, and the owner read it as a bug.
 - Geometry (`geometry.rs`): `face_area(shape, clock_left)` and
   `face_scale(area, accessory)`. `FACE_SCALE` 1.6 (x the shrunk pill) holds on the
   default 190 x 34 idle notch; `face_scale` shrinks it where it cannot fit.
