@@ -251,6 +251,7 @@
 //! The busy-notch toast's scenes (`docs/memory/toast-while-busy.md`), made-up
 //! data and a made-up logo only: `notice-busy-panel` (the Calendar page with
 //! the toast's strip under its top edge), `notice-busy-lyric`,
+//! `notice-busy-lyric-claude` (the same with a Claude notice: letter tile),
 //! `notice-busy-media` and `notice-busy-pomodoro` (the compact view grown by
 //! the small logo's slot), `notice-busy-hover` (the full toast the pointer on
 //! the logo peeks as, over a lyric context), `notice-unread-dot` (the
@@ -489,6 +490,8 @@ struct Scene {
     paws: [f32; 2],
     /// A busy toast's small logo sits beside the compact view (the slot).
     slot: bool,
+    /// The slot holds a Claude notice (the letter tile "C") (with `slot`).
+    slot_claude: bool,
     /// The strip under the panel's top edge holds a busy toast, not the
     /// sticky Claude notice (with `strip`).
     toast_strip: bool,
@@ -846,6 +849,7 @@ const BASE: Scene = Scene {
     glance: (0.0, 0.0),
     paws: [0.0, 0.0],
     slot: false,
+    slot_claude: false,
     toast_strip: false,
     offer_strip: false,
     dot: false,
@@ -1587,7 +1591,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 246] = [
+const SCENES: [Scene; 247] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -1818,6 +1822,12 @@ const SCENES: [Scene; 246] = [
     Scene {
         slot: true,
         ..lyric("notice-busy-lyric", 6_000)
+    },
+    // The same with a Claude notice in the slot: the letter tile "C".
+    Scene {
+        slot: true,
+        slot_claude: true,
+        ..lyric("notice-busy-lyric-claude", 6_000)
     },
     Scene {
         name: "notice-busy-media",
@@ -3590,11 +3600,21 @@ fn run_scenes_with(scenes: &[Scene], mut live: Option<LiveNoticeClose>) {
                 } else {
                     0.0
                 },
-                toast_slot: scene.slot.then(|| ToastBadgeView {
-                    source: &busy_toast.source,
-                    logo: notif_logos
-                        .get_key_value(&logo_key(Some(DEMO_LOGO_KEY), &busy_toast.source))
-                        .map(|(key, thumb)| ToastLogoView { key, thumb }),
+                toast_slot: scene.slot.then(|| {
+                    let source = if scene.slot_claude {
+                        "Claude"
+                    } else {
+                        &busy_toast.source
+                    };
+                    ToastBadgeView {
+                        source,
+                        logo: notif_logos
+                            .get_key_value(&logo_key(
+                                (!scene.slot_claude).then_some(DEMO_LOGO_KEY),
+                                source,
+                            ))
+                            .map(|(key, thumb)| ToastLogoView { key, thumb }),
+                    }
                 }),
                 toast_dot: scene.dot,
                 strip_badge: (scene.strip && scene.toast_strip).then(|| ToastBadgeView {
