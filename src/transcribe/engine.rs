@@ -618,12 +618,13 @@ impl<'m> Session<'m> {
                 .collect()
         };
         let detected = text(unsafe { (api.detected_language)(self.raw) });
-        Ok(RunOutput {
+        let out = RunOutput {
             text: text(unsafe { (api.full_text)(self.raw) }).trim().to_string(),
             segments,
             language: (!detected.is_empty()).then_some(detected),
             partial,
-        })
+        };
+        screen(out, !self.model.backend().eq_ignore_ascii_case("cpu"))
     }
 }
 
@@ -631,6 +632,38 @@ impl Drop for Session<'_> {
     fn drop(&mut self) {
         unsafe { (self.model.engine.api.session_free)(self.raw) };
     }
+}
+
+/// Fewest non-blank characters before a single repeated one counts as junk.
+const JUNK_MIN_CHARS: usize = 8;
+
+/// Whether `text` is one character repeated ("!!!!..."): what a decoder
+/// whose logits are all NaN writes (token 0 is "!"), with status OK. The
+/// Radeon 530 under Vulkan did this on every chunk.
+fn is_junk(text: &str) -> bool {
+    let mut counts = std::collections::HashMap::new();
+    let mut total = 0usize;
+    for c in text.chars().filter(|c| !c.is_whitespace()) {
+        *counts.entry(c).or_insert(0usize) += 1;
+        total += 1;
+    }
+    let top = counts.values().copied().max().unwrap_or(0);
+    total >= JUNK_MIN_CHARS && top * 10 >= total * 9
+}
+
+/// A run's result, or the failure that makes it junk: on a GPU a
+/// `Backend` failure (the caller reloads on the CPU), on the CPU an empty
+/// result, so a line of "!" never reaches the transcript.
+fn screen(mut out: RunOutput, on_gpu: bool) -> Result<RunOutput, EngineError> {
+    if !is_junk(&out.text) {
+        return Ok(out);
+    }
+    if on_gpu {
+        return Err(EngineError::Backend);
+    }
+    out.text.clear();
+    out.segments.clear();
+    Ok(out)
 }
 
 #[derive(Debug, PartialEq)]
@@ -781,6 +814,53 @@ mod tests {
         assert_eq!(outcome(ERR_INPUT_TOO_LONG), Outcome::Fail(EngineError::TooLong));
         assert_eq!(outcome(ERR_BACKEND), Outcome::Fail(EngineError::Backend));
         assert!(matches!(outcome(4), Outcome::Fail(EngineError::Status(4, _))));
+    }
+
+    fn output(text: &str) -> RunOutput {
+        RunOutput {
+            text: text.into(),
+            segments: vec![RawSegment { start_ms: 0, end_ms: 1000, text: text.into() }],
+            language: None,
+            partial: false,
+        }
+    }
+
+    #[test]
+    fn a_run_of_one_character_is_junk() {
+        assert!(is_junk(&"!".repeat(300)));
+        assert!(is_junk(&format!("{} {}", "!".repeat(120), "!".repeat(80))));
+        assert!(is_junk("!!!!!!!!!!"));
+    }
+
+    #[test]
+    fn real_text_is_not_junk() {
+        assert!(!is_junk(""));
+        assert!(!is_junk("Ya!"));
+        assert!(!is_junk("..."));
+        assert!(!is_junk("Hahahahaha"));
+        assert!(!is_junk("Oh, internetnya lagi mati nih."));
+        assert!(!is_junk("Oke!!! Silakan lanjutkan, Pak, kita mulai sekarang juga."));
+    }
+
+    #[test]
+    fn junk_from_a_gpu_is_a_backend_failure() {
+        let junk = output(&"!".repeat(300));
+        assert_eq!(screen(junk, true).err(), Some(EngineError::Backend));
+    }
+
+    #[test]
+    fn junk_from_the_cpu_is_dropped() {
+        let out = screen(output(&"!".repeat(300)), false).unwrap();
+        assert!(out.text.is_empty() && out.segments.is_empty());
+    }
+
+    #[test]
+    fn real_text_passes_on_any_backend() {
+        for on_gpu in [true, false] {
+            let out = screen(output("Oh, internetnya lagi mati nih."), on_gpu).unwrap();
+            assert_eq!(out.text, "Oh, internetnya lagi mati nih.");
+            assert_eq!(out.segments.len(), 1);
+        }
     }
 
     #[test]
