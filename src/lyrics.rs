@@ -608,7 +608,9 @@ fn consensus(times: &[Times], idx: &[usize], gap: impl Fn(usize) -> u64) -> usiz
 /// within `FAMILY_MS` of the chosen one (measured against it, not chained);
 /// its reference is the lower median of their lengths. A longer intro (a
 /// music video) lengthens the recording but not the song, so the sung lines
-/// come later; a shorter playing version is never shifted.
+/// come later; a shorter playing version is never shifted. `None` too when
+/// the chosen upload's own length is within `TIGHT_DURATION_MS` of the playing
+/// one: its timing then belongs to this recording.
 fn intro_shift(
     cands: &[Candidate],
     times: &[Times],
