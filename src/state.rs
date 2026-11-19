@@ -894,7 +894,7 @@ impl IslandState {
                     .is_some_and(|(n, _)| self.notice_held(n));
                 self.toast_pointer = on
                     && (self.current.as_ref().is_some_and(|(n, _)| is_tuckable(n))
-                        || self.sticky_slot_candidate());
+                        || (self.current.is_none() && self.sticky_slot_candidate()));
                 if !on
                     && held
                     && let Some((_, expires)) = &mut self.current
@@ -3377,9 +3377,9 @@ impl IslandState {
         self.toast_seen = false;
     }
 
-    /// Where the pointer can rest on the current real toast: its strip, or
-    /// its slot (peeking at it counts as the slot); `Full` and `None` have no
-    /// such spot.
+    /// Where the pointer can rest on the tucked notice: its strip, or its
+    /// slot (peeking at it, a sticky peek included, counts as the slot);
+    /// `Full` and `None` have no such spot.
     fn toast_spot(&self) -> Option<ToastForm> {
         if self.toast_peeking() {
             return Some(ToastForm::Slot);
@@ -3387,8 +3387,9 @@ impl IslandState {
         self.toast_form()
     }
 
-    /// The spot where the pointer holds the current toast: its strip, or
-    /// its slot while peeking (`toast_spot()` with `toast_pointer`).
+    /// The spot where the pointer holds the tucked notice: its strip, or its
+    /// slot while peeking, a sticky peek included (`toast_spot()` with
+    /// `toast_pointer`).
     fn toast_held_spot(&self) -> Option<ToastForm> {
         if !self.toast_pointer {
             return None;
@@ -11863,8 +11864,8 @@ mod tests {
             s.toast_slot().map(|n| n.title.as_str()),
             Some("Claude is done")
         );
-        assert!(!s.toast_dot_shown());
         s.apply(Event::Tick, t0 + NOTICE_DURATION);
+        assert!(!s.toast_dot_shown());
         assert_eq!(s.toast_slot().map(|n| n.title.as_str()), Some("Ibu"));
     }
 
@@ -11941,6 +11942,20 @@ mod tests {
         assert_eq!(s.toast_slot().map(|n| n.title.as_str()), Some("Ibu"));
         assert_eq!(s.toast_form(), Some(ToastForm::Slot));
         s.apply(Event::Tick, t0 + NOTICE_DURATION);
+        assert_eq!(s.toast_slot(), Some(&waiting("s1")));
+    }
+
+    #[test]
+    fn a_toast_arriving_under_a_sticky_peek_tucks_as_a_slot() {
+        let t0 = Instant::now();
+        let mut s = busy("lyric", t0);
+        s.apply(Event::Notice(waiting("s1")), t0);
+        s.apply(Event::ToastPointer(true), t0 + secs(1));
+        s.apply(Event::Notice(toast_notice("t1", "Ibu")), t0 + secs(2));
+        assert_eq!(s.toast_form(), Some(ToastForm::Slot));
+        assert!(!s.toast_is_peeking());
+        assert_eq!(s.toast_slot().map(|n| n.title.as_str()), Some("Ibu"));
+        s.apply(Event::Tick, t0 + secs(2) + NOTICE_DURATION);
         assert_eq!(s.toast_slot(), Some(&waiting("s1")));
     }
 
