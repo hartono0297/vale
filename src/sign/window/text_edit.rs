@@ -18,7 +18,7 @@ use windows::Win32::Graphics::Gdi::{
     SetTextColor,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::Controls::{EM_SETMARGINS, EM_SETSEL};
+use windows::Win32::UI::Controls::{EM_GETSEL, EM_SETMARGINS, EM_SETSEL};
 use windows::Win32::UI::Input::KeyboardAndMouse::{VK_ESCAPE, VK_RETURN, VK_TAB};
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -134,6 +134,31 @@ pub fn text(edit: HWND) -> String {
         let got = GetWindowTextW(edit, &mut buf).max(0) as usize;
         String::from_utf16_lossy(&buf[..got.min(n)])
     }
+}
+
+/// The caret or selection, as (start, end) characters.
+pub fn selection(edit: HWND) -> (usize, usize) {
+    let v = unsafe { SendMessageW(edit, EM_GETSEL, None, None) }.0 as usize;
+    (v & 0xFFFF, (v >> 16) & 0xFFFF)
+}
+
+pub fn select(edit: HWND, (start, end): (usize, usize)) {
+    unsafe {
+        SendMessageW(edit, EM_SETSEL, Some(WPARAM(start)), Some(LPARAM(end as isize)));
+    }
+}
+
+/// The height of the EDIT's font in px (tests).
+#[cfg(test)]
+pub fn font_px(edit: HWND) -> i32 {
+    use windows::Win32::Graphics::Gdi::{GetObjectW, LOGFONTW};
+    use windows::Win32::UI::WindowsAndMessaging::WM_GETFONT;
+    let font = unsafe { SendMessageW(edit, WM_GETFONT, None, None) }.0;
+    let mut lf = LOGFONTW::default();
+    let got = unsafe {
+        GetObjectW(HGDIOBJ(font as *mut c_void), size_of::<LOGFONTW>() as i32, Some((&raw mut lf).cast()))
+    };
+    if got == 0 { 0 } else { lf.lfHeight.abs() }
 }
 
 pub fn clear(edit: HWND) {

@@ -272,6 +272,7 @@ pub(super) struct Win {
     wheel: i32,
     cancel: Arc<AtomicBool>,
     open_job: Option<JoinHandle<()>>,
+    job_end: Arc<Mutex<JobEnd>>,
     save_job: Option<JoinHandle<()>>,
     job_dir: Option<PathBuf>,
     inbox: Arc<Mutex<Inbox>>,
@@ -294,10 +295,41 @@ pub(super) fn reap(job: Option<JoinHandle<()>>) -> bool {
     }
 }
 
+/// Who removes the Office job folder: the opening worker and the window
+/// each record their end under this lock, and whichever ends second sweeps,
+/// so exactly one of them does, and never while the worker still uses it.
+#[derive(Default)]
+pub(super) struct JobEnd {
+    /// A worker is running (set when one starts).
+    running: bool,
+    closed: bool,
+}
+
+impl JobEnd {
+    pub(super) fn started(&mut self) {
+        self.running = true;
+    }
+}
+
+/// The opening worker is about to end. True: the window is already gone, the
+/// worker sweeps.
+pub(super) fn worker_ended(e: &Mutex<JobEnd>) -> bool {
+    let mut e = e.lock().unwrap_or_else(|p| p.into_inner());
+    e.running = false;
+    e.closed
+}
+
+/// The window closes. True: no worker is left, the window sweeps.
+pub(super) fn window_closed(e: &Mutex<JobEnd>) -> bool {
+    let mut e = e.lock().unwrap_or_else(|p| p.into_inner());
+    e.closed = true;
+    !e.running
+}
+
 impl Drop for Win {
     fn drop(&mut self) {
         self.cancel.store(true, Ordering::SeqCst);
-        let opening = reap(self.open_job.take());
+        reap(self.open_job.take());
         // A save is short and its result is the user's file: waited for.
         if let Some(job) = self.save_job.take() {
             let _ = job.join();
@@ -315,8 +347,9 @@ impl Drop for Win {
         }
         // A worker still opening sweeps the Office folder itself when it
         // ends; never under its feet.
+        let sweep = window_closed(&self.job_end);
         if let Some(d) = self.job_dir.take()
-            && !opening
+            && sweep
         {
             office::sweep(&d);
         }
@@ -641,6 +674,7 @@ fn try_open(owner: HWND, src: Source, demo: bool) -> windows::core::Result<()> {
         wheel: 0,
         cancel: Arc::new(AtomicBool::new(false)),
         open_job: None,
+        job_end: Arc::new(Mutex::new(JobEnd::default())),
         save_job: None,
         job_dir,
         inbox: Arc::new(Mutex::new(Inbox::default())),
@@ -785,6 +819,17 @@ fn start_open(w: &mut Win, password: Option<String>) {
     let cancel = w.cancel.clone();
     let job_dir = w.job_dir.clone();
     let pending = w.pending.clone();
+    let job_end = w.job_end.clone();
+    job_end.lock().unwrap_or_else(|p| p.into_inner()).started();
+    // Whatever way the worker ends, it records it last; if the window has
+    // closed by then, the Office copy goes with the worker.
+    let end = move |job_end: &Mutex<JobEnd>, job_dir: &Option<PathBuf>| {
+        if worker_ended(job_end)
+            && let Some(d) = job_dir
+        {
+            office::sweep(d);
+        }
+    };
     let name = if src.kind == Kind::Office && pending.is_none() { "sign-office" } else { "sign-open" };
     let spawned = std::thread::Builder::new().name(name.into()).spawn(move || {
         let outcome = {
@@ -793,21 +838,23 @@ fn start_open(w: &mut Win, password: Option<String>) {
         };
         if cancel.load(Ordering::SeqCst) {
             // The window closed without waiting: what was opened (a renderer
-            // included) ends here, and so does the Office copy.
+            // included) ends here.
             drop(outcome);
-            if let Some(d) = &job_dir {
-                office::sweep(d);
+        } else {
+            if let Ok(mut i) = inbox.lock() {
+                i.opened = Some(outcome);
             }
-            return;
+            post(hwnd, WM_OPENED);
         }
-        if let Ok(mut i) = inbox.lock() {
-            i.opened = Some(outcome);
-        }
-        post(hwnd, WM_OPENED);
+        end(&job_end, &job_dir);
     });
     match spawned {
         Ok(h) => w.open_job = Some(h),
-        Err(_) => w.phase = Phase::Failed(Key::SignCannotOpen),
+        Err(_) => {
+            // No worker after all: the window sweeps when it closes.
+            worker_ended(&w.job_end);
+            w.phase = Phase::Failed(Key::SignCannotOpen);
+        }
     }
 }
 
@@ -1702,6 +1749,12 @@ fn nudge_selected(hwnd: HWND, dx: f32, dy: f32) {
 
 /// Opens the Teks EDIT at client point `at` (new), or over item `index`.
 fn begin_text(hwnd: HWND, at: (f32, f32), index: Option<usize>) {
+    open_text(hwnd, at, index, None, true);
+}
+
+/// The Teks EDIT at client point `at` (new) or over item `index`, holding
+/// `typed` when given (else the item's text, or nothing). Returns its HWND.
+fn open_text(hwnd: HWND, at: (f32, f32), index: Option<usize>, typed: Option<String>, focus: bool) -> Option<HWND> {
     commit_text(hwnd);
     let plan = with(hwnd, |w| {
         let v = view(w)?;
@@ -1720,7 +1773,8 @@ fn begin_text(hwnd: HWND, at: (f32, f32), index: Option<usize>) {
         Some((initial, h_pt * v.scale, rect, v.to_page(at.0, at.1), ui_of(w)))
     })
     .flatten();
-    let Some((initial, h_px, rect, page_at, ui)) = plan else { return };
+    let (initial, h_px, rect, page_at, ui) = plan?;
+    let initial = typed.unwrap_or(initial);
     let px = (h_px * TEXT_FILL).max(8.0 * ui);
     let spec = text_edit::Spec {
         rect: (rect.x as i32, rect.y as i32, (rect.w + px * 4.0).max(160.0 * ui) as i32, (px * 1.5) as i32),
@@ -1732,7 +1786,7 @@ fn begin_text(hwnd: HWND, at: (f32, f32), index: Option<usize>) {
         password: false,
         commit_on_blur: true,
     };
-    let Some(f) = text_edit::create(hwnd, &spec) else { return };
+    let f = text_edit::create(hwnd, &spec)?;
     let edit = f.edit;
     let mut slot = Some(f);
     with(hwnd, |w| {
@@ -1743,13 +1797,62 @@ fn begin_text(hwnd: HWND, at: (f32, f32), index: Option<usize>) {
     });
     if let Some(f) = slot {
         text_edit::destroy(f);
-        return;
+        return None;
     }
     fit_text(hwnd);
-    unsafe {
-        let _ = SetFocus(Some(edit));
+    if focus {
+        unsafe {
+            let _ = SetFocus(Some(edit));
+        }
     }
     invalidate(hwnd);
+    Some(edit)
+}
+
+/// The Teks EDIT made again where its text sits on the page as shown now
+/// (after a scale change): same text, same caret, the focus kept.
+fn rebuild_text(hwnd: HWND) {
+    let Some(Some((f, index, page_at))) = with(hwnd, |w| w.text.take()) else { return };
+    let typed = text_edit::text(f.edit);
+    let caret = text_edit::selection(f.edit);
+    let had_focus = unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetFocus() } == f.edit;
+    // Unhooked before it goes, so losing the focus commits nothing.
+    text_edit::destroy(f);
+    let at = with(hwnd, |w| {
+        view(w).map(|v| {
+            let p = geom::page_to_view(v.g, v.extra, v.scale, page_at);
+            (p.0 + v.page.x, p.1 + v.page.y)
+        })
+    })
+    .flatten()
+    .unwrap_or_default();
+    if let Some(edit) = open_text(hwnd, at, index, Some(typed), had_focus) {
+        text_edit::select(edit, caret);
+    }
+}
+
+/// After a DPI change: the EDITs at the new font size (what was typed, the
+/// caret and the focus kept) and the maker at the new scale.
+fn rescale_fields(hwnd: HWND) {
+    rebuild_text(hwnd);
+    let pw = with(hwnd, |w| w.password.take()).flatten();
+    if let Some(old) = pw {
+        let typed = text_edit::text(old.edit);
+        let had_focus = unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetFocus() } == old.edit;
+        text_edit::destroy(old);
+        if let Some(e) = make_password(hwnd, &typed)
+            && had_focus
+        {
+            unsafe {
+                let _ = SetFocus(Some(e));
+            }
+        }
+    }
+    let mk = with(hwnd, |w| w.maker.map(|m| (m, ui_of(w), w.client))).flatten();
+    if let Some((m, ui, client)) = mk {
+        maker::rescale(m, ui);
+        maker::place(m, client, ui);
+    }
 }
 
 /// Grows the Teks EDIT with what is typed.
@@ -2454,7 +2557,6 @@ extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
         }
         WM_DPICHANGED => {
             let dpi = ((wparam.0 >> 16) & 0xFFFF) as u32;
-            commit_text(hwnd);
             with(hwnd, |w| {
                 w.dpi = dpi.max(96);
                 w.labels = measure_labels(&w.gfx, ui_of(w));
@@ -2476,24 +2578,7 @@ extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
             }
             on_size(hwnd);
             // The EDIT fonts and the maker follow the new scale.
-            let pw = with(hwnd, |w| w.password.take()).flatten();
-            if let Some(old) = pw {
-                let typed = text_edit::text(old.edit);
-                let had_focus = unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetFocus() } == old.edit;
-                text_edit::destroy(old);
-                if let Some(e) = make_password(hwnd, &typed)
-                    && had_focus
-                {
-                    unsafe {
-                        let _ = SetFocus(Some(e));
-                    }
-                }
-            }
-            let mk = with(hwnd, |w| w.maker.map(|m| (m, ui_of(w), w.client))).flatten();
-            if let Some((m, ui, client)) = mk {
-                maker::rescale(m, ui);
-                maker::place(m, client, ui);
-            }
+            rescale_fields(hwnd);
             invalidate(hwnd);
             LRESULT(0)
         }
@@ -2790,6 +2875,44 @@ mod tests {
         unsafe {
             assert!(IsWindow(Some(hwnd)).as_bool());
         }
+
+        // A DPI change while typing: the Teks EDIT comes back at the new
+        // font size with the same text and caret, still open.
+        let centre = with(hwnd, |w| view(w).map(|v| (v.page.x + v.page.w / 2.0, v.page.y + v.page.h / 2.0)))
+            .flatten()
+            .expect("page");
+        begin_text(hwnd, centre, None);
+        let old = with(hwnd, |w| w.text.as_ref().map(|t| t.0.edit)).flatten().expect("an EDIT");
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::SetWindowTextW(old, w!("Rp 1.500"));
+        }
+        text_edit::select(old, (3, 5));
+        let px_before = text_edit::font_px(old);
+        let mut r = RECT::default();
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd, &mut r);
+        }
+        with(hwnd, |w| w.dpi = 192);
+        unsafe {
+            let _ = SetWindowPos(
+                hwnd,
+                None,
+                r.left,
+                r.top,
+                (r.right - r.left) * 2,
+                (r.bottom - r.top) * 2,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
+        on_size(hwnd);
+        rescale_fields(hwnd);
+        let new = with(hwnd, |w| w.text.as_ref().map(|t| t.0.edit)).flatten().expect("still typing");
+        assert_ne!(new, old, "made again");
+        assert_eq!(text_edit::text(new), "Rp 1.500");
+        assert_eq!(text_edit::selection(new), (3, 5));
+        let px_after = text_edit::font_px(new);
+        assert!(px_after as f32 >= px_before as f32 * 1.6, "{px_before} -> {px_after}");
+        finish_text(hwnd, false);
     }
 
     #[test]
@@ -2818,6 +2941,23 @@ mod tests {
         assert_eq!((out.w, out.h), (20, 40));
         assert!(out.rgba.chunks_exact(4).any(|p| u16::from(p[2]) > u16::from(p[0]) + 40));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn exactly_one_side_sweeps_the_office_copy() {
+        // The worker ends first: the window, closing later, sweeps.
+        let e = Mutex::new(JobEnd::default());
+        e.lock().unwrap().started();
+        assert!(!worker_ended(&e));
+        assert!(window_closed(&e));
+        // The window closes first (the worker had already passed its cancel
+        // check and goes on to post): the worker sweeps when it ends.
+        let e = Mutex::new(JobEnd::default());
+        e.lock().unwrap().started();
+        assert!(!window_closed(&e));
+        assert!(worker_ended(&e));
+        // No worker ever ran: the window sweeps.
+        assert!(window_closed(&Mutex::new(JobEnd::default())));
     }
 
     #[test]
