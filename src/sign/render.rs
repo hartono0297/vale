@@ -19,10 +19,8 @@ use windows::Win32::Graphics::Imaging::{
     WICBitmapDitherTypeNone, WICBitmapInterpolationModeFant, WICBitmapPaletteTypeCustom,
     WICDecodeMetadataCacheOnDemand, WICRect,
 };
-use windows::Win32::System::Com::{
-    CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
-};
-use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
+use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
+use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize};
 use windows::Win32::UI::Shell::SHCreateMemStream;
 use windows::core::{HSTRING, Interface};
 
@@ -139,12 +137,11 @@ impl Renderer {
             .spawn(move || {
                 worker_alive.fetch_add(1, Ordering::SeqCst);
                 let _count = CountGuard(worker_alive);
-                let com = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
-                let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+                // One init for the thread (RoInitialize also sets up COM in the
+                // MTA), undone only if it succeeded. `work` owns every WinRT and
+                // COM object and drops them before the guard runs.
+                let _apartment = Apartment::enter();
                 work(&worker_shared, open, tx, &notify);
-                if com {
-                    unsafe { CoUninitialize() };
-                }
             })
             .map_err(|_| RenderOpenError::Unsupported)?;
         let mut renderer = Renderer {
@@ -218,6 +215,22 @@ impl Drop for Renderer {
         self.shared.wake.notify_all();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
+        }
+    }
+}
+
+struct Apartment(bool);
+
+impl Apartment {
+    fn enter() -> Apartment {
+        Apartment(unsafe { RoInitialize(RO_INIT_MULTITHREADED) }.is_ok())
+    }
+}
+
+impl Drop for Apartment {
+    fn drop(&mut self) {
+        if self.0 {
+            unsafe { RoUninitialize() };
         }
     }
 }
@@ -475,6 +488,27 @@ fn scale_image(full: &Pixels, width_px: u32) -> Option<Pixels> {
     }
 }
 
+/// Test processes only: renders one PDF page before `main`, so Windows.Data.Pdf
+/// creates its Direct3D device before any test builds a Direct2D target. The
+/// other order (a Direct2D WIC target first, a PDF page afterwards, from any
+/// module) makes the AMD user-mode driver (amdxx64.dll) fail fast with
+/// 0xC0000409 while the process exits, after every test has passed.
+#[cfg(test)]
+#[used]
+#[unsafe(link_section = ".CRT$XCU")]
+static PDF_DEVICE_FIRST: extern "C" fn() = {
+    extern "C" fn init() {
+        if let Ok(r) = Renderer::start_pdf(tests::pdf_bytes(1, None), None, || {}) {
+            r.request(Job::Page { page: 0, width_px: 64, r#gen: 0 });
+            let start = std::time::Instant::now();
+            while r.take().is_empty() && start.elapsed() < std::time::Duration::from_secs(10) {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+    }
+    init
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -495,7 +529,7 @@ mod tests {
 
     /// A Letter-size PDF whose pages each draw a black square at (100, 100),
     /// 200 points wide.
-    fn pdf_bytes(pages: usize, password: Option<&str>) -> Vec<u8> {
+    pub(super) fn pdf_bytes(pages: usize, password: Option<&str>) -> Vec<u8> {
         let mut doc = Document::with_version("1.5");
         let pages_id = doc.new_object_id();
         let mut kids = Vec::new();
