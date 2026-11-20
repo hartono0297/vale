@@ -114,6 +114,7 @@ fn opens_windows(arg: Option<&str>) -> bool {
             | "--demo-lyrics-card"
             | "--demo-captions"
             | "--demo-transcript"
+            | "--demo-sign"
             | "--settings",
         ) => true,
         Some(_) => false,
@@ -267,6 +268,13 @@ fn main() {
             demo_lang_from_env();
             let empty = std::env::args().nth(2).as_deref() == Some("empty");
             shot_edit::window::run_demo(empty);
+        }
+        // The signing window on a made-up document.
+        #[cfg(debug_assertions)]
+        Some("--demo-sign") => {
+            attach_parent_console();
+            demo_lang_from_env();
+            sign::window::run_demo();
         }
         // The lyrics card on made-up data: `--demo-lyrics-card [scene]`.
         #[cfg(debug_assertions)]
