@@ -2,6 +2,9 @@
 //! is applied, and the result is saved as PNG, JPG or a one-page PDF. COM
 //! must be initialised by the caller.
 
+use std::os::windows::fs::OpenOptionsExt;
+use std::path::Path;
+
 use lopdf::{Dictionary, Document, Object, Stream};
 use windows::Win32::Graphics::Direct2D::Common::{D2D_RECT_F, D2D1_COLOR_F};
 use windows::Win32::Graphics::Direct2D::{
@@ -15,8 +18,9 @@ use windows::Win32::Graphics::DirectWrite::{
 };
 use windows::Win32::Graphics::Imaging::{
     CLSID_WICImagingFactory, GUID_ContainerFormatJpeg, GUID_WICPixelFormat24bppBGR,
-    GUID_WICPixelFormat32bppBGRA, IWICBitmapSource, IWICImagingFactory, WICBitmapDitherTypeNone,
-    WICBitmapEncoderNoCache, WICBitmapPaletteTypeCustom,
+    GUID_WICPixelFormat32bppBGRA, GUID_WICPixelFormat32bppPBGRA, IWICBitmapSource,
+    IWICImagingFactory, WICBitmapDitherTypeNone, WICBitmapEncoderNoCache,
+    WICBitmapPaletteTypeCustom, WICRect,
 };
 use windows::Win32::System::Com::StructuredStorage::PROPBAG2;
 use windows::Win32::System::Com::{
@@ -26,6 +30,8 @@ use windows::Win32::System::Variant::{VARIANT, VT_R4};
 use windows::Win32::UI::Shell::SHCreateMemStream;
 use windows::core::{Interface, PWSTR, w};
 use windows_numerics::{Matrix3x2, Vector2};
+
+use crate::phone::thumb::{MAX_BYTES, oriented_source};
 
 use super::geom::{PageGeom, item_view_rect};
 use super::raster;
@@ -38,6 +44,8 @@ const PT_PER_PX: f32 = 0.75;
 const JPEG_QUALITY: f32 = 0.92;
 /// Text and dates fill this much of the item's height.
 const TEXT_FILL: f32 = 0.8;
+/// The most pixels an image may have (same cap as the shelf and the editor).
+const MAX_PIXELS: u64 = 250_000_000;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ImageFormat {
@@ -197,10 +205,51 @@ fn rotate_pixels(pix: Vec<u8>, w: u32, h: u32, q: Quarter) -> (u32, u32, Vec<u8>
     (nw, nh, out)
 }
 
+/// The image at `path` at full resolution as premultiplied BGRA, top-down,
+/// with its EXIF orientation applied (the same source the editor shows), or
+/// `None` (not a file, empty, over the shelf size cap, over 250 M pixels, not
+/// an image WIC can decode). COM must be initialised by the caller.
+pub fn decode_oriented(path: &Path) -> Option<(u32, u32, Vec<u8>)> {
+    let file = std::fs::OpenOptions::new().read(true).share_mode(7).open(path).ok()?;
+    let meta = file.metadata().ok()?;
+    if !meta.is_file() || meta.len() == 0 || meta.len() > MAX_BYTES {
+        return None;
+    }
+    unsafe {
+        let wic: IWICImagingFactory =
+            CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).ok()?;
+        let source = oriented_source(&wic, &file)?;
+        let (mut w, mut h) = (0u32, 0u32);
+        source.GetSize(&mut w, &mut h).ok()?;
+        if w == 0 || h == 0 || u64::from(w) * u64::from(h) > MAX_PIXELS {
+            return None;
+        }
+        let converter = wic.CreateFormatConverter().ok()?;
+        converter
+            .Initialize(
+                &source,
+                &GUID_WICPixelFormat32bppPBGRA,
+                WICBitmapDitherTypeNone,
+                None,
+                0.0,
+                WICBitmapPaletteTypeCustom,
+            )
+            .ok()?;
+        let stride = w.checked_mul(4)?;
+        let mut bgra = vec![0u8; usize::try_from(stride).ok()?.checked_mul(h as usize)?];
+        let rect = WICRect { X: 0, Y: 0, Width: i32::try_from(w).ok()?, Height: i32::try_from(h).ok()? };
+        converter.CopyPixels(&rect, stride, &mut bgra).ok()?;
+        Some((w, h, bgra))
+    }
+}
+
 /// The image with `items` drawn on it and `page.extra` applied: premultiplied
-/// BGRA, top-down. Text, dates and checks are drawn directly (Arial in ink
-/// blue, a stroked tick), so `marks_for_text` is never called. When drawing
-/// fails the untouched pixels come back rotated.
+/// BGRA, top-down. `src_bgra` must be premultiplied BGRA, top-down, full
+/// resolution and already oriented (`decode_oriented`), `w * h * 4` bytes.
+/// The caller passes only the items of this page that are not deleted. Text,
+/// dates and checks are drawn directly (Arial in ink blue, a stroked tick),
+/// so `marks_for_text` is never called. `None` when the source length is
+/// wrong or drawing fails: never untouched pixels presented as signed.
 pub fn compose(
     src_bgra: &[u8],
     w: u32,
@@ -208,41 +257,42 @@ pub fn compose(
     page: &Page,
     items: &[Item],
     _marks_for_text: &dyn Fn(&str, f32) -> Mark,
-) -> (u32, u32, Vec<u8>) {
+) -> Option<(u32, u32, Vec<u8>)> {
+    let expected = (w as usize).checked_mul(h as usize)?.checked_mul(4)?;
+    if src_bgra.len() != expected {
+        return None;
+    }
     let scale = 1.0 / PT_PER_PX;
     let g = page.geom;
-    let drawn = if src_bgra.len() == w as usize * h as usize * 4 {
-        raster::offscreen(w, h, |rt, d2d, dwrite| {
-            if let Ok(bitmap) = crate::shot_edit::gfx::bitmap(rt, w, h, src_bgra) {
-                let dest = D2D_RECT_F { left: 0.0, top: 0.0, right: w as f32, bottom: h as f32 };
-                unsafe {
-                    rt.DrawBitmap(
-                        &bitmap,
-                        Some(&dest),
-                        1.0,
-                        D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
-                        None,
-                    );
-                }
-            }
-            for item in items {
-                draw_item(rt, d2d, dwrite, item, g, scale);
-            }
-        })
-    } else {
-        None
-    };
-    let pixels = drawn.unwrap_or_else(|| {
-        let mut v = src_bgra.to_vec();
-        v.resize(w as usize * h as usize * 4, 255);
-        v
-    });
-    rotate_pixels(pixels, w, h, page.extra)
+    let mut ok = true;
+    let pixels = raster::offscreen(w, h, |rt, d2d, dwrite| {
+        let Ok(bitmap) = crate::shot_edit::gfx::bitmap(rt, w, h, src_bgra) else {
+            ok = false;
+            return;
+        };
+        let dest = D2D_RECT_F { left: 0.0, top: 0.0, right: w as f32, bottom: h as f32 };
+        unsafe {
+            rt.DrawBitmap(&bitmap, Some(&dest), 1.0, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, None);
+        }
+        for item in items {
+            draw_item(rt, d2d, dwrite, item, g, scale);
+        }
+    })?;
+    ok.then(|| rotate_pixels(pixels, w, h, page.extra))
 }
 
 /// A one-page PDF of `w_pt` x `h_pt` points showing `img` full page (RGB,
-/// Flate; any transparency is flattened onto white). Empty when saving fails.
-pub fn new_pdf_from_image(img: &Mark, w_pt: f32, h_pt: f32) -> Vec<u8> {
+/// Flate; any transparency is flattened onto white). `None` for a mark whose
+/// buffer does not match its size, a bad page size, or a failed save.
+pub fn new_pdf_from_image(img: &Mark, w_pt: f32, h_pt: f32) -> Option<Vec<u8>> {
+    let expected = (img.w as usize).checked_mul(img.h as usize)?.checked_mul(4)?;
+    if img.w == 0
+        || img.h == 0
+        || img.rgba.len() != expected
+        || !(w_pt.is_finite() && h_pt.is_finite() && w_pt > 0.0 && h_pt > 0.0)
+    {
+        return None;
+    }
     let mut rgb = Vec::with_capacity(img.rgba.len() / 4 * 3);
     for p in img.rgba.chunks_exact(4) {
         let a = u32::from(p[3]);
@@ -288,10 +338,8 @@ pub fn new_pdf_from_image(img: &Mark, w_pt: f32, h_pt: f32) -> Vec<u8> {
     let catalog_id = doc.add_object(catalog);
     doc.trailer.set("Root", Object::Reference(catalog_id));
     let mut out = Vec::new();
-    if doc.save_to(&mut out).is_err() {
-        out.clear();
-    }
-    out
+    doc.save_to(&mut out).ok()?;
+    Some(out)
 }
 
 /// Premultiplied BGRA flattened onto white: opaque BGRA.
@@ -376,8 +424,7 @@ pub fn save_image(composed: (u32, u32, Vec<u8>), fmt: ImageFormat) -> Result<Vec
         ImageFormat::Jpg => encode_jpeg(w, h, &flat),
         ImageFormat::Pdf => {
             let mark = raster::to_mark(w, h, &flat);
-            let pdf = new_pdf_from_image(&mark, w as f32 * PT_PER_PX, h as f32 * PT_PER_PX);
-            (!pdf.is_empty()).then_some(pdf)
+            new_pdf_from_image(&mark, w as f32 * PT_PER_PX, h as f32 * PT_PER_PX)
         }
     };
     bytes.ok_or_else(|| "Gambar tidak bisa disimpan".to_string())
@@ -443,7 +490,7 @@ mod tests {
         let _com = Com::new();
         let g = image_geom(400, 300);
         let it = sig(blue_mark(40, 20), 30.0, 30.0, 40.0, 20.0, Quarter::R0);
-        let out = compose(&white(400, 300), 400, 300, &page(g, Quarter::R0), &[it.clone()], &no_text);
+        let out = compose(&white(400, 300), 400, 300, &page(g, Quarter::R0), &[it.clone()], &no_text).expect("composed");
         assert_eq!((out.0, out.1), (400, 300));
         let (rx, ry, rw, rh) = item_view_rect(&it, g, Quarter::R0, 4.0 / 3.0);
         let p = px(&out, (rx + rw / 2.0) as u32, (ry + rh / 2.0) as u32);
@@ -452,19 +499,117 @@ mod tests {
         assert_eq!(c, [255, 255, 255, 255]);
     }
 
+    /// Opaque blue in the left half only, transparent in the right half.
+    fn left_half_mark(w: u32, h: u32) -> Mark {
+        let mut m = blue_mark(w, h);
+        for y in 0..h {
+            for x in w / 2..w {
+                m.rgba[((y * w + x) * 4 + 3) as usize] = 0;
+            }
+        }
+        m
+    }
+
     #[test]
-    fn turned_item_lands_in_its_box() {
+    fn turned_item_lands_in_its_box_and_turns_counter_clockwise() {
         let _com = Com::new();
         let g = image_geom(400, 300);
-        // A 60 x 10 bar turned a quarter occupies 10 wide x 60 tall.
-        let it = sig(blue_mark(60, 10), 100.0, 50.0, 60.0, 10.0, Quarter::R90);
-        let out = compose(&white(400, 300), 400, 300, &page(g, Quarter::R0), &[it.clone()], &no_text);
-        let (rx, ry, rw, rh) = item_view_rect(&it, g, Quarter::R0, 4.0 / 3.0);
-        assert!(rh > rw);
-        let inside = px(&out, (rx + rw / 2.0) as u32, (ry + rh * 0.9) as u32);
-        assert!(inside[2] < 80, "{inside:?}");
-        let outside = px(&out, (rx + rw / 2.0 + 40.0) as u32, (ry + rh / 2.0) as u32);
-        assert_eq!(outside, [255, 255, 255, 255]);
+        // A 60 x 10 bar turned a quarter occupies 10 wide x 60 tall. Turned
+        // counter-clockwise, its left half ends at the bottom (R90) or the top (R270).
+        for (turn, left_at_bottom) in [(Quarter::R90, true), (Quarter::R270, false)] {
+            let it = sig(left_half_mark(60, 10), 100.0, 50.0, 60.0, 10.0, turn);
+            let out = compose(&white(400, 300), 400, 300, &page(g, Quarter::R0), &[it.clone()], &no_text)
+                .expect("composed");
+            let (rx, ry, rw, rh) = item_view_rect(&it, g, Quarter::R0, 4.0 / 3.0);
+            assert!(rh > rw);
+            let cx = (rx + rw / 2.0) as u32;
+            let (near_top, near_bottom) = (px(&out, cx, (ry + rh * 0.1) as u32), px(&out, cx, (ry + rh * 0.9) as u32));
+            let (blue, blank) = if left_at_bottom { (near_bottom, near_top) } else { (near_top, near_bottom) };
+            assert!(blue[2] < 80, "{turn:?} {blue:?}");
+            assert_eq!(blank, [255, 255, 255, 255], "{turn:?}");
+            let outside = px(&out, cx + 40, (ry + rh / 2.0) as u32);
+            assert_eq!(outside, [255, 255, 255, 255]);
+        }
+    }
+
+    #[test]
+    fn wrong_length_source_is_none() {
+        let _com = Com::new();
+        let g = image_geom(400, 300);
+        let short = vec![255u8; 400 * 300 * 4 - 4];
+        assert!(compose(&short, 400, 300, &page(g, Quarter::R0), &[], &no_text).is_none());
+        assert!(compose(&white(400, 300), 0, 300, &page(g, Quarter::R0), &[], &no_text).is_none());
+    }
+
+    #[test]
+    fn pdf_rejects_bad_input() {
+        let img = blue_mark(4, 4);
+        assert!(new_pdf_from_image(&img, 0.0, 10.0).is_none());
+        assert!(new_pdf_from_image(&img, f32::NAN, 10.0).is_none());
+        assert!(new_pdf_from_image(&img, 10.0, f32::INFINITY).is_none());
+        let bad = Mark { w: 4, h: 4, rgba: vec![0; 10] };
+        assert!(new_pdf_from_image(&bad, 10.0, 10.0).is_none());
+    }
+
+    /// A JPEG of `w` x `h` whose EXIF orientation says `orientation`.
+    fn write_oriented_jpeg(path: &std::path::Path, w: u32, h: u32, orientation: u16) {
+        use windows::Win32::Graphics::Imaging::{
+            GUID_ContainerFormatJpeg, GUID_WICPixelFormat24bppBGR, WICBitmapEncoderNoCache,
+        };
+        use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
+        unsafe {
+            let wic: IWICImagingFactory =
+                CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).unwrap();
+            let encoder = wic.CreateEncoder(&GUID_ContainerFormatJpeg, std::ptr::null()).unwrap();
+            let stream = SHCreateMemStream(None).unwrap();
+            encoder.Initialize(&stream, WICBitmapEncoderNoCache).unwrap();
+            let mut frame = None;
+            let mut options = None;
+            encoder.CreateNewFrame(&mut frame, &mut options).unwrap();
+            let frame = frame.unwrap();
+            frame.Initialize(options.as_ref()).unwrap();
+            frame.SetSize(w, h).unwrap();
+            let mut format = GUID_WICPixelFormat24bppBGR;
+            frame.SetPixelFormat(&mut format).unwrap();
+            let writer = frame.GetMetadataQueryWriter().unwrap();
+            writer
+                .SetMetadataByName(w!("/app1/ifd/{ushort=274}"), &PROPVARIANT::from(orientation))
+                .unwrap();
+            let row = vec![200u8; (w * 3) as usize];
+            for _ in 0..h {
+                frame.WritePixels(1, w * 3, &row).unwrap();
+            }
+            frame.Commit().unwrap();
+            encoder.Commit().unwrap();
+            let (mut len, mut read) = (0u64, 0u32);
+            stream.Seek(0, STREAM_SEEK_END, Some(&mut len)).unwrap();
+            stream.Seek(0, STREAM_SEEK_SET, None).unwrap();
+            let mut bytes = vec![0u8; len as usize];
+            stream.Read(bytes.as_mut_ptr().cast(), len as u32, Some(&mut read)).ok().unwrap();
+            std::fs::write(path, bytes).unwrap();
+        }
+    }
+
+    #[test]
+    fn decode_oriented_applies_exif_and_agrees_with_the_editor() {
+        use crate::phone::files::tests::temp_dir;
+        let _com = Com::new();
+        let dir = temp_dir("sign-image-out-exif");
+        let path = dir.join("rot.jpg");
+        write_oriented_jpeg(&path, 64, 48, 6);
+        let (w, h, bgra) = decode_oriented(&path).expect("decodes");
+        assert_eq!((w, h), (48, 64), "orientation 6 swaps the sides");
+        assert_eq!(bgra.len(), 48 * 64 * 4);
+        let r = crate::sign::render::Renderer::start_image(path.clone(), || {}).expect("opens");
+        assert_eq!(r.page_size_dip(0), (48.0, 64.0));
+        let g = image_geom(w, h);
+        assert_eq!((g.w, g.h), (36.0, 48.0));
+        let plain = dir.join("plain.jpg");
+        write_oriented_jpeg(&plain, 64, 48, 1);
+        assert_eq!(decode_oriented(&plain).map(|d| (d.0, d.1)), Some((64, 48)));
+        assert!(decode_oriented(&dir.join("missing.jpg")).is_none());
+        drop(r);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -473,7 +618,7 @@ mod tests {
         let g = image_geom(400, 300);
         let t = Item { kind: ItemKind::Text("MMMM".into()), page: 0, x: 20.0, y: 150.0, w: 100.0, h: 30.0, turn: Quarter::R0 };
         let c = Item { kind: ItemKind::Check, page: 0, x: 200.0, y: 150.0, w: 30.0, h: 30.0, turn: Quarter::R0 };
-        let out = compose(&white(400, 300), 400, 300, &page(g, Quarter::R0), &[t.clone(), c.clone()], &no_text);
+        let out = compose(&white(400, 300), 400, 300, &page(g, Quarter::R0), &[t.clone(), c.clone()], &no_text).expect("composed");
         for it in [&t, &c] {
             let (rx, ry, rw, rh) = item_view_rect(it, g, Quarter::R0, 4.0 / 3.0);
             let mut dark = 0;
@@ -492,7 +637,7 @@ mod tests {
     fn rotation_rotates_output() {
         let _com = Com::new();
         let g = image_geom(400, 300);
-        let out = compose(&white(400, 300), 400, 300, &page(g, Quarter::R90), &[], &no_text);
+        let out = compose(&white(400, 300), 400, 300, &page(g, Quarter::R90), &[], &no_text).expect("composed");
         assert_eq!((out.0, out.1), (300, 400));
         assert_eq!(out.2.len(), 300 * 400 * 4);
     }
@@ -508,7 +653,7 @@ mod tests {
             (Quarter::R180, (400, 300), (390, 290)),
             (Quarter::R270, (300, 400), (10, 390)),
         ] {
-            let out = compose(&white(400, 300), 400, 300, &page(g, extra), &[it.clone()], &no_text);
+            let out = compose(&white(400, 300), 400, 300, &page(g, extra), &[it.clone()], &no_text).expect("composed");
             assert_eq!((out.0, out.1), size);
             assert!(px(&out, at.0, at.1)[2] < 80, "{extra:?}");
             assert_eq!(px(&out, size.0 / 2, size.1 / 2), [255, 255, 255, 255]);
@@ -519,7 +664,7 @@ mod tests {
     #[test]
     fn pdf_from_image_has_one_page_of_matching_size() {
         let img = blue_mark(400, 300);
-        let bytes = new_pdf_from_image(&img, 300.0, 225.0);
+        let bytes = new_pdf_from_image(&img, 300.0, 225.0).expect("pdf");
         let doc = lopdf::Document::load_mem(&bytes).expect("reload");
         let pages = doc.get_pages();
         assert_eq!(pages.len(), 1);
