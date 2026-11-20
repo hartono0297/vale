@@ -163,15 +163,49 @@ fn libreoffice() -> Option<PathBuf> {
     candidates.into_iter().find(|p| p.is_file())
 }
 
-/// The suite that will convert `app`'s files on this PC, Microsoft first.
-pub fn detect(app: App) -> Option<Suite> {
-    if prog_id_exists(ms_prog_id(app)) {
-        return Some(Suite::Microsoft);
+/// The suites that can convert `app`'s files on this PC, in the order they
+/// are tried: Microsoft, WPS, LibreOffice.
+pub fn detect(app: App) -> Vec<Suite> {
+    suites_in_order(
+        prog_id_exists(ms_prog_id(app)),
+        wps_prog_ids(app).iter().any(|id| prog_id_exists(id)),
+        libreoffice(),
+    )
+}
+
+fn suites_in_order(microsoft: bool, wps: bool, libreoffice: Option<PathBuf>) -> Vec<Suite> {
+    let mut out = Vec::new();
+    if microsoft {
+        out.push(Suite::Microsoft);
     }
-    if wps_prog_ids(app).iter().any(|id| prog_id_exists(id)) {
-        return Some(Suite::Wps);
+    if wps {
+        out.push(Suite::Wps);
     }
-    libreoffice().map(Suite::LibreOffice)
+    out.extend(libreoffice.map(Suite::LibreOffice));
+    out
+}
+
+/// Runs `convert` with each suite in turn until one converts. Only a plain
+/// failure (or a suite that turned out missing) moves on to the next: a
+/// locked file or a timeout is the answer, and a cancel stops.
+fn first_that_converts(
+    suites: &[Suite],
+    cancel: &AtomicBool,
+    mut convert: impl FnMut(&Suite) -> Result<(), ConvertError>,
+) -> Result<(), ConvertError> {
+    let mut last = ConvertError::NoSuite;
+    for suite in suites {
+        if cancel.load(Ordering::SeqCst) {
+            break;
+        }
+        match convert(suite) {
+            Ok(()) => return Ok(()),
+            Err(ConvertError::Failed) => last = ConvertError::Failed,
+            Err(ConvertError::NoSuite) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last)
 }
 
 // ------------------------------------------------------------- temp folders
@@ -522,13 +556,18 @@ type Saved = Vec<(&'static str, VARIANT)>;
 /// with alerts off. A user's instance keeps its window; its alerts and macro
 /// security are switched off only for the open and restored through `unquiet`
 /// (a setting that cannot be read cannot be restored, so it is left alone).
-fn quiet(app: &Disp, ours: bool, alerts_off: VARIANT) -> Result<Saved, ConvertError> {
+/// `required`: an instance we started that refuses the alerts or macro
+/// setting fails the conversion (WPS may refuse them: `quiet_is_required`).
+fn quiet(app: &Disp, ours: bool, alerts_off: VARIANT, required: bool) -> Result<Saved, ConvertError> {
     let step = |_: DispErr| ConvertError::Failed;
     let mut saved = Vec::new();
     if ours {
         app.put("Visible", vb(false)).map_err(step)?;
-        app.put("DisplayAlerts", alerts_off).map_err(step)?;
-        app.put("AutomationSecurity", vi(3)).map_err(step)?;
+        for (name, value) in [("DisplayAlerts", alerts_off), ("AutomationSecurity", vi(3))] {
+            if app.put(name, value).is_err() && required {
+                return Err(ConvertError::Failed);
+            }
+        }
         return Ok(saved);
     }
     for (name, value) in [("DisplayAlerts", alerts_off), ("AutomationSecurity", vi(3))] {
@@ -540,6 +579,12 @@ fn quiet(app: &Disp, ours: bool, alerts_off: VARIANT) -> Result<Saved, ConvertEr
         saved.push((name, old));
     }
     Ok(saved)
+}
+
+/// WPS does not always take `DisplayAlerts` or `AutomationSecurity` from
+/// automation; its hidden instance converts without them.
+fn quiet_is_required(suite: &Suite) -> bool {
+    !matches!(suite, Suite::Wps)
 }
 
 fn unquiet(app: &Disp, saved: &[(&'static str, VARIANT)]) {
@@ -564,9 +609,9 @@ fn same_path(a: &str, b: &Path) -> bool {
     norm(a) == norm(&b.to_string_lossy())
 }
 
-fn drive_writer(app: &Disp, copy: &Path, out: &Path, ours: bool) -> Result<(), ConvertError> {
+fn drive_writer(app: &Disp, copy: &Path, out: &Path, ours: bool, required: bool) -> Result<(), ConvertError> {
     let step = |_: DispErr| ConvertError::Failed;
-    let saved = quiet(app, ours, vi(0))?;
+    let saved = quiet(app, ours, vi(0), required)?;
     let r = (|| {
         let docs = app.get_disp("Documents").map_err(step)?;
         let doc = docs
@@ -586,9 +631,9 @@ fn drive_writer(app: &Disp, copy: &Path, out: &Path, ours: bool) -> Result<(), C
     r
 }
 
-fn drive_sheets(app: &Disp, copy: &Path, out: &Path, ours: bool) -> Result<(), ConvertError> {
+fn drive_sheets(app: &Disp, copy: &Path, out: &Path, ours: bool, required: bool) -> Result<(), ConvertError> {
     let step = |_: DispErr| ConvertError::Failed;
-    let saved = quiet(app, ours, vb(false))?;
+    let saved = quiet(app, ours, vb(false), required)?;
     let r = (|| {
         let books = app.get_disp("Workbooks").map_err(step)?;
         let book = books
@@ -649,9 +694,10 @@ fn com_job(suite: &Suite, app_kind: App, copy: &Path, out: &Path, killer: &Kille
         *slot = Some(h.clone());
     }
     let ours = session.ours.is_some();
+    let required = quiet_is_required(suite);
     match app_kind {
-        App::Writer => drive_writer(&session.app, copy, out, ours),
-        App::Sheets => drive_sheets(&session.app, copy, out, ours),
+        App::Writer => drive_writer(&session.app, copy, out, ours, required),
+        App::Sheets => drive_sheets(&session.app, copy, out, ours, required),
         App::Slides => drive_slides(&session.app, copy, out),
     }
 }
@@ -710,13 +756,26 @@ fn convert_com(
 
 // -------------------------------------------------------------- LibreOffice
 
+/// `p` as a `file:///` URL: backslashes become slashes and every byte of
+/// its UTF-8 outside the unreserved set, `/` and `:` is percent-encoded.
+fn file_url(p: &Path) -> String {
+    let mut url = String::from("file:///");
+    for b in p.to_string_lossy().replace('\\', "/").bytes() {
+        if b.is_ascii_alphanumeric() || b"-._~/:".contains(&b) {
+            url.push(char::from(b));
+        } else {
+            url.push_str(&format!("%{b:02X}"));
+        }
+    }
+    url
+}
+
 fn soffice_args(src: &Path, job: &Path) -> Vec<OsString> {
-    let profile = format!("{}/profile", job.to_string_lossy().replace('\\', "/"));
     vec![
         "--headless".into(),
         "--norestore".into(),
         "--nolockcheck".into(),
-        format!("-env:UserInstallation=file:///{profile}").into(),
+        format!("-env:UserInstallation={}", file_url(&job.join("profile"))).into(),
         "--convert-to".into(),
         "pdf".into(),
         "--outdir".into(),
@@ -803,29 +862,34 @@ fn private_copy(src: &Path) -> Result<(PathBuf, PathBuf), ConvertError> {
 /// thread (up to 90 s); `cancel` aborts it.
 pub fn convert(src: &Path, out_dir: &Path, cancel: &AtomicBool) -> Result<PathBuf, ConvertError> {
     let app = app_for(src).ok_or(ConvertError::Failed)?;
-    let suite = detect(app).ok_or(ConvertError::NoSuite)?;
+    let suites = detect(app);
+    if suites.is_empty() {
+        return Err(ConvertError::NoSuite);
+    }
     std::fs::create_dir_all(out_dir).map_err(|_| ConvertError::Failed)?;
     let stem = src.file_stem().ok_or(ConvertError::Failed)?;
     let mut name = stem.to_os_string();
     name.push(".pdf");
     let out = out_dir.join(name);
-    if out.exists() {
-        // Only a leftover of ours may be replaced.
-        if !is_within(&temp_root(), &out) {
-            return Err(ConvertError::Failed);
-        }
+    // Only a leftover of ours may be replaced.
+    if out.exists() && !is_within(&temp_root(), &out) {
+        return Err(ConvertError::Failed);
+    }
+    // A suite that fails leaves the next one a clean name.
+    first_that_converts(&suites, cancel, |suite| {
         let _ = std::fs::remove_file(&out);
-    }
-    match &suite {
-        Suite::LibreOffice(exe) => convert_soffice(exe, src, out_dir, cancel)?,
-        _ => {
-            let (copy_dir, copy) = private_copy(src)?;
-            let r = convert_com(&suite, app, &copy, &out, cancel);
-            let _ = std::fs::remove_dir_all(&copy_dir);
-            r?
+        match suite {
+            Suite::LibreOffice(exe) => convert_soffice(exe, src, out_dir, cancel)?,
+            _ => {
+                let (copy_dir, copy) = private_copy(src)?;
+                let r = convert_com(suite, app, &copy, &out, cancel);
+                let _ = std::fs::remove_dir_all(&copy_dir);
+                r?
+            }
         }
-    }
-    if out.is_file() { Ok(out) } else { Err(ConvertError::Failed) }
+        if out.is_file() { Ok(()) } else { Err(ConvertError::Failed) }
+    })?;
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -864,6 +928,65 @@ mod tests {
         assert_eq!(args[i + 1], "pdf");
         assert!(args.contains(&"--headless".to_string()));
         assert_eq!(args.last().unwrap(), r"C:\a b\x.docx");
+    }
+
+    #[test]
+    fn the_profile_url_is_percent_encoded() {
+        assert_eq!(file_url(Path::new(r"C:\t\job-1\profile")), "file:///C:/t/job-1/profile");
+        assert_eq!(
+            file_url(Path::new("C:\\Users\\Budi Santoso\\Temp\\caf\u{e9}\\profile")),
+            "file:///C:/Users/Budi%20Santoso/Temp/caf%C3%A9/profile"
+        );
+        assert_eq!(file_url(Path::new(r"C:\a#b%c\p")), "file:///C:/a%23b%25c/p");
+        let args = soffice_args(Path::new(r"C:\x.docx"), Path::new(r"C:\t\Budi Santoso"));
+        let args: Vec<String> = args.iter().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert!(args.contains(&"-env:UserInstallation=file:///C:/t/Budi%20Santoso/profile".to_string()));
+    }
+
+    #[test]
+    fn suites_are_tried_in_order_and_a_failure_falls_through() {
+        let lo = || Suite::LibreOffice(PathBuf::from(r"C:\LO\soffice.com"));
+        assert_eq!(
+            suites_in_order(true, true, Some(PathBuf::from(r"C:\LO\soffice.com"))),
+            vec![Suite::Microsoft, Suite::Wps, lo()]
+        );
+        assert_eq!(suites_in_order(false, true, None), vec![Suite::Wps]);
+        assert!(suites_in_order(false, false, None).is_empty());
+        let cancel = AtomicBool::new(false);
+        // WPS fails: LibreOffice is tried next and converts.
+        let mut tried = Vec::new();
+        let r = first_that_converts(&[Suite::Wps, lo()], &cancel, |s| {
+            tried.push(s.clone());
+            if *s == Suite::Wps { Err(ConvertError::Failed) } else { Ok(()) }
+        });
+        assert_eq!((r, tried), (Ok(()), vec![Suite::Wps, lo()]));
+        // A locked file or a timeout is the answer: nothing else is tried.
+        for stop in [ConvertError::Locked, ConvertError::TimedOut] {
+            let mut tried = Vec::new();
+            let r = first_that_converts(&[Suite::Wps, lo()], &cancel, |s| {
+                tried.push(s.clone());
+                Err(stop)
+            });
+            assert_eq!((r, tried.len()), (Err(stop), 1));
+        }
+        // Every one fails: Failed.
+        let r = first_that_converts(&[Suite::Wps, lo()], &cancel, |_| Err(ConvertError::Failed));
+        assert_eq!(r, Err(ConvertError::Failed));
+        assert_eq!(first_that_converts(&[], &cancel, |_| Ok(())), Err(ConvertError::NoSuite));
+        // Cancelled: the next one is not started.
+        let mut tried = 0;
+        let r = first_that_converts(&[Suite::Wps, lo()], &cancel, |_| {
+            tried += 1;
+            cancel.store(true, Ordering::SeqCst);
+            Err(ConvertError::Failed)
+        });
+        assert_eq!((r, tried), (Err(ConvertError::Failed), 1));
+    }
+
+    #[test]
+    fn wps_may_refuse_the_quiet_settings() {
+        assert!(quiet_is_required(&Suite::Microsoft));
+        assert!(!quiet_is_required(&Suite::Wps));
     }
 
     #[test]
