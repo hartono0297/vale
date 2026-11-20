@@ -171,7 +171,7 @@
   - `pub fn shown_size(g: PageGeom, extra: Quarter) -> (f32, f32)`: displayed width/height after `base + extra`.
   - `pub fn page_to_view(g: PageGeom, extra: Quarter, scale: f32, p: (f32, f32)) -> (f32, f32)`: page space (y up) → view pixels (y down, origin top-left of the shown page).
   - `pub fn view_to_page(g, extra, scale, v) -> (f32, f32)`: exact inverse.
-  - `pub fn upright_turn(g: PageGeom, extra: Quarter) -> Quarter`: the `turn` a new item needs to look upright in the current view (= inverse of `base + extra`).
+  - `pub fn upright_turn(g: PageGeom, extra: Quarter) -> Quarter`: the `turn` a new item needs to look upright in the current view. Page quarters (`base`, `extra`) are clockwise as displayed (PDF `/Rotate`); item `turn` is counter-clockwise in page space (PDF `cm`); so this returns `base.add(extra)` unchanged.
   - `pub fn item_matrix(item: &Item) -> [f32; 6]`: the PDF `cm` matrix mapping the unit square to the item in page space (translate to `x, y`, rotate by `turn`, scale `w, h`; for R90/R270 the occupied box is `h × w`).
   - `pub fn item_view_rect(item: &Item, g, extra, scale) -> (f32, f32, f32, f32)`: axis-aligned view rect for hit-testing and handles.
 - Produces (`session.rs`):
@@ -181,7 +181,7 @@
 - [ ] **Step 1: Write failing tests** (`geom.rs`):
   - `roundtrip_all_quarters`: for `base` and `extra` in all four quarters, `view_to_page(page_to_view(p)) ≈ p` (ε 0.01) on a 612×792 page, scale 1.5.
   - `shown_size_swaps_on_odd_quarters`: `shown_size({612,792,R90}, R0) == (792, 612)`; `({612,792,R90}, R90) == (612, 792)`.
-  - `placing_on_a_page_shown_rotated_is_upright`: page `{612,792,R90}`, `upright_turn == R270`; an item with that turn, `item_view_rect` has width ≈ `w*scale`, height ≈ `h*scale`.
+  - `placing_on_a_page_shown_rotated_is_upright`: page `{612,792,R90}`, `upright_turn == R90` (page quarters are clockwise as displayed, item turns are counter-clockwise in page space, so the numbers match); an item with that turn, `item_view_rect` has width ≈ `w*scale`, height ≈ `h*scale`.
   - `item_matrix_r0`: item at (100, 200), 150×50, R0 → `[150, 0, 0, 50, 100, 200]`.
   - `item_matrix_r90`: same item, R90 → `[0, 150, -50, 0, 100+50, 200]` (unit square's x axis goes up, occupied box 50 wide, 150 tall, lower-left stays at (100, 200)).
 - [ ] **Step 2: Write failing tests** (`session.rs`):
