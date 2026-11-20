@@ -59,10 +59,6 @@ pub enum Tool {
     Check,
 }
 
-impl Tool {
-    pub const ALL: [Tool; 5] = [Tool::Signature, Tool::Initials, Tool::Date, Tool::Text, Tool::Check];
-}
-
 /// A corner of an item's rectangle as shown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Corner {
@@ -503,7 +499,10 @@ pub fn more_menu(more: Rect, entries: &[Hit], cw: f32, ui: f32) -> Popover {
         .iter()
         .enumerate()
         .map(|(i, hit)| {
-            (*hit, Rect { x: x + pad, y: y + pad + i as f32 * MENU_ROW * ui, w: w - 2.0 * pad, h: MENU_ROW * ui })
+            (
+                *hit,
+                Rect { x: x + pad, y: y + pad + i as f32 * MENU_ROW * ui, w: w - 2.0 * pad, h: MENU_ROW * ui },
+            )
         })
         .collect();
     let panel = Rect { x, y, w, h: entries.len() as f32 * MENU_ROW * ui + 2.0 * pad };

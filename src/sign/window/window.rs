@@ -1003,7 +1003,14 @@ pub(super) fn shown_item(w: &Win, v: &View, i: usize) -> Option<Item> {
     match w.drag {
         Some(Drag::Move { idx, from, now }) if idx == i => {
             let (bw, bh) = geom::occupied(&it);
-            let (x, y) = layout::clamp_into(it.x + now.0 - from.0, it.y + now.1 - from.1, bw, bh, v.g.w, v.g.h);
+            let (x, y) = layout::clamp_into(
+                it.x + now.0 - from.0,
+                it.y + now.1 - from.1,
+                bw,
+                bh,
+                v.g.w,
+                v.g.h,
+            );
             it.x = x;
             it.y = y;
         }
@@ -1104,7 +1111,10 @@ fn handle_rects(w: &Win, v: &View) -> Vec<(Corner, Rect)> {
         return Vec::new();
     }
     let Some(it) = shown_item(w, v, i) else { return Vec::new() };
-    layout::handles(v.item_rect(&it), ui_of(w)).iter().map(|(c, _, hit)| (*c, *hit)).collect()
+    let ui = ui_of(w);
+    let o = v.item_rect(&it);
+    let o = Rect { x: o.x - 3.0 * ui, y: o.y - 3.0 * ui, w: o.w + 6.0 * ui, h: o.h + 6.0 * ui };
+    layout::handles(o, ui).iter().map(|(c, _, hit)| (*c, *hit)).collect()
 }
 
 fn hit_at(w: &Win, x: f32, y: f32) -> Option<Hit> {
@@ -1719,7 +1729,10 @@ fn finish_text(hwnd: HWND, keep: bool) -> bool {
                 let turn = geom::upright_turn(v.g, v.extra);
                 let iw = width(TEXT_H).max(8.0);
                 // The EDIT's left edge and middle are where the text sits.
-                let (bw, bh) = if matches!(turn, Quarter::R90 | Quarter::R270) { (TEXT_H, iw) } else { (iw, TEXT_H) };
+                let (bw, bh) = if matches!(turn, Quarter::R90 | Quarter::R270) { (TEXT_H, iw) } else { (
+                    iw,
+                    TEXT_H,
+                ) };
                 let left_mid = at;
                 let (cx, cy) = {
                     let p = geom::page_to_view(v.g, v.extra, v.scale, left_mid);
@@ -1982,7 +1995,7 @@ fn on_down(hwnd: HWND, lparam: LPARAM, double: bool) {
     }
     enum Then {
         Nothing,
-        Button(Hit),
+        Button,
         Text((f32, f32), Option<usize>),
         Capture,
     }
@@ -1999,14 +2012,17 @@ fn on_down(hwnd: HWND, lparam: LPARAM, double: bool) {
                 return Then::Nothing;
             }
         }
-        if w.ask != Ask::None && !matches!(hit, Some(Hit::Discard | Hit::Keep | Hit::SaveAnyway | Hit::NotNow)) {
+        if w.ask != Ask::None && !matches!(
+            hit,
+            Some(Hit::Discard | Hit::Keep | Hit::SaveAnyway | Hit::NotNow),
+        ) {
             return Then::Nothing;
         }
         let Some(hit) = hit else { return Then::Nothing };
         let Some(v) = view(w).filter(|_| w.phase == Phase::Ready) else {
             return if is_button(hit) {
                 w.pressed = Some(hit);
-                Then::Button(hit)
+                Then::Button
             } else {
                 Then::Nothing
             };
@@ -2048,12 +2064,12 @@ fn on_down(hwnd: HWND, lparam: LPARAM, double: bool) {
             }
             h => {
                 w.pressed = Some(h);
-                Then::Button(h)
+                Then::Button
             }
         }
     });
     match then {
-        Some(Then::Capture) | Some(Then::Button(_)) => unsafe {
+        Some(Then::Capture) | Some(Then::Button) => unsafe {
             SetCapture(hwnd);
         },
         Some(Then::Text(at, index)) => begin_text(hwnd, at, index),
@@ -2544,6 +2560,34 @@ mod tests {
     }
 
     #[test]
+    fn an_image_opens_as_one_page_and_saves_with_its_items() {
+        let _com = Com::init();
+        let dir = crate::phone::files::tests::temp_dir("sign-window-image");
+        let path = dir.join("Surat.png");
+        let white = Mark { w: 40, h: 20, rgba: vec![255; 40 * 20 * 4] };
+        std::fs::write(&path, crate::sign::raster::encode_png_rgba(&white).unwrap()).unwrap();
+        let src = Source { path: path.clone(), kind: Kind::Image };
+        let cancel = AtomicBool::new(false);
+        let Outcome::Ready(l) = open_document(&src, None, None, None, &cancel, 0) else {
+            panic!("the image did not open");
+        };
+        assert!(l.image && l.opened.is_none());
+        assert_eq!(l.geoms.len(), 1);
+        assert_eq!((l.geoms[0].w, l.geoms[0].h), (30.0, 15.0));
+        let mut session = Session::new(l.geoms.clone());
+        session.add(Item { kind: ItemKind::Check, page: 0, x: 2.0, y: 2.0, w: 10.0, h: 10.0, turn: Quarter::R0 });
+        session.rotate_page(0);
+        drop(l);
+        let job = SaveJob::Image { path: path.clone(), fmt: ImageFormat::Png };
+        let png = save_bytes(job, &session.pages, &session.items).expect("saved");
+        let out = crate::sign::raster::decode_png_rgba(&png).expect("a png");
+        // Turned a quarter: 20 x 40, and the check is ink on the white.
+        assert_eq!((out.w, out.h), (20, 40));
+        assert!(out.rgba.chunks_exact(4).any(|p| u16::from(p[2]) > u16::from(p[0]) + 40));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn dates_read_in_each_language() {
         assert_eq!(date_text(Lang::Id, 2026, 11, 20), "20 November 2026");
         assert_eq!(date_text(Lang::Id, 2026, 8, 1), "1 Agustus 2026");
@@ -2618,7 +2662,10 @@ mod tests {
                 let (px, py) = nudge(shown, dx, dy);
                 let a = geom::page_to_view(g, shown, 1.0, (300.0, 300.0));
                 let b = geom::page_to_view(g, shown, 1.0, (300.0 + px, 300.0 + py));
-                assert!(((b.0 - a.0) - dx).abs() < 1e-4 && ((b.1 - a.1) - dy).abs() < 1e-4, "{shown:?} {dx} {dy}");
+                assert!(
+                    ((b.0 - a.0) - dx).abs() < 1e-4 && ((b.1 - a.1) - dy).abs() < 1e-4,
+                    "{shown:?} {dx} {dy}",
+                );
             }
         }
     }
@@ -2645,6 +2692,9 @@ mod tests {
             }
             k => panic!("{k:?}"),
         }
-        assert_eq!((out[1].x, out[1].y, out[1].w, out[1].h, out[1].turn), (10.0, 10.0, 80.0, 14.0, Quarter::R90));
+        assert_eq!(
+            (out[1].x, out[1].y, out[1].w, out[1].h, out[1].turn),
+            (10.0, 10.0, 80.0, 14.0, Quarter::R90),
+        );
     }
 }

@@ -27,7 +27,7 @@ use windows_numerics::{Matrix3x2, Vector2};
 
 use super::layout::{self, Hit, Tool};
 use super::window::{
-    self, Ask, Drag, Phase, Pop, Tone, Win, float_bar, page_items, popover, rail, shown_item,
+    self, Ask, Drag, Phase, Pop, Tone, View, Win, float_bar, popover, rail, shown_item,
     ui_of, view,
 };
 use crate::i18n::{Key, tr};
@@ -96,7 +96,10 @@ fn stroke_round(rt: &ID2D1RenderTarget, brush: &ID2D1SolidColorBrush, r: Rect, r
 
 // ---- ink text ----
 
-fn arial(dwrite: &IDWriteFactory, size: f32) -> Option<windows::Win32::Graphics::DirectWrite::IDWriteTextFormat> {
+fn arial(
+    dwrite: &IDWriteFactory,
+    size: f32,
+) -> Option<windows::Win32::Graphics::DirectWrite::IDWriteTextFormat> {
     unsafe {
         let f = dwrite
             .CreateTextFormat(
@@ -181,7 +184,13 @@ pub(super) fn text_mark(s: &str, w_pt: f32, h_pt: f32) -> Option<Mark> {
     drawn.then(|| raster::to_mark(wp, hp, &px))
 }
 
-fn draw_check(rt: &ID2D1RenderTarget, brush: &ID2D1SolidColorBrush, round: &ID2D1StrokeStyle, bw: f32, bh: f32) {
+fn draw_check(
+    rt: &ID2D1RenderTarget,
+    brush: &ID2D1SolidColorBrush,
+    round: &ID2D1StrokeStyle,
+    bw: f32,
+    bh: f32,
+) {
     // The PDF writer's tick in the unit box (y up): 0.18,0.52 0.42,0.26 0.84,0.8.
     let at = |fx: f32, fy: f32| Vector2::new((fx - 0.5) * bw, (0.5 - fy) * bh);
     let width = (bw.min(bh) * 0.12).max(1.0);
@@ -435,10 +444,30 @@ fn draw(w: &mut Win) -> windows::core::Result<()> {
     let count = page_count_text(w);
     let count_w = if count.is_empty() { 0.0 } else { w.gfx.measure(&count, 12.5 * ui, 400).0 };
     let name_w = w.gfx.measure(&name, 13.5 * ui, 600).0.min((l.title.w - 3.0 * pad - count_w).max(0.0));
-    w.gfx.text_in(&rt, &brush, &name, (pad, l.title.y, name_w, l.title.h), 13.5 * ui, 600, p.text, 1.0, Align::Left);
+    w.gfx.text_in(
+        &rt,
+        &brush,
+        &name,
+        (pad, l.title.y, name_w, l.title.h),
+        13.5 * ui,
+        600,
+        p.text,
+        1.0,
+        Align::Left,
+    );
     if !count.is_empty() {
         let x = pad + name_w + 10.0 * ui;
-        w.gfx.text_in(&rt, &brush, &count, (x, l.title.y, count_w + 2.0, l.title.h), 12.5 * ui, 400, p.secondary, 1.0, Align::Left);
+        w.gfx.text_in(
+            &rt,
+            &brush,
+            &count,
+            (x, l.title.y, count_w + 2.0, l.title.h),
+            12.5 * ui,
+            400,
+            p.secondary,
+            1.0,
+            Align::Left,
+        );
     }
     fill(&rt, &brush, Rect { x: 0.0, y: l.title.bottom() - 1.0, w: l.title.w, h: 1.0 }, border, hair);
 
@@ -463,22 +492,51 @@ fn draw(w: &mut Win) -> windows::core::Result<()> {
         let icon = layout_icon(*hit);
         let ix = if *hit == Hit::More { r.x + (r.w - 16.0 * ui) / 2.0 } else { r.x + 11.0 * ui };
         if let Some(icon) = icon {
-            draw_icon(&rt, &w.gfx.d2d, &brush, &w.gfx.round, icon, (ix, r.y + (r.h - 16.0 * ui) / 2.0), 16.0 * ui,
+            draw_icon(&rt, &w.gfx.d2d, &brush, &w.gfx.round, icon, (
+                ix,
+                r.y + (r.h - 16.0 * ui) / 2.0,
+            ), 16.0 * ui,
                 if on { p.accent } else { p.secondary }, a);
         }
         if let Some(k) = layout::label_key(*hit) {
             let tx = r.x + (11.0 + 16.0 + 7.0) * ui;
-            w.gfx.text_in(&rt, &brush, tr(k), (tx, r.y, r.right() - tx, r.h), window::UI_TEXT * ui, 400, p.text, a, Align::Left);
+            w.gfx.text_in(
+                &rt,
+                &brush,
+                tr(k),
+                (tx, r.y, r.right() - tx, r.h),
+                window::UI_TEXT * ui,
+                400,
+                p.text,
+                a,
+                Align::Left,
+            );
         }
     }
     if let Some(x) = l.divider {
-        fill(&rt, &brush, Rect { x, y: l.tools.y + l.tools.h * 0.28, w: 1.0, h: l.tools.h * 0.44 }, border, ba.max(0.18));
+        fill(
+            &rt,
+            &brush,
+            Rect { x, y: l.tools.y + l.tools.h * 0.28, w: 1.0, h: l.tools.h * 0.44 },
+            border,
+            ba.max(0.18),
+        );
     }
     fill(&rt, &brush, Rect { x: 0.0, y: l.tools.bottom() - 1.0, w: l.tools.w, h: 1.0 }, border, hair);
 
     if let Some(b) = l.banner {
         fill(&rt, &brush, b, p.card, 1.0);
-        w.gfx.text_in(&rt, &brush, tr(Key::SignNoChanges), (pad, b.y, b.w - 2.0 * pad, b.h), 12.5 * ui, 500, p.text, 1.0, Align::Left);
+        w.gfx.text_in(
+            &rt,
+            &brush,
+            tr(Key::SignNoChanges),
+            (pad, b.y, b.w - 2.0 * pad, b.h),
+            12.5 * ui,
+            500,
+            p.text,
+            1.0,
+            Align::Left,
+        );
         fill(&rt, &brush, Rect { x: 0.0, y: b.bottom() - 1.0, w: b.w, h: 1.0 }, border, hair);
     }
 
@@ -488,11 +546,34 @@ fn draw(w: &mut Win) -> windows::core::Result<()> {
         Phase::Ready | Phase::Saving => draw_page(w, &rt, &brush)?,
         Phase::Loading | Phase::Converting => {
             let k = if w.phase == Phase::Converting { Key::SignConverting } else { Key::SignLoading };
-            w.gfx.text_in(&rt, &brush, tr(k), (l.message.x, l.message.y, l.message.w, l.message.h), 14.0 * ui, 500, p.text, 1.0, Align::Center);
+            w.gfx.text_in(
+                &rt,
+                &brush,
+                tr(k),
+                (l.message.x, l.message.y, l.message.w, l.message.h),
+                14.0 * ui,
+                500,
+                p.text,
+                1.0,
+                Align::Center,
+            );
         }
         Phase::Password { wrong, busy } => {
-            let (k, rgb) = if wrong { (Key::SignPasswordWrong, p.error) } else { (Key::SignPassword, p.text) };
-            w.gfx.text_in(&rt, &brush, tr(k), (l.message.x, l.message.y, l.message.w, l.message.h), 14.0 * ui, 500, rgb, 1.0, Align::Center);
+            let (k, rgb) = if wrong { (Key::SignPasswordWrong, p.error) } else { (
+                Key::SignPassword,
+                p.text,
+            ) };
+            w.gfx.text_in(
+                &rt,
+                &brush,
+                tr(k),
+                (l.message.x, l.message.y, l.message.w, l.message.h),
+                14.0 * ui,
+                500,
+                rgb,
+                1.0,
+                Align::Center,
+            );
             if let Some(f) = l.field {
                 fill_round(&rt, &brush, f, 8.0 * ui, p.field, 1.0);
                 brush_set(&brush, border, ba.max(0.3));
@@ -506,7 +587,17 @@ fn draw(w: &mut Win) -> windows::core::Result<()> {
             }
         }
         Phase::Failed(k) => {
-            w.gfx.text_in(&rt, &brush, tr(k), (l.message.x, l.message.y, l.message.w, l.message.h), 14.0 * ui, 500, p.text, 1.0, Align::Center);
+            w.gfx.text_in(
+                &rt,
+                &brush,
+                tr(k),
+                (l.message.x, l.message.y, l.message.w, l.message.h),
+                14.0 * ui,
+                500,
+                p.text,
+                1.0,
+                Align::Center,
+            );
         }
     }
 
@@ -530,7 +621,12 @@ fn draw(w: &mut Win) -> windows::core::Result<()> {
             brush_set(&brush, border, ba.max(0.3));
             stroke_round(&rt, &brush, *r, 8.0 * ui, 1.0);
             let k = layout::label_key(*hit).unwrap_or(Key::SignFormatPdf);
-            w.gfx.text_in(&rt, &brush, tr(k), (r.x, r.y, r.w, r.h), window::UI_TEXT * ui, if on { 600 } else { 400 },
+            w.gfx.text_in(&rt, &brush, tr(k), (
+                r.x,
+                r.y,
+                r.w,
+                r.h,
+            ), window::UI_TEXT * ui, if on { 600 } else { 400 },
                 if on { p.text } else { p.secondary }, 1.0, Align::Center);
             continue;
         }
@@ -545,7 +641,17 @@ fn draw(w: &mut Win) -> windows::core::Result<()> {
         let a = if busy { 0.5 } else { 1.0 };
         fill_round(&rt, &brush, *r, 10.0 * ui, bg, a);
         if let Some(k) = layout::label_key(*hit) {
-            w.gfx.text_in(&rt, &brush, tr(k), (r.x, r.y, r.w, r.h), window::UI_TEXT * ui, weight_of(*hit), fg, a, Align::Center);
+            w.gfx.text_in(
+                &rt,
+                &brush,
+                tr(k),
+                (r.x, r.y, r.w, r.h),
+                window::UI_TEXT * ui,
+                weight_of(*hit),
+                fg,
+                a,
+                Align::Center,
+            );
         }
     }
 
@@ -558,7 +664,17 @@ fn draw(w: &mut Win) -> windows::core::Result<()> {
                     fill_round(&rt, &brush, *r, 7.0 * ui, p.hover, 1.0);
                 }
                 if let Some(k) = layout::label_key(*hit) {
-                    w.gfx.text_in(&rt, &brush, tr(k), (r.x, r.y, r.w, r.h), 12.5 * ui, 400, p.text, 1.0, Align::Center);
+                    w.gfx.text_in(
+                        &rt,
+                        &brush,
+                        tr(k),
+                        (r.x, r.y, r.w, r.h),
+                        12.5 * ui,
+                        400,
+                        p.text,
+                        1.0,
+                        Align::Center,
+                    );
                 }
             }
         }
@@ -588,18 +704,48 @@ fn draw(w: &mut Win) -> windows::core::Result<()> {
                     }
                     brush_set(&brush, p.secondary, 0.8);
                     stroke_round(&rt, &brush, inflate(*r, -0.5), 8.0 * ui, 1.0);
-                    w.gfx.text_in(&rt, &brush, tr(Key::SignMakerNew), (r.x, r.y, r.w, r.h), 12.5 * ui, 500, p.text, 1.0, Align::Center);
+                    w.gfx.text_in(
+                        &rt,
+                        &brush,
+                        tr(Key::SignMakerNew),
+                        (r.x, r.y, r.w, r.h),
+                        12.5 * ui,
+                        500,
+                        p.text,
+                        1.0,
+                        Align::Center,
+                    );
                 }
                 (h, _) => {
                     if hot {
                         fill_round(&rt, &brush, *r, 7.0 * ui, p.hover, 1.0);
                     }
                     if let Some(icon) = icon_of(h) {
-                        draw_icon(&rt, &w.gfx.d2d, &brush, &w.gfx.round, icon, (r.x + 10.0 * ui, r.y + (r.h - 16.0 * ui) / 2.0), 16.0 * ui, p.secondary, 1.0);
+                        draw_icon(
+                            &rt,
+                            &w.gfx.d2d,
+                            &brush,
+                            &w.gfx.round,
+                            icon,
+                            (r.x + 10.0 * ui, r.y + (r.h - 16.0 * ui) / 2.0),
+                            16.0 * ui,
+                            p.secondary,
+                            1.0,
+                        );
                     }
                     if let Some(k) = layout::label_key(h) {
                         let tx = r.x + 36.0 * ui;
-                        w.gfx.text_in(&rt, &brush, tr(k), (tx, r.y, r.right() - tx, r.h), window::UI_TEXT * ui, 400, p.text, 1.0, Align::Left);
+                        w.gfx.text_in(
+                            &rt,
+                            &brush,
+                            tr(k),
+                            (tx, r.y, r.right() - tx, r.h),
+                            window::UI_TEXT * ui,
+                            400,
+                            p.text,
+                            1.0,
+                            Align::Left,
+                        );
                     }
                 }
             }
@@ -614,7 +760,13 @@ fn draw(w: &mut Win) -> windows::core::Result<()> {
 
     // The maker is up: everything behind it steps back.
     if w.maker.is_some() {
-        fill(&rt, &brush, Rect { x: 0.0, y: 0.0, w: w.client.0 as f32, h: w.client.1 as f32 }, 0x000000, if p.light { 0.25 } else { 0.45 });
+        fill(
+            &rt,
+            &brush,
+            Rect { x: 0.0, y: 0.0, w: w.client.0 as f32, h: w.client.1 as f32 },
+            0x000000,
+            if p.light { 0.25 } else { 0.45 },
+        );
     }
     unsafe { rt.EndDraw(None, None) }
 }
@@ -634,11 +786,24 @@ fn page_count_text(w: &Win) -> String {
     tr(Key::SignPageOf).replace("{n}", &n.to_string()).replace("{total}", &live.len().to_string())
 }
 
-fn draw_popover_panel(rt: &ID2D1RenderTarget, brush: &ID2D1SolidColorBrush, r: &Rect, p: &theme::WindowPalette, ui: f32) {
+fn draw_popover_panel(
+    rt: &ID2D1RenderTarget,
+    brush: &ID2D1SolidColorBrush,
+    r: &Rect,
+    p: &theme::WindowPalette,
+    ui: f32,
+) {
     // A short, soft shadow: the popover floats over the page it acts on.
     for (i, a) in [0.10f32, 0.06, 0.03].iter().enumerate() {
         let grow = (i as f32 + 1.0) * 2.0 * ui;
-        fill_round(rt, brush, Rect { x: r.x - grow / 2.0, y: r.y + grow / 2.0, w: r.w + grow, h: r.h + grow }, 10.0 * ui + grow, 0x000000, *a);
+        fill_round(
+            rt,
+            brush,
+            Rect { x: r.x - grow / 2.0, y: r.y + grow / 2.0, w: r.w + grow, h: r.h + grow },
+            10.0 * ui + grow,
+            0x000000,
+            *a,
+        );
     }
     fill_round(rt, brush, *r, 10.0 * ui, p.popover, 1.0);
     let (b, ba) = rgba(p.border);
@@ -677,7 +842,13 @@ fn draw_turned(rt: &ID2D1RenderTarget, b: &ID2D1Bitmap, r: Rect, extra: Quarter)
     let (bw, bh) = if odd(extra) { (r.h, r.w) } else { (r.w, r.h) };
     unsafe {
         rt.SetTransform(&turn_matrix(neg(extra), r.x + r.w / 2.0, r.y + r.h / 2.0));
-        rt.DrawBitmap(b, Some(&rect_f(-bw / 2.0, -bh / 2.0, bw, bh)), 1.0, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, None);
+        rt.DrawBitmap(
+            b,
+            Some(&rect_f(-bw / 2.0, -bh / 2.0, bw, bh)),
+            1.0,
+            D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+            None,
+        );
         rt.SetTransform(&Matrix3x2::identity());
     }
 }
@@ -689,7 +860,14 @@ fn draw_page(w: &mut Win, rt: &ID2D1RenderTarget, brush: &ID2D1SolidColorBrush) 
     let shadow = if w.p.light { 0.10 } else { 0.28 };
     for (i, a) in [shadow, shadow * 0.6, shadow * 0.3].iter().enumerate() {
         let g = (i as f32 + 1.0) * 3.0 * ui;
-        fill_round(rt, brush, Rect { x: r.x - g / 2.0, y: r.y + g / 3.0, w: r.w + g, h: r.h + g }, 3.0 * ui + g, 0x000000, *a);
+        fill_round(
+            rt,
+            brush,
+            Rect { x: r.x - g / 2.0, y: r.y + g / 3.0, w: r.w + g, h: r.h + g },
+            3.0 * ui + g,
+            0x000000,
+            *a,
+        );
     }
     // Paper first: images keep their transparency.
     fill(rt, brush, r, 0xFFFFFF, 1.0);
@@ -702,10 +880,44 @@ fn draw_page(w: &mut Win, rt: &ID2D1RenderTarget, brush: &ID2D1SolidColorBrush) 
     if let Some(b) = &bmp {
         draw_turned(rt, b, r, v.extra);
     }
-    let items = page_items(w, &v);
+    draw_items(w, rt, brush, &v, w.cur);
+    unsafe {
+        rt.PopAxisAlignedClip();
+    }
+    // The selection: a dashed outline in the accent's paper shade and four
+    // handles.
+    if let Some(sel) = w.selected.filter(|_| w.text.is_none())
+        && let Some(it) = shown_item(w, &v, sel)
+        && it.page == w.cur
+    {
+        let ir = v.item_rect(&it);
+        let accent = theme::current().accent.light_rgb();
+        brush_set(brush, accent, 1.0);
+        let o = inflate(ir, 3.0 * ui);
+        unsafe {
+            rt.DrawRectangle(&rect_f(o.x, o.y, o.w, o.h), brush, 1.5 * ui, &w.gfx.dash);
+        }
+        if !matches!(w.drag, Some(Drag::Move { .. })) {
+            // On the outline, not the item: a small item stays visible.
+            for (_, drawn, _) in layout::handles(o, ui) {
+                fill_round(rt, brush, drawn, 2.0 * ui, 0xFFFFFF, 1.0);
+                brush_set(brush, accent, 1.0);
+                stroke_round(rt, brush, drawn, 2.0 * ui, 1.5 * ui);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The items of session page `page` as `v` shows that page.
+fn draw_items(w: &mut Win, rt: &ID2D1RenderTarget, brush: &ID2D1SolidColorBrush, v: &View, page: usize) {
+    let Some(doc) = &w.doc else { return };
+    let editing = w.text.as_ref().and_then(|t| t.1);
+    let list: Vec<usize> =
+        (0..doc.session.items.len()).filter(|&i| doc.session.items[i].page == page && Some(i) != editing).collect();
     let shown = v.shown();
-    for (i, _) in &items {
-        let Some(it) = shown_item(w, &v, *i) else { continue };
+    for i in list {
+        let Some(it) = shown_item(w, v, i) else { continue };
         let ir = v.item_rect(&it);
         let (bw, bh) = (it.w * v.scale, it.h * v.scale);
         let m = turn_matrix(it.turn.add(neg(shown)), ir.x + ir.w / 2.0, ir.y + ir.h / 2.0);
@@ -714,7 +926,13 @@ fn draw_page(w: &mut Win, rt: &ID2D1RenderTarget, brush: &ID2D1SolidColorBrush) 
                 if let Some(b) = mark_bitmap(w, rt, mk) {
                     unsafe {
                         rt.SetTransform(&m);
-                        rt.DrawBitmap(&b, Some(&rect_f(-bw / 2.0, -bh / 2.0, bw, bh)), 1.0, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, None);
+                        rt.DrawBitmap(
+                            &b,
+                            Some(&rect_f(-bw / 2.0, -bh / 2.0, bw, bh)),
+                            1.0,
+                            D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+                            None,
+                        );
                     }
                 }
             }
@@ -733,31 +951,6 @@ fn draw_page(w: &mut Win, rt: &ID2D1RenderTarget, brush: &ID2D1SolidColorBrush) 
             rt.SetTransform(&Matrix3x2::identity());
         }
     }
-    unsafe {
-        rt.PopAxisAlignedClip();
-    }
-    // The selection: a dashed outline in the accent's paper shade and four
-    // handles.
-    if let Some(sel) = w.selected.filter(|_| w.text.is_none())
-        && let Some(it) = shown_item(w, &v, sel)
-        && it.page == w.cur
-    {
-        let ir = v.item_rect(&it);
-        let accent = theme::current().accent.light_rgb();
-        brush_set(brush, accent, 1.0);
-        let o = inflate(ir, 3.0 * ui);
-        unsafe {
-            rt.DrawRectangle(&rect_f(o.x, o.y, o.w, o.h), brush, 1.5 * ui, &w.gfx.dash);
-        }
-        if !matches!(w.drag, Some(Drag::Move { .. })) {
-            for (_, drawn, _) in layout::handles(ir, ui) {
-                fill_round(rt, brush, drawn, 2.0 * ui, 0xFFFFFF, 1.0);
-                brush_set(brush, accent, 1.0);
-                stroke_round(rt, brush, drawn, 2.0 * ui, 1.5 * ui);
-            }
-        }
-    }
-    Ok(())
 }
 
 fn draw_rail(w: &mut Win, rt: &ID2D1RenderTarget, brush: &ID2D1SolidColorBrush) -> windows::core::Result<()> {
@@ -785,10 +978,29 @@ fn draw_rail(w: &mut Win, rt: &ID2D1RenderTarget, brush: &ID2D1SolidColorBrush) 
             stroke_round(rt, brush, inflate(row.thumb, 2.0 * ui), 4.0 * ui, 1.0 * ui);
         }
         fill(rt, brush, row.thumb, 0xFFFFFF, 1.0);
-        let extra = w.doc.as_ref().and_then(|d| d.session.pages.get(row.page)).map_or(Quarter::R0, |pg| pg.extra);
+        let extra = w.doc.as_ref().and_then(|d| d.session.pages.get(row.page)).map_or(
+            Quarter::R0,
+            |pg| pg.extra,
+        );
         let b = w.thumbs.get_mut(&row.page).and_then(|s| shot_bitmap(rt, s));
         if let Some(b) = b {
             draw_turned(rt, &b, row.thumb, extra);
+        }
+        // What is placed shows in the rail too.
+        let pg = w.doc.as_ref().and_then(|d| d.session.pages.get(row.page)).map(|pg| pg.geom);
+        if let Some(g) = pg {
+            let (sw, _) = crate::sign::geom::shown_size(g, extra);
+            let tv = View { page: row.thumb, scale: row.thumb.w / sw.max(1.0), g, extra };
+            unsafe {
+                rt.PushAxisAlignedClip(
+                    &rect_f(row.thumb.x, row.thumb.y, row.thumb.w, row.thumb.h),
+                    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                );
+            }
+            draw_items(w, rt, brush, &tv, row.page);
+            unsafe {
+                rt.PopAxisAlignedClip();
+            }
         }
         let label = (n + 1).to_string();
         w.gfx.text_in(rt, brush, &label, (row.label.x, row.label.y, row.label.w, row.label.h), 11.5 * ui,
@@ -837,12 +1049,20 @@ fn draw_footer_text(w: &Win, rt: &ID2D1RenderTarget, brush: &ID2D1SolidColorBrus
     unsafe {
         let _ = layout.SetMaxWidth(r.w);
         let _ = layout.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
-        let _ = layout.SetFontWeight(DWRITE_FONT_WEIGHT(600), DWRITE_TEXT_RANGE { startPosition: start as u32, length: len as u32 });
+        let _ = layout.SetFontWeight(
+            DWRITE_FONT_WEIGHT(600),
+            DWRITE_TEXT_RANGE { startPosition: start as u32, length: len as u32 },
+        );
         let mut m = DWRITE_TEXT_METRICS::default();
         let th = if layout.GetMetrics(&mut m).is_ok() { m.height } else { size * 1.3 };
         rt.PushAxisAlignedClip(&rect_f(r.x, r.y, r.w, r.h), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
         brush_set(brush, p.secondary, 1.0);
-        rt.DrawTextLayout(Vector2::new(r.x, r.y + (r.h - th) / 2.0), &layout, brush, D2D1_DRAW_TEXT_OPTIONS_NONE);
+        rt.DrawTextLayout(
+            Vector2::new(r.x, r.y + (r.h - th) / 2.0),
+            &layout,
+            brush,
+            D2D1_DRAW_TEXT_OPTIONS_NONE,
+        );
         rt.PopAxisAlignedClip();
     }
 }

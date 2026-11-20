@@ -144,7 +144,7 @@ pub(crate) fn demo_pdf() -> Option<Vec<u8>> {
             y -= if i % 9 == 8 { 30.0 } else { 20.0 };
         }
         if n == 2 {
-            c.push_str("BT /F2 10 Tf 72 460 Td (Pihak pertama) Tj ET\n");
+            c.push_str("0.33 0.33 0.33 rg BT /F2 10 Tf 72 460 Td (Pihak pertama) Tj ET\n");
             c.push_str("BT /F2 10 Tf 330 460 Td (Pihak kedua) Tj ET\n");
             c.push_str("0.6 0.6 0.6 RG 0.8 w 72 380 m 265 380 l S 330 380 m 523 380 l S\n");
             c.push_str("0.33 0.33 0.33 rg BT /F2 10 Tf 72 366 Td (\\(nama\\)) Tj ET\n");
@@ -205,6 +205,22 @@ pub fn run_demo() {
     if com {
         unsafe { CoUninitialize() };
     }
+    end_process();
+}
+
+/// Ends the demo process without running DLL teardown: on some GPU drivers
+/// a process that made a Direct2D device and then used Windows.Data.Pdf
+/// fails fast while the driver unloads (the app ends the same way).
+#[cfg(debug_assertions)]
+fn end_process() -> ! {
+    use std::io::Write;
+    use windows::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    unsafe {
+        let _ = TerminateProcess(GetCurrentProcess(), 0);
+    }
+    std::process::exit(0)
 }
 
 #[cfg(test)]

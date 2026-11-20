@@ -197,7 +197,10 @@ pub(super) fn maker_layout(ui: f32, tab: Tab, saved: usize, has_ink: bool, lab: 
                 buttons.push((MHit::New, r));
             } else {
                 let x = 20.0 * ui;
-                buttons.insert(0, (MHit::Forget(i), Rect { x: r.right() - x - 2.0 * ui, y: r.y + 2.0 * ui, w: x, h: x }));
+                buttons.insert(
+                    0,
+                    (MHit::Forget(i), Rect { x: r.right() - x - 2.0 * ui, y: r.y + 2.0 * ui, w: x, h: x }),
+                );
                 buttons.push((MHit::Tile(i), r));
             }
         }
@@ -301,7 +304,14 @@ fn ink_of(blue: bool) -> Ink {
 }
 
 /// Opens the maker over `parent` (centred in its `client` area).
-pub(super) fn open(parent: HWND, initials: bool, demo: bool, p: WindowPalette, ui: f32, client: (u32, u32)) -> Option<HWND> {
+pub(super) fn open(
+    parent: HWND,
+    initials: bool,
+    demo: bool,
+    p: WindowPalette,
+    ui: f32,
+    client: (u32, u32),
+) -> Option<HWND> {
     let instance: HINSTANCE = unsafe { GetModuleHandleW(None).ok()? }.into();
     register(instance).ok()?;
     let gfx = Gfx::new().ok()?;
@@ -389,7 +399,15 @@ pub(super) fn place(hwnd: HWND, client: (u32, u32), _ui: f32) {
     if let Some(size) = size {
         let (x, y) = centred(client, size);
         unsafe {
-            let _ = SetWindowPos(hwnd, None, x, y, 0, 0, SWP_NOZORDER | SWP_NOACTIVATE | windows::Win32::UI::WindowsAndMessaging::SWP_NOSIZE);
+            let _ = SetWindowPos(
+                hwnd,
+                None,
+                x,
+                y,
+                0,
+                0,
+                SWP_NOZORDER | SWP_NOACTIVATE | windows::Win32::UI::WindowsAndMessaging::SWP_NOSIZE,
+            );
         }
     }
 }
@@ -417,7 +435,13 @@ fn relayout(hwnd: HWND) {
         if let Some(f) = &m.name {
             let r = m.layout.field;
             let inset = (6.0 * m.ui).round();
-            text_edit::move_to(f.edit, (r.x + inset) as i32, (r.y + inset) as i32, (r.w - 2.0 * inset) as i32, (r.h - 2.0 * inset) as i32);
+            text_edit::move_to(
+                f.edit,
+                (r.x + inset) as i32,
+                (r.y + inset) as i32,
+                (r.w - 2.0 * inset) as i32,
+                (r.h - 2.0 * inset) as i32,
+            );
         }
         (old != m.layout.size).then_some((m.layout.size, m.ui, m.parent))
     })
@@ -427,7 +451,15 @@ fn relayout(hwnd: HWND) {
         unsafe {
             let _ = windows::Win32::UI::WindowsAndMessaging::GetClientRect(parent, &mut rc);
             let (x, y) = centred(((rc.right - rc.left) as u32, (rc.bottom - rc.top) as u32), size);
-            let _ = SetWindowPos(hwnd, None, x, y, size.0 as i32, size.1 as i32, SWP_NOZORDER | SWP_NOACTIVATE);
+            let _ = SetWindowPos(
+                hwnd,
+                None,
+                x,
+                y,
+                size.0 as i32,
+                size.1 as i32,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            );
         }
         round(hwnd, size, ui);
         with(hwnd, |m| {
@@ -758,7 +790,13 @@ fn draw_fitted(m: &mut Maker, rt: &ID2D1RenderTarget, mk: &Arc<Mark>, r: Rect) {
     let s = (r.w / mw).min(r.h / mh);
     let (dw, dh) = (mw * s, mh * s);
     unsafe {
-        rt.DrawBitmap(&b, Some(&rect_f(r.x + (r.w - dw) / 2.0, r.y + (r.h - dh) / 2.0, dw, dh)), 1.0, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, None);
+        rt.DrawBitmap(
+            &b,
+            Some(&rect_f(r.x + (r.w - dw) / 2.0, r.y + (r.h - dh) / 2.0, dw, dh)),
+            1.0,
+            D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+            None,
+        );
     }
 }
 
@@ -778,14 +816,29 @@ fn paint(m: &mut Maker) -> windows::core::Result<()> {
         rt.Clear(Some(&color(p.popover, 1.0)));
         brush.SetColor(&color(b_rgb, b_a.max(0.2)));
         rt.DrawRoundedRectangle(
-            &windows::Win32::Graphics::Direct2D::D2D1_ROUNDED_RECT { rect: rect_f(0.5, 0.5, w - 1.0, h - 1.0), radiusX: 16.0 * ui, radiusY: 16.0 * ui },
+            &windows::Win32::Graphics::Direct2D::D2D1_ROUNDED_RECT { rect: rect_f(
+                0.5,
+                0.5,
+                w - 1.0,
+                h - 1.0,
+            ), radiusX: 16.0 * ui, radiusY: 16.0 * ui },
             &brush,
             1.0,
             None,
         );
     }
     let title = if m.initials { Key::SignMakerNewInitials } else { Key::SignMakerNewSignature };
-    m.gfx.text_in(&rt, &brush, tr(title), (l.title.x, l.title.y, l.title.w, l.title.h), 14.0 * ui, 600, p.text, 1.0, Align::Left);
+    m.gfx.text_in(
+        &rt,
+        &brush,
+        tr(title),
+        (l.title.x, l.title.y, l.title.w, l.title.h),
+        14.0 * ui,
+        600,
+        p.text,
+        1.0,
+        Align::Left,
+    );
 
     // Tabs: a sunken strip with the chosen one raised.
     fill_round(&rt, &brush, l.tabs, 10.0 * ui, p.bg, 1.0);
@@ -815,10 +868,21 @@ fn paint(m: &mut Maker) -> windows::core::Result<()> {
             unsafe {
                 brush.SetColor(&color(BASELINE, 1.0));
                 let y = pad.bottom() - 28.0 * ui;
-                rt.DrawLine(Vector2::new(pad.x + 24.0 * ui, y), Vector2::new(pad.right() - 24.0 * ui, y), &brush, 1.0, &m.gfx.dash);
+                rt.DrawLine(
+                    Vector2::new(pad.x + 24.0 * ui, y),
+                    Vector2::new(pad.right() - 24.0 * ui, y),
+                    &brush,
+                    1.0,
+                    &m.gfx.dash,
+                );
             }
             if m.strokes.is_empty() {
-                m.gfx.text_in(&rt, &brush, tr(Key::SignMakerPadHint), (pad.x + 12.0 * ui, pad.y, pad.w - 24.0 * ui, pad.h - 40.0 * ui),
+                m.gfx.text_in(&rt, &brush, tr(Key::SignMakerPadHint), (
+                    pad.x + 12.0 * ui,
+                    pad.y,
+                    pad.w - 24.0 * ui,
+                    pad.h - 40.0 * ui,
+                ),
                     12.5 * ui, 400, HINT_ON_PAPER, 1.0, Align::Center);
             }
             let width = INK_STROKE / pad_scale(pad);
@@ -826,7 +890,13 @@ fn paint(m: &mut Maker) -> windows::core::Result<()> {
                 brush.SetColor(&color(ink_rgb, 1.0));
                 for s in &m.strokes {
                     if s.len() == 1 {
-                        rt.FillEllipse(&D2D1_ELLIPSE { point: Vector2::new(s[0].0, s[0].1), radiusX: width / 2.0, radiusY: width / 2.0 }, &brush);
+                        rt.FillEllipse(
+                            &D2D1_ELLIPSE { point: Vector2::new(
+                                s[0].0,
+                                s[0].1,
+                            ), radiusX: width / 2.0, radiusY: width / 2.0 },
+                            &brush,
+                        );
                         continue;
                     }
                     let Ok(geo) = m.gfx.d2d.CreatePathGeometry() else { continue };
@@ -847,30 +917,73 @@ fn paint(m: &mut Maker) -> windows::core::Result<()> {
             unsafe {
                 brush.SetColor(&color(b_rgb, b_a.max(0.3)));
                 rt.DrawRoundedRectangle(
-                    &windows::Win32::Graphics::Direct2D::D2D1_ROUNDED_RECT { rect: rect_f(l.field.x, l.field.y, l.field.w, l.field.h), radiusX: 8.0 * ui, radiusY: 8.0 * ui },
+                    &windows::Win32::Graphics::Direct2D::D2D1_ROUNDED_RECT { rect: rect_f(
+                        l.field.x,
+                        l.field.y,
+                        l.field.w,
+                        l.field.h,
+                    ), radiusX: 8.0 * ui, radiusY: 8.0 * ui },
                     &brush,
                     1.0,
                     None,
                 );
             }
             match m.typed.clone() {
-                Some(mk) => draw_fitted(m, &rt, &mk, Rect { x: pad.x + 16.0 * ui, y: pad.y + 8.0 * ui, w: pad.w - 32.0 * ui, h: pad.h - 16.0 * ui }),
-                None => m.gfx.text_in(&rt, &brush, tr(Key::SignMakerTypeHint), (pad.x, pad.y, pad.w, pad.h), 12.5 * ui, 400, HINT_ON_PAPER, 1.0, Align::Center),
+                Some(mk) => draw_fitted(
+                    m,
+                    &rt,
+                    &mk,
+                    Rect { x: pad.x + 16.0 * ui, y: pad.y + 8.0 * ui, w: pad.w - 32.0 * ui, h: pad.h - 16.0 * ui },
+                ),
+                None => m.gfx.text_in(
+                    &rt,
+                    &brush,
+                    tr(Key::SignMakerTypeHint),
+                    (pad.x, pad.y, pad.w, pad.h),
+                    12.5 * ui,
+                    400,
+                    HINT_ON_PAPER,
+                    1.0,
+                    Align::Center,
+                ),
             }
         }
         Tab::Photo => {
             if let Some(mk) = m.photo.clone() {
-                draw_fitted(m, &rt, &mk, Rect { x: pad.x + 16.0 * ui, y: pad.y + 40.0 * ui, w: pad.w - 32.0 * ui, h: pad.h - 52.0 * ui });
+                draw_fitted(
+                    m,
+                    &rt,
+                    &mk,
+                    Rect { x: pad.x + 16.0 * ui, y: pad.y + 40.0 * ui, w: pad.w - 32.0 * ui, h: pad.h - 52.0 * ui },
+                );
             } else if m.photo_failed {
-                m.gfx.text_in(&rt, &brush, tr(Key::SignMakerPhotoFailed), (pad.x + 12.0 * ui, pad.bottom() - 44.0 * ui, pad.w - 24.0 * ui, 32.0 * ui),
+                m.gfx.text_in(&rt, &brush, tr(Key::SignMakerPhotoFailed), (
+                    pad.x + 12.0 * ui,
+                    pad.bottom() - 44.0 * ui,
+                    pad.w - 24.0 * ui,
+                    32.0 * ui,
+                ),
                     11.5 * ui, 500, ERROR_ON_PAPER, 1.0, Align::Center);
             }
         }
     }
 
     // Ink.
-    let ink_label = Rect { x: PAD * ui, y: l.rect_of(MHit::Ink(true)).map_or(0.0, |r| r.y), w: 40.0 * ui, h: 30.0 * ui };
-    m.gfx.text_in(&rt, &brush, tr(Key::SignMakerInk), (ink_label.x, ink_label.y, ink_label.w, ink_label.h), 13.0 * ui, 400, p.secondary, 1.0, Align::Left);
+    let ink_label = Rect { x: PAD * ui, y: l.rect_of(MHit::Ink(true)).map_or(
+        0.0,
+        |r| r.y,
+    ), w: 40.0 * ui, h: 30.0 * ui };
+    m.gfx.text_in(
+        &rt,
+        &brush,
+        tr(Key::SignMakerInk),
+        (ink_label.x, ink_label.y, ink_label.w, ink_label.h),
+        13.0 * ui,
+        400,
+        p.secondary,
+        1.0,
+        Align::Left,
+    );
     for blue in [true, false] {
         let Some(r) = l.rect_of(MHit::Ink(blue)) else { continue };
         let c = Vector2::new(r.x + r.w / 2.0, r.y + r.h / 2.0);
@@ -904,7 +1017,12 @@ fn paint(m: &mut Maker) -> windows::core::Result<()> {
             unsafe {
                 brush.SetColor(&color(p.secondary, 1.0));
                 rt.DrawRoundedRectangle(
-                    &windows::Win32::Graphics::Direct2D::D2D1_ROUNDED_RECT { rect: rect_f(b.x + 0.75 * ui, b.y + 0.75 * ui, b.w - 1.5 * ui, b.h - 1.5 * ui), radiusX: 4.0 * ui, radiusY: 4.0 * ui },
+                    &windows::Win32::Graphics::Direct2D::D2D1_ROUNDED_RECT { rect: rect_f(
+                        b.x + 0.75 * ui,
+                        b.y + 0.75 * ui,
+                        b.w - 1.5 * ui,
+                        b.h - 1.5 * ui,
+                    ), radiusX: 4.0 * ui, radiusY: 4.0 * ui },
                     &brush,
                     1.5 * ui,
                     None,
@@ -913,7 +1031,17 @@ fn paint(m: &mut Maker) -> windows::core::Result<()> {
         }
     }
     let ct = l.check_text;
-    m.gfx.text_in(&rt, &brush, tr(Key::SignMakerKeep), (ct.x, ct.y, ct.w, 18.0 * ui), 13.0 * ui, 500, p.text, 1.0, Align::Left);
+    m.gfx.text_in(
+        &rt,
+        &brush,
+        tr(Key::SignMakerKeep),
+        (ct.x, ct.y, ct.w, 18.0 * ui),
+        13.0 * ui,
+        500,
+        p.text,
+        1.0,
+        Align::Left,
+    );
     if let Ok(layout) = m.gfx.layout(tr(Key::SignMakerKeepHint), 12.0 * ui, 400) {
         unsafe {
             let _ = layout.SetMaxWidth(ct.w);
@@ -922,7 +1050,12 @@ fn paint(m: &mut Maker) -> windows::core::Result<()> {
             let mut mt = DWRITE_TEXT_METRICS::default();
             let _ = layout.GetMetrics(&mut mt);
             brush.SetColor(&color(p.secondary, 1.0));
-            rt.DrawTextLayout(Vector2::new(ct.x, ct.y + 20.0 * ui), &layout, &brush, windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            rt.DrawTextLayout(
+                Vector2::new(ct.x, ct.y + 20.0 * ui),
+                &layout,
+                &brush,
+                windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_CLIP,
+            );
         }
     }
 
@@ -936,7 +1069,12 @@ fn paint(m: &mut Maker) -> windows::core::Result<()> {
                     unsafe {
                         brush.SetColor(&color(p.accent, 1.0));
                         rt.DrawRoundedRectangle(
-                            &windows::Win32::Graphics::Direct2D::D2D1_ROUNDED_RECT { rect: rect_f(r.x + 1.0, r.y + 1.0, r.w - 2.0, r.h - 2.0), radiusX: 8.0 * ui, radiusY: 8.0 * ui },
+                            &windows::Win32::Graphics::Direct2D::D2D1_ROUNDED_RECT { rect: rect_f(
+                                r.x + 1.0,
+                                r.y + 1.0,
+                                r.w - 2.0,
+                                r.h - 2.0,
+                            ), radiusX: 8.0 * ui, radiusY: 8.0 * ui },
                             &brush,
                             2.0 * ui,
                             None,
@@ -944,7 +1082,12 @@ fn paint(m: &mut Maker) -> windows::core::Result<()> {
                     }
                 }
                 if let Some(mk) = saved.get(*i) {
-                    draw_fitted(m, &rt, mk, Rect { x: r.x + 8.0 * ui, y: r.y + 6.0 * ui, w: r.w - 30.0 * ui, h: r.h - 12.0 * ui });
+                    draw_fitted(
+                        m,
+                        &rt,
+                        mk,
+                        Rect { x: r.x + 8.0 * ui, y: r.y + 6.0 * ui, w: r.w - 30.0 * ui, h: r.h - 12.0 * ui },
+                    );
                 }
             }
             MHit::New => {
@@ -954,13 +1097,28 @@ fn paint(m: &mut Maker) -> windows::core::Result<()> {
                 unsafe {
                     brush.SetColor(&color(p.secondary, 0.8));
                     rt.DrawRoundedRectangle(
-                        &windows::Win32::Graphics::Direct2D::D2D1_ROUNDED_RECT { rect: rect_f(r.x + 0.5, r.y + 0.5, r.w - 1.0, r.h - 1.0), radiusX: 8.0 * ui, radiusY: 8.0 * ui },
+                        &windows::Win32::Graphics::Direct2D::D2D1_ROUNDED_RECT { rect: rect_f(
+                            r.x + 0.5,
+                            r.y + 0.5,
+                            r.w - 1.0,
+                            r.h - 1.0,
+                        ), radiusX: 8.0 * ui, radiusY: 8.0 * ui },
                         &brush,
                         1.0,
                         &m.gfx.dash,
                     );
                 }
-                m.gfx.text_in(&rt, &brush, tr(Key::SignMakerNew), (r.x, r.y, r.w, r.h), 12.5 * ui, 500, p.text, 1.0, Align::Center);
+                m.gfx.text_in(
+                    &rt,
+                    &brush,
+                    tr(Key::SignMakerNew),
+                    (r.x, r.y, r.w, r.h),
+                    12.5 * ui,
+                    500,
+                    p.text,
+                    1.0,
+                    Align::Center,
+                );
             }
             _ => {}
         }
@@ -973,8 +1131,20 @@ fn paint(m: &mut Maker) -> windows::core::Result<()> {
             unsafe {
                 brush.SetColor(&color(if hot { 0x221A14 } else { 0x6E5F52 }, 1.0));
                 let d = 3.5 * ui;
-                rt.DrawLine(Vector2::new(cx - d, cy - d), Vector2::new(cx + d, cy + d), &brush, 1.6 * ui, &m.gfx.round);
-                rt.DrawLine(Vector2::new(cx - d, cy + d), Vector2::new(cx + d, cy - d), &brush, 1.6 * ui, &m.gfx.round);
+                rt.DrawLine(
+                    Vector2::new(cx - d, cy - d),
+                    Vector2::new(cx + d, cy + d),
+                    &brush,
+                    1.6 * ui,
+                    &m.gfx.round,
+                );
+                rt.DrawLine(
+                    Vector2::new(cx - d, cy + d),
+                    Vector2::new(cx + d, cy - d),
+                    &brush,
+                    1.6 * ui,
+                    &m.gfx.round,
+                );
             }
         }
     }
@@ -1002,14 +1172,29 @@ fn paint(m: &mut Maker) -> windows::core::Result<()> {
             (p.button, p.text)
         };
         fill_round(&rt, &brush, *r, 9.0 * ui, bg, a);
-        m.gfx.text_in(&rt, &brush, tr(k), (r.x, r.y, r.w, r.h), 13.0 * ui, if primary { 600 } else { 500 }, fg, a, Align::Center);
+        m.gfx.text_in(
+            &rt,
+            &brush,
+            tr(k),
+            (r.x, r.y, r.w, r.h),
+            13.0 * ui,
+            if primary { 600 } else { 500 },
+            fg,
+            a,
+            Align::Center,
+        );
     }
 
     if let Some(r) = m.focus.and_then(|f| l.rect_of(f)) {
         unsafe {
             brush.SetColor(&color(p.accent, 1.0));
             rt.DrawRoundedRectangle(
-                &windows::Win32::Graphics::Direct2D::D2D1_ROUNDED_RECT { rect: rect_f(r.x - 2.0 * ui, r.y - 2.0 * ui, r.w + 4.0 * ui, r.h + 4.0 * ui), radiusX: 10.0 * ui, radiusY: 10.0 * ui },
+                &windows::Win32::Graphics::Direct2D::D2D1_ROUNDED_RECT { rect: rect_f(
+                    r.x - 2.0 * ui,
+                    r.y - 2.0 * ui,
+                    r.w + 4.0 * ui,
+                    r.h + 4.0 * ui,
+                ), radiusX: 10.0 * ui, radiusY: 10.0 * ui },
                 &brush,
                 2.0 * ui,
                 None,
@@ -1196,7 +1381,10 @@ mod tests {
     fn all_inside(l: &MLayout) {
         let outer = Rect { x: 0.0, y: 0.0, w: l.size.0, h: l.size.1 };
         for (h, r) in &l.buttons {
-            assert!(r.x >= outer.x - 4.01 && r.right() <= outer.right() && r.bottom() <= outer.bottom(), "{h:?} {r:?}");
+            assert!(
+                r.x >= outer.x - 4.01 && r.right() <= outer.right() && r.bottom() <= outer.bottom(),
+                "{h:?} {r:?}",
+            );
         }
     }
 
