@@ -3,8 +3,10 @@
 
 pub mod geom;
 pub mod names;
+pub mod pdf_write;
 pub mod session;
 pub mod window;
+pub mod winansi;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
