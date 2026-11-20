@@ -1,11 +1,11 @@
 //! Opening a PDF for signing and writing the signed copy with lopdf.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use lopdf::{
     dictionary, Dictionary, Document, IncrementalDocument, LoadOptions, Object, ObjectId,
-    Permissions, Stream, DEFAULT_MAX_DECOMPRESSED_SIZE,
+    Permissions, Stream,
 };
 use miniz_oxide::deflate::compress_to_vec_zlib;
 
@@ -282,9 +282,9 @@ fn save_incremental(
     items: &[Item],
 ) -> Result<Vec<u8>, SaveError> {
     let mut inc = IncrementalDocument::create_from(o.bytes.clone(), o.doc.clone());
-    let mut shared = Shared::default();
+    let (mut shared, mut scans) = (Shared::default(), Scans::new());
     for e in edits(ids, pages, items) {
-        let read = read_page(inc.get_prev_documents(), e.id)?;
+        let read = read_page(inc.get_prev_documents(), e.id, &mut scans)?;
         // The changed page goes into the new revision under its old id.
         let dict = write_page(&mut inc.new_document, read, &e, &mut shared)?;
         inc.new_document.set_object(e.id, dict);
@@ -304,9 +304,9 @@ fn save_full(
 ) -> Result<Vec<u8>, SaveError> {
     let mut doc = o.doc.clone();
     let state = doc.encryption_state.take();
-    let mut shared = Shared::default();
+    let (mut shared, mut scans) = (Shared::default(), Scans::new());
     for e in edits(ids, pages, items) {
-        let read = read_page(&doc, e.id)?;
+        let read = read_page(&doc, e.id, &mut scans)?;
         let dict = write_page(&mut doc, read, &e, &mut shared)?;
         doc.set_object(e.id, dict);
     }
@@ -320,7 +320,7 @@ fn save_full(
         drop_links_to(&mut doc, &dead);
         drop_annotations_of(&mut doc, &dead);
         doc.delete_pages(&numbers);
-        own_resources(&mut doc);
+        own_resources(&mut doc, &mut scans);
         // Tags can quote the deleted pages' text (/ActualText, /Alt).
         if let Ok(catalog) = doc.catalog_mut() {
             catalog.remove(b"StructTreeRoot");
@@ -622,20 +622,25 @@ fn relink(doc: &mut Document, parent: ObjectId, kids: &[ObjectId], visible: i64,
     }
 }
 
+/// Annotation ids a page lists in /Annots.
+fn annots_of(doc: &Document, page: ObjectId) -> Vec<ObjectId> {
+    doc.get_dictionary(page)
+        .ok()
+        .and_then(|d| d.get(b"Annots").ok())
+        .and_then(|o| deref(doc, o))
+        .and_then(|o| o.as_array().ok())
+        .into_iter()
+        .flatten()
+        .filter_map(|o| o.as_reference().ok())
+        .collect()
+}
+
 /// Removes the deleted pages' annotations everywhere they are listed (form
 /// /Fields, parents' /Kids, /CO), then form fields left without widgets, so
-/// their values and appearances go too.
+/// their values and appearances go too. An annotation a remaining page also
+/// lists stays.
 fn drop_annotations_of(doc: &mut Document, dead: &BTreeSet<ObjectId>) {
-    let mut annots: BTreeSet<ObjectId> = BTreeSet::new();
-    for &p in dead {
-        let list = doc
-            .get_dictionary(p)
-            .ok()
-            .and_then(|d| d.get(b"Annots").ok())
-            .and_then(|o| deref(doc, o))
-            .and_then(|o| o.as_array().ok());
-        annots.extend(list.into_iter().flatten().filter_map(|o| o.as_reference().ok()));
-    }
+    let mut annots: BTreeSet<ObjectId> = dead.iter().flat_map(|&p| annots_of(doc, p)).collect();
     // Widgets that name a deleted page without being in its /Annots.
     for (&id, o) in &doc.objects {
         let on_dead = o.as_dict().is_ok_and(|d| {
@@ -644,6 +649,11 @@ fn drop_annotations_of(doc: &mut Document, dead: &BTreeSet<ObjectId>) {
         });
         if on_dead {
             annots.insert(id);
+        }
+    }
+    for page in doc.get_pages().into_values().filter(|p| !dead.contains(p)) {
+        for a in annots_of(doc, page) {
+            annots.remove(&a);
         }
     }
     let mut parents: Vec<ObjectId> = annots
@@ -680,7 +690,7 @@ fn drop_annotations_of(doc: &mut Document, dead: &BTreeSet<ObjectId>) {
 /// Gives every page its own /Resources holding only the XObjects its
 /// content draws, and drops the page tree's shared ones, so an image only a
 /// deleted page drew is no longer reachable.
-fn own_resources(doc: &mut Document) {
+fn own_resources(doc: &mut Document, scans: &mut Scans) {
     let ids: Vec<ObjectId> = doc.get_pages().into_values().collect();
     for id in ids {
         let Ok(page) = doc.get_dictionary(id) else { continue };
@@ -695,8 +705,9 @@ fn own_resources(doc: &mut Document) {
             .and_then(|o| o.as_dict().ok())
             .cloned();
         // Content that cannot be decoded keeps every XObject.
-        if let (Some(mut xobjects), Some(content)) = (xobjects, page_content_strict(doc, id)) {
-            let used = drawn_with_forms(doc, &content, &xobjects);
+        if let Some(mut xobjects) = xobjects
+            && let Some(used) = scans.drawn(doc, id, &xobjects)
+        {
             let unused: Vec<Vec<u8>> =
                 xobjects.iter().map(|(k, _)| k.clone()).filter(|k| !used.contains(k)).collect();
             for k in unused {
@@ -717,49 +728,155 @@ fn own_resources(doc: &mut Document) {
     }
 }
 
-/// XObject names drawn by `content`, and by the Form XObjects it draws that
-/// use the page's resources (no /Resources of their own). Every name when
-/// such a form cannot be decoded.
-fn drawn_with_forms(doc: &Document, content: &[u8], xobjects: &Dictionary) -> BTreeSet<Vec<u8>> {
-    let mut used = drawn_xobjects(content);
-    let mut todo: Vec<Vec<u8>> = used.iter().cloned().collect();
-    let mut seen = BTreeSet::new();
-    while let Some(name) = todo.pop() {
-        if !seen.insert(name.clone()) {
-            continue;
-        }
-        let form = xobjects
-            .get(&name)
-            .ok()
-            .and_then(|o| deref(doc, o))
-            .and_then(|o| o.as_stream().ok());
-        let Some(form) = form else { continue };
-        let is_form = form.dict.get(b"Subtype").and_then(Object::as_name).is_ok_and(|s| s == b"Form");
-        if !is_form || form.dict.has(b"Resources") {
-            continue;
-        }
-        let Ok(data) = form.decompressed_content_with_limit(DEFAULT_MAX_DECOMPRESSED_SIZE) else {
-            return xobjects.iter().map(|(k, _)| k.clone()).collect();
-        };
-        for n in drawn_xobjects(&data) {
-            if used.insert(n.clone()) {
-                todo.push(n);
-            }
-        }
-    }
-    used
+/// Most decoded content one page may cost.
+const PAGE_BUDGET: usize = 64 << 20;
+/// Most decoded content one save may cost, all pages together.
+const SAVE_BUDGET: usize = 256 << 20;
+
+/// What one content stream does, so pages sharing it decode it once.
+#[derive(Clone, Default, Debug, PartialEq)]
+struct StreamScan {
+    /// `Q` with no `q` of its own in this stream (they close earlier ones).
+    pops: usize,
+    /// `q` this stream leaves open.
+    pushes: usize,
+    /// Names drawn with `Do`.
+    used: BTreeSet<Vec<u8>>,
+    /// The first operator is a `Do` whose name ended the previous stream.
+    leading_do: bool,
+    has_op: bool,
+    /// A name after the last operator, for a `Do` in the next stream.
+    trailing: Option<Vec<u8>>,
 }
 
-/// A page's decoded content, all streams in order; `None` when a stream
-/// cannot be decoded.
-fn page_content_strict(doc: &Document, id: ObjectId) -> Option<Vec<u8>> {
-    let mut out = Vec::new();
-    for sid in doc.get_page_contents(id) {
-        let Ok(stream) = doc.get_object(sid).and_then(Object::as_stream) else { continue };
-        out.extend(stream.decompressed_content_with_limit(DEFAULT_MAX_DECOMPRESSED_SIZE).ok()?);
-        out.push(b'\n');
+/// One page's content as a whole; `drawn` is `None` when it could not all be
+/// decoded within budget.
+struct PageScan {
+    unclosed: usize,
+    drawn: Option<BTreeSet<Vec<u8>>>,
+}
+
+/// Decodes content streams for one save under a total budget, caching each
+/// stream's result.
+struct Scans {
+    cache: BTreeMap<ObjectId, Option<StreamScan>>,
+    left: usize,
+    /// Bytes decoded so far.
+    decoded: usize,
+}
+
+impl Scans {
+    fn new() -> Scans {
+        Scans { cache: BTreeMap::new(), left: SAVE_BUDGET, decoded: 0 }
     }
-    Some(out)
+
+    /// Decodes `s` within what the page and the save have left.
+    fn decode(&mut self, s: &Stream, page_left: &mut usize) -> Option<Vec<u8>> {
+        let data = s.decompressed_content_with_limit((*page_left).min(self.left)).ok()?;
+        *page_left = page_left.saturating_sub(data.len());
+        self.left = self.left.saturating_sub(data.len());
+        self.decoded += data.len();
+        Some(data)
+    }
+
+    fn stream(&mut self, doc: &Document, sid: ObjectId, page_left: &mut usize) -> Option<StreamScan> {
+        if let Some(hit) = self.cache.get(&sid) {
+            return hit.clone();
+        }
+        let scan = doc
+            .get_object(sid)
+            .and_then(Object::as_stream)
+            .ok()
+            .and_then(|s| self.decode(s, page_left))
+            .and_then(|data| scan_stream(&data));
+        self.cache.insert(sid, scan.clone());
+        scan
+    }
+
+    fn page(&mut self, doc: &Document, id: ObjectId) -> PageScan {
+        let undecodable = PageScan { unclosed: 0, drawn: None };
+        let mut page_left = PAGE_BUDGET;
+        let (mut depth, mut carried, mut used) = (0usize, None::<Vec<u8>>, BTreeSet::new());
+        for sid in doc.get_page_contents(id) {
+            // A missing content object draws nothing.
+            if doc.get_object(sid).and_then(Object::as_stream).is_err() {
+                continue;
+            }
+            let Some(s) = self.stream(doc, sid, &mut page_left) else { return undecodable };
+            depth = depth.saturating_sub(s.pops) + s.pushes;
+            if s.leading_do
+                && let Some(n) = carried.take()
+            {
+                used.insert(n);
+            }
+            used.extend(s.used);
+            carried = if s.has_op { s.trailing } else { s.trailing.or(carried) };
+        }
+        PageScan { unclosed: depth, drawn: Some(used) }
+    }
+
+    /// XObject names the page draws, and those drawn by the Form XObjects it
+    /// draws that use the page's resources (no /Resources of their own);
+    /// `None` when any of that cannot be decoded.
+    fn drawn(
+        &mut self,
+        doc: &Document,
+        id: ObjectId,
+        xobjects: &Dictionary,
+    ) -> Option<BTreeSet<Vec<u8>>> {
+        let mut used = self.page(doc, id).drawn?;
+        let mut page_left = PAGE_BUDGET;
+        let mut todo: Vec<Vec<u8>> = used.iter().cloned().collect();
+        let mut seen = BTreeSet::new();
+        while let Some(name) = todo.pop() {
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            let Some(Object::Reference(fid)) = xobjects.get(&name).ok() else { continue };
+            let Ok(form) = doc.get_object(*fid).and_then(Object::as_stream) else { continue };
+            let is_form =
+                form.dict.get(b"Subtype").and_then(Object::as_name).is_ok_and(|s| s == b"Form");
+            if !is_form || form.dict.has(b"Resources") {
+                continue;
+            }
+            for n in self.stream(doc, *fid, &mut page_left)?.used {
+                if used.insert(n.clone()) {
+                    todo.push(n);
+                }
+            }
+        }
+        Some(used)
+    }
+}
+
+/// Scans one decoded content stream; `None` when inline image data has no
+/// end, so later operators cannot be found.
+fn scan_stream(c: &[u8]) -> Option<StreamScan> {
+    let mut s = StreamScan::default();
+    let (mut depth, mut last) = (0usize, None::<Vec<u8>>);
+    let complete = scan_content(c, |t| match t {
+        Tok::Name(n) => last = Some(n),
+        Tok::Op(op) => {
+            match op {
+                b"q" => depth += 1,
+                b"Q" if depth > 0 => depth -= 1,
+                b"Q" => s.pops += 1,
+                b"Do" => match last.take() {
+                    Some(n) => {
+                        s.used.insert(n);
+                    }
+                    None if !s.has_op => s.leading_do = true,
+                    None => {}
+                },
+                _ => {}
+            }
+            s.has_op = true;
+            last = None;
+        }
+    });
+    s.pushes = depth;
+    s.trailing = last;
+    complete.then_some(s)
 }
 
 enum Tok<'a> {
@@ -777,8 +894,8 @@ fn delim(b: u8) -> bool {
 
 /// Walks a content stream, calling `on` with each name and each operator
 /// (numbers included); strings, comments and inline image data are
-/// skipped.
-fn scan_content<'a>(c: &'a [u8], mut on: impl FnMut(Tok<'a>)) {
+/// skipped. False when inline image data runs to the end without `EI`.
+fn scan_content<'a>(c: &'a [u8], mut on: impl FnMut(Tok<'a>)) -> bool {
     let at = |i: usize| c.get(i).copied();
     let word_end = |mut i: usize| {
         while at(i).is_some_and(|x| !white(x) && !delim(x)) {
@@ -831,6 +948,7 @@ fn scan_content<'a>(c: &'a [u8], mut on: impl FnMut(Tok<'a>)) {
                 i = end;
                 if word == b"ID" {
                     // Inline image data runs to an "EI" between white space.
+                    let mut closed = false;
                     while at(i).is_some() {
                         let ei = at(i).is_some_and(white)
                             && at(i + 1) == Some(b'E')
@@ -839,8 +957,12 @@ fn scan_content<'a>(c: &'a [u8], mut on: impl FnMut(Tok<'a>)) {
                         i += 1;
                         if ei {
                             i += 2;
+                            closed = true;
                             break;
                         }
+                    }
+                    if !closed {
+                        return false;
                     }
                 } else {
                     on(Tok::Op(word));
@@ -848,6 +970,7 @@ fn scan_content<'a>(c: &'a [u8], mut on: impl FnMut(Tok<'a>)) {
             }
         }
     }
+    true
 }
 
 /// A name token with its `#xx` escapes decoded.
@@ -872,37 +995,6 @@ fn decode_name(raw: &[u8]) -> Vec<u8> {
         }
     }
     out
-}
-
-/// How many `q` the content leaves without a matching `Q`.
-fn unclosed_q(content: &[u8]) -> usize {
-    let mut depth = 0usize;
-    scan_content(content, |t| {
-        if let Tok::Op(op) = t {
-            match op {
-                b"q" => depth += 1,
-                b"Q" => depth = depth.saturating_sub(1),
-                _ => {}
-            }
-        }
-    });
-    depth
-}
-
-/// Names drawn with `Do`.
-fn drawn_xobjects(content: &[u8]) -> BTreeSet<Vec<u8>> {
-    let mut used = BTreeSet::new();
-    let mut last: Option<Vec<u8>> = None;
-    scan_content(content, |t| match t {
-        Tok::Name(n) => last = Some(n),
-        Tok::Op(op) => {
-            if let (b"Do", Some(n)) = (op, last.take()) {
-                used.insert(n);
-            }
-            last = None;
-        }
-    });
-    used
 }
 
 fn write_err(e: impl std::fmt::Display) -> SaveError {
@@ -930,7 +1022,7 @@ struct PageRead {
     base: Quarter,
 }
 
-fn read_page(doc: &Document, id: ObjectId) -> Result<PageRead, SaveError> {
+fn read_page(doc: &Document, id: ObjectId, scans: &mut Scans) -> Result<PageRead, SaveError> {
     let dict = doc.get_dictionary(id).map_err(write_err)?.clone();
     let resources = inherited(doc, &dict, b"Resources")
         .and_then(|o| o.as_dict().ok())
@@ -949,7 +1041,7 @@ fn read_page(doc: &Document, id: ObjectId) -> Result<PageRead, SaveError> {
     let (x0, y0, _, _) = page_box(doc, id);
     Ok(PageRead {
         contents: doc.get_page_contents(id),
-        unclosed: page_content_strict(doc, id).map_or(0, |c| unclosed_q(&c)),
+        unclosed: scans.page(doc, id).unclosed,
         base: page_rotate(doc, id),
         origin: (x0, y0),
         dict,
@@ -1790,10 +1882,13 @@ mod tests {
 
     #[test]
     fn content_scanner_skips_strings_comments_and_images() {
-        let c = b"q (Q) Tj % Q\nBI /W 1 /H 1 ID \x00 Q Q\x00 EI q Q q <51> Tj";
-        assert_eq!(unclosed_q(c), 2);
-        let used = drawn_xobjects(b"/Im#31 Do (/X Do) Tj /Y Do /Z 5 Do");
-        assert_eq!(used, BTreeSet::from([b"Im1".to_vec(), b"Y".to_vec()]));
+        let c = b"Q q (Q) Tj % Q\nBI /W 1 /H 1 ID \x00 Q Q\x00 EI q Q q <51> Tj /Last";
+        let s = scan_stream(c).unwrap();
+        assert_eq!((s.pops, s.pushes, s.trailing), (1, 2, Some(b"Last".to_vec())));
+        let s = scan_stream(b"/Im#31 Do (/X Do) Tj /Y Do /Z 5 Do").unwrap();
+        assert_eq!(s.used, BTreeSet::from([b"Im1".to_vec(), b"Y".to_vec()]));
+        // inline image data with no white space before EI: the rest is unknown
+        assert_eq!(scan_stream(b"BI /W 1 ID \xffEI /Im1 Do"), None);
     }
 
     #[test]
@@ -1901,6 +1996,84 @@ mod tests {
         let src = bytes_of(&mut doc);
         assert_eq!(open(src.clone(), None).err(), Some(OpenError::Broken));
         assert_eq!(open(src, Some(PW)).err(), Some(OpenError::Broken));
+    }
+
+    /// Page 1 also lists 64 times a stream of 8 MiB of zeros, deflated: one
+    /// object (`distinct == false`) or 64 copies.
+    fn bomb_page(distinct: bool) -> Document {
+        let mut doc = two_pages();
+        let p1 = page_id(&doc, 1);
+        let packed = compress_to_vec_zlib(&vec![0u8; 8 << 20], 6);
+        let bomb = |doc: &mut Document| {
+            doc.add_object(Stream::new(dictionary! {"Filter"=>"FlateDecode"}, packed.clone()))
+        };
+        let one = bomb(&mut doc);
+        let mut contents: Vec<Object> =
+            doc.get_page_contents(p1).into_iter().map(Object::Reference).collect();
+        for _ in 0..64 {
+            let id = if distinct { bomb(&mut doc) } else { one };
+            contents.push(Object::Reference(id));
+        }
+        doc.get_dictionary_mut(p1).unwrap().set("Contents", contents);
+        doc
+    }
+
+    #[test]
+    fn content_decoding_stays_within_budget() {
+        for distinct in [false, true] {
+            let o = open(bytes_of(&mut bomb_page(distinct)), None).unwrap();
+            let p1 = page_id(&o.doc, 1);
+            let mut scans = Scans::new();
+            let scan = scans.page(&o.doc, p1);
+            assert!(scans.decoded <= PAGE_BUDGET, "distinct {distinct}");
+            // one shared stream is decoded once and the page stays readable
+            assert_eq!(scan.drawn.is_some(), !distinct);
+            if !distinct {
+                assert!(scans.decoded < 9 << 20);
+            }
+            let mut tight = Scans::new();
+            tight.left = 10 << 20;
+            assert!(tight.page(&o.doc, p1).drawn.is_none() || !distinct);
+            assert!(tight.decoded <= 10 << 20);
+
+            let out = save(&o, &pages_of(&o), &[sig(0)]).unwrap();
+            let doc = load(&out, None);
+            assert_eq!(vale_images(&doc, 1).len(), 1);
+            let ids = doc.get_page_contents(page_id(&doc, 1));
+            let last = doc.get_object(*ids.last().unwrap()).unwrap().as_stream().unwrap();
+            assert!(String::from_utf8_lossy(&last.content).contains("/ValeS0 Do"));
+            let doc = delete_second(&o);
+            assert_eq!(doc.get_pages().len(), 1);
+        }
+    }
+
+    #[test]
+    fn annotation_a_remaining_page_lists_stays() {
+        let mut doc = two_pages();
+        let (p1, p2) = (page_id(&doc, 1), page_id(&doc, 2));
+        let note = doc.add_object(dictionary! {"Type"=>"Annot","Subtype"=>"Text",
+            "Rect"=>vec![0.into(),0.into(),10.into(),10.into()],
+            "Contents"=>Object::string_literal("VALE-SHARED"),"P"=>p2});
+        for p in [p1, p2] {
+            doc.get_dictionary_mut(p).unwrap().set("Annots", vec![Object::Reference(note)]);
+        }
+        let o = open(bytes_of(&mut doc), None).unwrap();
+        let out = delete_second(&o);
+        let p1 = out.get_dictionary(page_id(&out, 1)).unwrap();
+        assert_eq!(p1.get(b"Annots").unwrap().as_array().unwrap().len(), 1);
+        assert!(doc_has(&out, b"VALE-SHARED"));
+    }
+
+    #[test]
+    fn unreadable_inline_image_keeps_every_xobject() {
+        let mut doc = shared_images(true);
+        let p1 = page_id(&doc, 1);
+        let cid = doc.get_page_contents(p1)[0];
+        let c = b"BI /W 1 /H 1 /CS /G /BPC 8 ID \xffEI q 100 0 0 10 0 0 cm /Im1 Do Q";
+        doc.set_object(cid, Stream::new(Dictionary::new(), c.to_vec()));
+        let o = open(bytes_of(&mut doc), None).unwrap();
+        let out = delete_second(&o);
+        assert!(resource(&out, 1, b"XObject").has(b"Im1"));
     }
 
     #[test]
