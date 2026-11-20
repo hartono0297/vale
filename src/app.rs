@@ -684,6 +684,7 @@ pub fn run(media_log_flag: bool, start: Start) {
             mixer_wheel_sum: None,
             mixer_drag: None,
             shelf: ShelfState::default(),
+            sign_pending: None,
             phone: PhoneState::default(),
             dock: DockState::default(),
             lyrics_card: LyricsCardState::default(),
@@ -1260,6 +1261,8 @@ struct App {
     mixer_drag: Option<audio::Target>,
     /// The file shelf (`app_shelf`).
     shelf: ShelfState,
+    /// The document the signing window opens on next (`app_sign`).
+    sign_pending: Option<crate::sign::Source>,
     /// The phone link (`app_phone`).
     phone: PhoneState,
     /// The page dots' dock: values, pointer, frame step.
@@ -2840,6 +2843,7 @@ impl App {
             Effect::MixerLevel(i, level) => self.mixer_set_level(i, level),
             Effect::MixerMute(i) => self.mixer_toggle_mute(i),
             Effect::ShelfOpen(i) => self.shelf_open(i),
+            Effect::ShelfSign(i) => self.sign_queue(i),
             Effect::ShelfRemove(i) => self.shelf_remove(i),
             Effect::ShelfClear => self.shelf_clear(),
             Effect::ShelfPreviewClose => self.shelf_preview_close(),
@@ -9731,10 +9735,12 @@ fn open_shelf_card_menu(hwnd: HWND, i: usize) {
     if MENU_OPEN.get() {
         return;
     }
-    let Some(items) = with_app(|app| {
+    // The card is named by its file, not its index: the shelf can change while
+    // the menu is open (a signed file arriving adds a card).
+    let Some((items, path)) = with_app(|app| {
         let card = app.shelf.cards.get(i)?;
         let path = app.shelf.shelf.get(i)?;
-        Some(shelf_menu_items(card, path))
+        Some((shelf_menu_items(card, path), PathBuf::from(path)))
     })
     .flatten() else {
         return;
@@ -9744,20 +9750,19 @@ fn open_shelf_card_menu(hwnd: HWND, i: usize) {
     with_app(|app| app.apply_now(Event::MenuOpen(true)));
     let chosen = tray::card_menu(hwnd, &labels).and_then(|n| items.get(n).copied());
     MENU_OPEN.set(false);
-    // The pick first, so the panel is released onto what it opened. The
-    // signing window opens outside the app borrow.
-    let source = match chosen {
-        Some(ShelfAction::Sign) => with_app(|app| app.sign_source(i)).flatten(),
-        _ => None,
-    };
-    if let Some(source) = source {
-        crate::sign::window::open(hwnd, source, false);
-    }
+    // The pick first, so the panel is released onto what it opened. Sign
+    // collapses the panel like a click on the card (`Event::ShelfSign`); the
+    // signing window then opens from `WM_APP_SIGN`, outside the app borrow.
     with_app(|app| {
-        if chosen == Some(ShelfAction::Preview) {
-            app.shelf_preview_open(i);
-        }
         app.apply_now(Event::MenuOpen(false));
+        let Some(i) = app.shelf_index_of(&path) else {
+            return;
+        };
+        match chosen {
+            Some(ShelfAction::Preview) => app.shelf_preview_open(i),
+            Some(ShelfAction::Sign) => app.apply_now(Event::ShelfSign(i)),
+            None => {}
+        }
     });
 }
 
@@ -10502,15 +10507,26 @@ unsafe extern "system" fn wnd_proc(
         }
         // What the signing windows reported (`sign::window`).
         crate::sign::window::WM_APP_SIGN => {
-            if with_app(|app| app.on_sign_reports(Instant::now())).is_none() {
-                // A handler holds the app: the reports are still queued; ask again.
-                unsafe {
-                    let _ = PostMessageW(
-                        Some(hwnd),
-                        crate::sign::window::WM_APP_SIGN,
-                        WPARAM(0),
-                        LPARAM(0),
-                    );
+            let now = Instant::now();
+            // The window opens outside the app borrow: it takes the foreground.
+            match with_app(|app| {
+                app.on_sign_reports(now);
+                app.sign_pending.take()
+            }) {
+                Some(Some(source)) => {
+                    crate::sign::window::open(hwnd, source, false);
+                }
+                Some(None) => {}
+                None => {
+                    // A handler holds the app: the reports are still queued; ask again.
+                    unsafe {
+                        let _ = PostMessageW(
+                            Some(hwnd),
+                            crate::sign::window::WM_APP_SIGN,
+                            WPARAM(0),
+                            LPARAM(0),
+                        );
+                    }
                 }
             }
             LRESULT(0)

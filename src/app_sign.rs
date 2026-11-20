@@ -9,6 +9,9 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use windows::Win32::Foundation::{LPARAM, WPARAM};
+use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
+
 use super::App;
 use crate::i18n::{Key, tr};
 use crate::model::{Event, Notice, NoticeKind};
@@ -47,18 +50,25 @@ pub(super) fn saved_notice(path: &Path, fits: &dyn Fn(&str) -> bool) -> Notice {
 }
 
 impl App {
-    /// "Tanda tangani" was picked on card `i`: the file the signing window
-    /// opens on. The caller opens the window outside the app borrow (it takes
-    /// the foreground, which sends messages back here). A file that is gone
-    /// only dims its card.
-    pub(super) fn sign_source(&mut self, i: usize) -> Option<Source> {
-        let path = self.shelf.shelf.get(i).map(PathBuf::from)?;
-        let kind = sign::kind_of(&path)?;
+    /// `Effect::ShelfSign`: the panel is out of the way; the file of card `i`
+    /// waits for `WM_APP_SIGN`, which opens the signing window outside the
+    /// app borrow (it takes the foreground, which sends messages back here).
+    /// A file that is gone only dims its card.
+    pub(super) fn sign_queue(&mut self, i: usize) {
+        let Some(path) = self.shelf.shelf.get(i).map(PathBuf::from) else {
+            return;
+        };
+        let Some(kind) = sign::kind_of(&path) else {
+            return;
+        };
         if shelf::probe(&path) == Probe::Missing {
             self.shelf_look();
-            return None;
+            return;
         }
-        Some(Source { path, kind })
+        self.sign_pending = Some(Source { path, kind });
+        unsafe {
+            let _ = PostMessageW(Some(self.hwnd), window::WM_APP_SIGN, WPARAM(0), LPARAM(0));
+        }
     }
 
     /// `WM_APP_SIGN`: what the signing windows reported.
@@ -77,6 +87,8 @@ impl App {
                     saved_notice(&path, &fits)
                 };
                 self.apply(Event::Notice(notice), now);
+                // The notice shows even when no card is added (shelf full, or
+                // the file is already on it).
                 self.shelf_add_made(path, now);
             }
         }
