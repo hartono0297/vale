@@ -29,7 +29,7 @@ use windows::Win32::Graphics::Dwm::{
 };
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, EndPaint, GetMonitorInfoW, InvalidateRect, MONITOR_DEFAULTTONEAREST, MONITORINFO,
-    MonitorFromPoint, PAINTSTRUCT,
+    MonitorFromPoint, MonitorFromWindow, PAINTSTRUCT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{
@@ -40,8 +40,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_SHIFT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CS_DBLCLKS, CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, IDC_ARROW,
-    IDC_CROSS, IDC_IBEAM, IsWindow, LoadCursorW, MINMAXINFO, PostQuitMessage, RegisterClassExW,
+    CS_DBLCLKS, CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetWindowRect,
+    IDC_ARROW, IDC_CROSS, IDC_IBEAM, IsWindow, IsZoomed, LoadCursorW, MINMAXINFO, PostQuitMessage, RegisterClassExW,
     SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SetCursor, SetForegroundWindow, SetWindowPos,
     ShowWindow, WINDOW_EX_STYLE, WM_APP, WM_CAPTURECHANGED, WM_CLOSE, WM_COMMAND, WM_CTLCOLOREDIT,
     WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDBLCLK,
@@ -64,6 +64,7 @@ use super::text::{
 use super::{
     Annotation, COLORS, FRect, Handle, Pt, STROKES, Session, Tool, View, initial_scale, text_size,
 };
+use super::rotate::{Turn, turned};
 use crate::capture::Shot;
 use crate::i18n::{Key, tr};
 use crate::theme::{self, WindowPalette};
@@ -202,7 +203,7 @@ pub fn layout(cw: f32, ch: f32, ui: f32, labels: &Labels, confirm: bool) -> Layo
     items.push((Hit::Undo, place(x, BTN * ui, BTN * ui)));
     x += (BTN + GAP) * ui;
     items.push((Hit::Redo, place(x, BTN * ui, BTN * ui)));
-    x += BTN * ui;
+    x += (BTN + GAP) * ui;
     sep(&mut x);
     items.push((Hit::RotateLeft, place(x, BTN * ui, BTN * ui)));
     x += (BTN + GAP) * ui;
@@ -336,7 +337,13 @@ enum Drag {
 
 struct Editor {
     hwnd: HWND,
+    /// The picture as shown: `original` turned `shown_turns` times. Draw,
+    /// export, save and auto-copy all read this one.
     base: Arc<Shot>,
+    /// The picture as captured; never changes.
+    original: Arc<Shot>,
+    /// The turn count `base` was built for (`session.turns()` once synced).
+    shown_turns: u8,
     session: Session,
     gfx: Gfx,
     target: Option<Target>,
@@ -403,7 +410,19 @@ pub fn open(shot: Shot, anchor: (i32, i32), demo: bool) {
 
 /// `open`, with annotations already on the picture (the demo's).
 pub fn open_with(shot: Shot, anchor: (i32, i32), demo: bool, doc: Vec<Annotation>) {
-    if let Err(e) = try_open(shot, anchor, demo, doc) {
+    open_turned(shot, anchor, demo, doc, None);
+}
+
+/// `open_with`, then one turn as the first undo step (inline mode's rotate
+/// button hands its selection over this way).
+pub fn open_turned(
+    shot: Shot,
+    anchor: (i32, i32),
+    demo: bool,
+    doc: Vec<Annotation>,
+    turn: Option<Turn>,
+) {
+    if let Err(e) = try_open(shot, anchor, demo, doc, turn) {
         eprintln!("vale: the screenshot editor could not open: {e}");
         if demo {
             unsafe { PostQuitMessage(0) };
@@ -440,6 +459,7 @@ fn try_open(
     anchor: (i32, i32),
     demo: bool,
     doc: Vec<Annotation>,
+    turn: Option<Turn>,
 ) -> windows::core::Result<()> {
     let instance: HINSTANCE = unsafe { GetModuleHandleW(None)? }.into();
     register(instance)?;
@@ -514,9 +534,12 @@ fn try_open(
         (client.bottom - client.top).max(1) as u32,
     );
     let lay = layout(client.0 as f32, client.1 as f32, ui, &labels, false);
+    let original = Arc::new(shot);
     let mut e = Editor {
         hwnd,
-        base: Arc::new(shot),
+        base: original.clone(),
+        original,
+        shown_turns: 0,
         session: Session::with_doc(doc),
         gfx,
         target: None,
@@ -571,6 +594,10 @@ fn try_open(
         let _ = ShowWindow(hwnd, SW_SHOW);
         let _ = SetForegroundWindow(hwnd);
         let _ = SetFocus(Some(hwnd));
+    }
+    // Before the first copy, so that copy is already turned.
+    if let Some(t) = turn {
+        rotate_by(hwnd, t);
     }
     // The pick itself is copied: a worker renders it (the window never
     // waits); the clipboard is written when it rings back.
@@ -701,6 +728,124 @@ fn say(e: &mut Editor, text: impl Into<String>, tone: Tone) {
     e.footer = Some((text.into(), tone));
 }
 
+/// Where a `size` window centred on `center` goes: moved (never shrunk)
+/// inside `work`; a window larger than `work` is pinned to its top-left.
+pub fn refit_rect(center: (i32, i32), size: (i32, i32), work: RECT) -> RECT {
+    let left = (center.0 - size.0 / 2)
+        .min(work.right - size.0)
+        .max(work.left);
+    let top = (center.1 - size.1 / 2)
+        .min(work.bottom - size.1)
+        .max(work.top);
+    RECT {
+        left,
+        top,
+        right: left + size.0,
+        bottom: top + size.1,
+    }
+}
+
+/// One turn of the picture as an undo step, then the window follows.
+fn rotate_by(hwnd: HWND, turn: Turn) {
+    with(hwnd, |e| {
+        let size = (e.base.w, e.base.h);
+        e.session.rotate(turn, size);
+    });
+    sync_picture(hwnd);
+}
+
+/// The shown picture follows the session's turn count (after a rotation, an
+/// undo or a redo): rebuilt from the original, bitmap and mosaic cache
+/// dropped, the window re-fitted to the new shape.
+fn sync_picture(hwnd: HWND) {
+    let changed = with(hwnd, |e| {
+        let turns = e.session.turns();
+        if turns == e.shown_turns {
+            return false;
+        }
+        e.base = Arc::new(turned(&e.original, turns));
+        e.picture = None;
+        e.pix.clear();
+        e.shown_turns = turns;
+        true
+    });
+    if changed != Some(true) {
+        return;
+    }
+    if unsafe { IsZoomed(hwnd) }.as_bool() {
+        // A maximized window stays so: only the scale follows the new shape.
+        with(hwnd, |e| {
+            let ui = e.dpi as f32 / 96.0;
+            let c = e.layout.canvas;
+            let avail = (c.w - 2.0 * PAD * ui, c.h - 2.0 * PAD * ui);
+            e.scale = initial_scale((e.base.w, e.base.h), avail);
+            recompute_view(e);
+        });
+    } else {
+        refit_window(hwnd);
+    }
+    invalidate(hwnd);
+}
+
+/// The open-time size rules for the turned picture, kept centred where the
+/// window is now and inside its monitor's work area. `WM_SIZE` follows.
+fn refit_window(hwnd: HWND) {
+    let Some((img, ui, dpi, min_w)) = with(hwnd, |e| {
+        let ui = e.dpi as f32 / 96.0;
+        ((e.base.w, e.base.h), ui, e.dpi, min_client_w(ui, &e.labels))
+    }) else {
+        return;
+    };
+    let mut now = RECT::default();
+    let mut info = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    unsafe {
+        let _ = GetWindowRect(hwnd, &mut now);
+        let _ = GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mut info);
+    }
+    let work = info.rcWork;
+    let work_size = (
+        (work.right - work.left) as f32,
+        (work.bottom - work.top) as f32,
+    );
+    let scale = open_scale(img, work_size, ui);
+    let (cw, ch) = client_size(img, scale, ui, min_w);
+    let mut rc = RECT {
+        left: 0,
+        top: 0,
+        right: cw as i32,
+        bottom: ch as i32,
+    };
+    unsafe {
+        let _ = AdjustWindowRectExForDpi(
+            &mut rc,
+            WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+            false,
+            WINDOW_EX_STYLE(0),
+            dpi,
+        );
+    }
+    let size = (rc.right - rc.left, rc.bottom - rc.top);
+    let centre = ((now.left + now.right) / 2, (now.top + now.bottom) / 2);
+    let at = refit_rect(centre, size, work);
+    // Set first: the WM_SIZE this triggers lays out with the new scale.
+    with(hwnd, |e| e.scale = scale);
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            at.left,
+            at.top,
+            size.0,
+            size.1,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
+    with(hwnd, recompute_view);
+}
+
 // ---- actions ----
 
 fn do_hit(hwnd: HWND, hit: Hit) {
@@ -726,12 +871,14 @@ fn do_hit(hwnd: HWND, hit: Hit) {
         }
         Hit::Undo => {
             with(hwnd, |e| e.session.undo());
+            sync_picture(hwnd);
         }
         Hit::Redo => {
             with(hwnd, |e| e.session.redo());
+            sync_picture(hwnd);
         }
-        // Wired in a later task.
-        Hit::RotateLeft | Hit::RotateRight => {}
+        Hit::RotateLeft => rotate_by(hwnd, Turn::Left),
+        Hit::RotateRight => rotate_by(hwnd, Turn::Right),
         Hit::Copy => do_copy(hwnd),
         Hit::Save => do_save(hwnd),
         Hit::Close => request_close(hwnd),
@@ -1592,6 +1739,7 @@ fn on_key(hwnd: HWND, vk: u16) {
         match vk {
             0x5A => do_hit(hwnd, if shift { Hit::Redo } else { Hit::Undo }),
             0x59 => do_hit(hwnd, Hit::Redo),
+            0x52 => do_hit(hwnd, if shift { Hit::RotateLeft } else { Hit::RotateRight }),
             0x43 => do_hit(hwnd, Hit::Copy),
             0x53 => do_hit(hwnd, Hit::Save),
             _ => {}
@@ -2529,5 +2677,46 @@ mod tests {
         let (rgb, a) = rgba(0xF4EDE414);
         assert_eq!(rgb, 0xF4EDE4);
         assert!((a - 20.0 / 255.0).abs() < 1e-6);
+    }
+
+    fn rc(l: i32, t: i32, r: i32, b: i32) -> RECT {
+        RECT {
+            left: l,
+            top: t,
+            right: r,
+            bottom: b,
+        }
+    }
+
+    fn rc_t(r: RECT) -> (i32, i32, i32, i32) {
+        (r.left, r.top, r.right, r.bottom)
+    }
+
+    #[test]
+    fn refit_keeps_the_centre_when_it_fits() {
+        let r = refit_rect((500, 400), (300, 200), rc(0, 0, 1920, 1040));
+        assert_eq!(rc_t(r), (350, 300, 650, 500));
+    }
+
+    #[test]
+    fn refit_moves_inside_the_work_area() {
+        let r = refit_rect((1900, 1000), (400, 300), rc(0, 0, 1920, 1040));
+        assert_eq!((r.right, r.bottom), (1920, 1040));
+        assert_eq!((r.right - r.left, r.bottom - r.top), (400, 300));
+    }
+
+    #[test]
+    fn refit_pins_an_oversized_window_to_the_top_left() {
+        let r = refit_rect((960, 520), (2500, 1200), rc(0, 0, 1920, 1040));
+        assert_eq!((r.left, r.top), (0, 0));
+    }
+
+    #[test]
+    fn refit_on_a_negative_monitor() {
+        let work = rc(-1920, 0, 0, 1080);
+        let r = refit_rect((-50, 1070), (600, 400), work);
+        assert_eq!(rc_t(r), (-600, 680, 0, 1080));
+        let r = refit_rect((-1900, 10), (600, 400), work);
+        assert_eq!((r.left, r.top), (-1920, 0));
     }
 }
