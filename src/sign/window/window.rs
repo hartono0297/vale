@@ -334,11 +334,11 @@ impl Drop for Win {
         if let Some(job) = self.save_job.take() {
             let _ = job.join();
         }
-        // The inbox may hold a renderer the window never took.
-        if let Ok(mut i) = self.inbox.lock() {
-            i.opened = None;
-        }
-        self.doc = None;
+        // The document and any renderer the inbox still holds go to a
+        // short-lived thread: stopping a renderer joins its thread, which
+        // may be mid-page, and the island must not wait for that.
+        let left = self.inbox.lock().ok().and_then(|mut i| i.opened.take());
+        drop_later((self.doc.take(), left));
         if let Some(t) = self.text.take() {
             text_edit::free_gdi(&t.0);
         }
@@ -358,6 +358,29 @@ impl Drop for Win {
 
 thread_local! {
     static WINDOWS: RefCell<HashMap<isize, Win>> = RefCell::new(HashMap::new());
+    /// Threads dropping what closed windows left (`drop_later`).
+    static REAPERS: RefCell<Vec<JoinHandle<()>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Drops `v` on a short-lived thread, never on the UI thread; inline when no
+/// thread can be made. Every value it gets is plain data whose COM and WinRT
+/// objects live on their own threads (a renderer's are inside its worker).
+pub(super) fn drop_later<T: Send + 'static>(v: T) {
+    REAPERS.with(|r| {
+        let mut r = r.borrow_mut();
+        r.retain(|h| !h.is_finished());
+        if let Ok(h) = std::thread::Builder::new().name("sign-reap".into()).spawn(move || drop(v)) {
+            r.push(h);
+        }
+    });
+}
+
+/// Waits for every `drop_later` thread (the app is ending).
+pub(super) fn join_reapers() {
+    let left = REAPERS.with(|r| std::mem::take(&mut *r.borrow_mut()));
+    for h in left {
+        let _ = h.join();
+    }
 }
 
 pub(super) fn with<R>(hwnd: HWND, f: impl FnOnce(&mut Win) -> R) -> Option<R> {
@@ -780,6 +803,7 @@ pub(super) fn release() {
         Err(_) => HashMap::new(),
     });
     drop(left);
+    join_reapers();
 }
 
 // ---- workers ----
@@ -2104,7 +2128,7 @@ fn on_saved(hwnd: HWND) {
 
 fn destroy(hwnd: HWND) {
     unsafe {
-        // Hidden first: dropping the renderer joins its thread.
+        // Hidden first, so the window is gone the moment it is asked to go.
         let _ = ShowWindow(hwnd, SW_HIDE);
         let _ = DestroyWindow(hwnd);
     }
@@ -2713,8 +2737,8 @@ extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
             let removed = WINDOWS.with(|m| m.try_borrow_mut().ok().and_then(|mut m| m.remove(&(hwnd.0 as isize))));
             if let Some(w) = removed {
                 let demo = w.demo;
-                // Joins the threads, drops the renderer, removes the Office
-                // copy.
+                // Ends the threads, hands the renderer to a reaper, removes
+                // the Office copy.
                 drop(w);
                 if demo && ON_SCREEN {
                     unsafe { PostQuitMessage(0) };
@@ -2970,6 +2994,25 @@ mod tests {
         assert!(worker_ended(&e));
         // No worker ever ran: the window sweeps.
         assert!(window_closed(&Mutex::new(JobEnd::default())));
+    }
+
+    #[test]
+    fn a_closed_document_is_dropped_off_the_ui_thread() {
+        struct Slow(Arc<AtomicBool>);
+        impl Drop for Slow {
+            fn drop(&mut self) {
+                std::thread::sleep(std::time::Duration::from_millis(800));
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let done = Arc::new(AtomicBool::new(false));
+        let t = std::time::Instant::now();
+        drop_later(Slow(done.clone()));
+        assert!(t.elapsed() < std::time::Duration::from_millis(300), "the caller did not wait");
+        assert!(!done.load(Ordering::SeqCst));
+        // Quitting waits for it.
+        join_reapers();
+        assert!(done.load(Ordering::SeqCst));
     }
 
     #[test]
