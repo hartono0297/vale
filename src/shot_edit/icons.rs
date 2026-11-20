@@ -96,12 +96,14 @@ pub fn poly(
     }
 }
 
-/// What an icon shows: a tool, or undo and redo.
+/// What an icon shows: a tool, undo and redo, or a rotate arrow.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Glyph {
     Tool(Tool),
     Undo,
     Redo,
+    RotateLeft,
+    RotateRight,
 }
 
 /// A toolbar icon drawn from a few lines, centred in `r`.
@@ -270,6 +272,41 @@ pub fn glyph(
                         (x(0.9) + m * u * 0.6, cy - u * 0.75),
                         (x(0.9), cy - u * 0.1),
                         (x(0.9) + m * u * 0.6, cy + u * 0.55),
+                    ],
+                    sw,
+                    false,
+                );
+            }
+            Glyph::RotateLeft | Glyph::RotateRight => {
+                // An open arc of 270 degrees with an arrowhead at its end;
+                // left turns counter-clockwise, right clockwise. The gap is
+                // at the top, where the arrowhead points into it.
+                let m = if matches!(g, Glyph::RotateRight) {
+                    1.0
+                } else {
+                    -1.0
+                };
+                let r = u * 0.85;
+                let at = |t: f32| (cx + m * r * t.cos(), cy + r * t.sin());
+                let start = (-45.0_f32).to_radians();
+                let end = start + 270.0_f32.to_radians();
+                let pts: Vec<(f32, f32)> = (0..=18)
+                    .map(|i| at(start + (end - start) * i as f32 / 18.0))
+                    .collect();
+                poly(rt, brush, gfx, &pts, sw, false);
+                // Travel direction at the end of the arc, mirrored with `m`.
+                let (dx, dy) = (m * -end.sin(), end.cos());
+                let (nx, ny) = (-dy, dx);
+                let tip = at(end);
+                let h = u * 0.6;
+                poly(
+                    rt,
+                    brush,
+                    gfx,
+                    &[
+                        (tip.0 - dx * h + nx * h * 0.8, tip.1 - dy * h + ny * h * 0.8),
+                        tip,
+                        (tip.0 - dx * h - nx * h * 0.8, tip.1 - dy * h - ny * h * 0.8),
                     ],
                     sw,
                     false,
