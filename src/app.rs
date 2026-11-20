@@ -193,6 +193,9 @@ use transcribe_page::{TIMER_TRANSCRIBE, TranscribeState};
 #[path = "app_transcript_win.rs"]
 mod transcript_page;
 
+#[path = "app_sign.rs"]
+mod sign_page;
+
 #[path = "app_lyrics_card.rs"]
 mod card;
 use card::LyricsCardState;
@@ -764,6 +767,7 @@ pub fn run(media_log_flag: bool, start: Start) {
         app.check_fullscreen();
         app.check_battery();
         app.clip_start();
+        app.sign_start();
         // The saved history, and the poller when the listener may run.
         app.notif_start();
         app.devices_start();
@@ -906,6 +910,7 @@ fn release_graphics() {
     crate::lyrics_card::release();
     crate::caption_card::release();
     crate::shot_edit::window::release();
+    crate::sign::window::release();
     crate::transcript_win::release();
 }
 
@@ -2024,7 +2029,10 @@ impl App {
         if self.clip_right_click(hit.as_ref()) {
             return RightClick::Done;
         }
-        if let Some(i) = shelf_menu_target(self.state.view(), hit.as_ref(), &self.shelf.cards) {
+        let shelf_path = |i: usize| self.shelf.shelf.get(i).map(PathBuf::from);
+        if let Some(i) =
+            shelf_menu_target(self.state.view(), hit.as_ref(), &self.shelf.cards, &shelf_path)
+        {
             return RightClick::ShelfMenu(i);
         }
         if let Some(id) = note_card_menu_target(self.state.view(), hit.as_ref()) {
@@ -7093,6 +7101,7 @@ impl App {
             crate::ui::tooltip::hide_all();
             editor::restyle_open_editor();
             crate::shot_edit::window::restyle_open();
+            crate::sign::window::restyle_open();
             settings::restyle();
             crate::transcript_win::restyle();
             self.draw(Instant::now());
@@ -8900,7 +8909,7 @@ enum RightClick {
     NoteMenu(String),
     /// The transcript menu opens for this Rekam row.
     RecRowMenu(usize),
-    /// The "Pratinjau gambar" menu opens for this shelf card.
+    /// The "Tanda tangani" / "Pratinjau gambar" menu opens for this shelf card.
     ShelfMenu(usize),
 }
 
@@ -8914,15 +8923,57 @@ fn note_card_menu_target(view: View, hit: Option<&Hit>) -> Option<String> {
     }
 }
 
-/// The shelf card a right-click at `hit` asks the preview menu for: an image
-/// that is still there, on the Shelf page only.
-fn shelf_menu_target(view: View, hit: Option<&Hit>, cards: &[crate::shelf::ShelfCard]) -> Option<usize> {
+/// What the shelf card menu can do with a card.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ShelfAction {
+    /// Open the signing window on the file.
+    Sign,
+    /// Show the large image preview.
+    Preview,
+}
+
+impl ShelfAction {
+    fn label(self) -> &'static str {
+        i18n::text(
+            i18n::lang(),
+            match self {
+                ShelfAction::Sign => Key::SignMenu,
+                ShelfAction::Preview => Key::ShelfPreview,
+            },
+        )
+    }
+}
+
+/// The items of the menu of `card` (whose file is `path`), in order: sign
+/// first, then the preview of an image. A card that is gone has none.
+fn shelf_menu_items(card: &crate::shelf::ShelfCard, path: &std::path::Path) -> Vec<ShelfAction> {
+    let mut items = Vec::new();
+    if !card.stale
+        && card.kind != crate::shelf::ShelfKind::Folder
+        && crate::sign::is_signable(path)
+    {
+        items.push(ShelfAction::Sign);
+    }
+    if crate::shelf::previewable(card) {
+        items.push(ShelfAction::Preview);
+    }
+    items
+}
+
+/// The shelf card a right-click at `hit` asks the card menu for: one that is
+/// still there and can be signed or previewed, on the Shelf page only.
+/// `path_of` gives the file of card `i`.
+fn shelf_menu_target(
+    view: View,
+    hit: Option<&Hit>,
+    cards: &[crate::shelf::ShelfCard],
+    path_of: &dyn Fn(usize) -> Option<PathBuf>,
+) -> Option<usize> {
     match hit {
-        Some(Hit::ShelfCard(i))
-            if view == View::Panel(Page::Shelf)
-                && cards.get(*i).is_some_and(crate::shelf::previewable) =>
-        {
-            Some(*i)
+        Some(Hit::ShelfCard(i)) if view == View::Panel(Page::Shelf) => {
+            let card = cards.get(*i)?;
+            let path = path_of(*i)?;
+            (!shelf_menu_items(card, &path).is_empty()).then_some(*i)
         }
         _ => None,
     }
@@ -9671,7 +9722,8 @@ fn open_note_card_menu(hwnd: HWND, id: &str) {
     }
 }
 
-/// The shelf card menu: one item, "Pratinjau gambar". Modal like
+/// The shelf card menu: "Tanda tangani" for a document or picture that can be
+/// signed, then "Pratinjau gambar" for an image. Modal like
 /// `open_note_card_menu`, but it also holds the panel (`Event::MenuOpen`): the
 /// pointer is on the menu, off the island, and a Hover panel would collapse
 /// before the pick and take the preview with it.
@@ -9679,14 +9731,30 @@ fn open_shelf_card_menu(hwnd: HWND, i: usize) {
     if MENU_OPEN.get() {
         return;
     }
-    let label = i18n::text(i18n::lang(), Key::ShelfPreview);
+    let Some(items) = with_app(|app| {
+        let card = app.shelf.cards.get(i)?;
+        let path = app.shelf.shelf.get(i)?;
+        Some(shelf_menu_items(card, path))
+    })
+    .flatten() else {
+        return;
+    };
+    let labels: Vec<&str> = items.iter().map(|a| a.label()).collect();
     MENU_OPEN.set(true);
     with_app(|app| app.apply_now(Event::MenuOpen(true)));
-    let chosen = tray::note_card_menu(hwnd, label);
+    let chosen = tray::card_menu(hwnd, &labels).and_then(|n| items.get(n).copied());
     MENU_OPEN.set(false);
-    // The pick first, so the panel is released onto the preview it opened.
+    // The pick first, so the panel is released onto what it opened. The
+    // signing window opens outside the app borrow.
+    let source = match chosen {
+        Some(ShelfAction::Sign) => with_app(|app| app.sign_source(i)).flatten(),
+        _ => None,
+    };
+    if let Some(source) = source {
+        crate::sign::window::open(hwnd, source, false);
+    }
     with_app(|app| {
-        if chosen {
+        if chosen == Some(ShelfAction::Preview) {
             app.shelf_preview_open(i);
         }
         app.apply_now(Event::MenuOpen(false));
@@ -10383,6 +10451,7 @@ fn on_system_theme_changed() {
         crate::ui::tooltip::hide_all();
         editor::restyle_open_editor();
         crate::shot_edit::window::restyle_open();
+        crate::sign::window::restyle_open();
         settings::restyle();
         crate::transcript_win::restyle();
     }
@@ -10424,6 +10493,21 @@ unsafe extern "system" fn wnd_proc(
                     let _ = PostMessageW(
                         Some(hwnd),
                         crate::transcript_win::WM_APP_TRANSCRIPT,
+                        WPARAM(0),
+                        LPARAM(0),
+                    );
+                }
+            }
+            LRESULT(0)
+        }
+        // What the signing windows reported (`sign::window`).
+        crate::sign::window::WM_APP_SIGN => {
+            if with_app(|app| app.on_sign_reports(Instant::now())).is_none() {
+                // A handler holds the app: the reports are still queued; ask again.
+                unsafe {
+                    let _ = PostMessageW(
+                        Some(hwnd),
+                        crate::sign::window::WM_APP_SIGN,
                         WPARAM(0),
                         LPARAM(0),
                     );
@@ -13485,6 +13569,16 @@ mod tests {
         }
     }
 
+    /// The path a test card stands for: `paths[i]`.
+    fn shelf_target(
+        view: View,
+        hit: Option<&Hit>,
+        cards: &[crate::shelf::ShelfCard],
+        paths: &[&str],
+    ) -> Option<usize> {
+        shelf_menu_target(view, hit, cards, &|i| paths.get(i).map(PathBuf::from))
+    }
+
     #[test]
     fn a_right_click_on_an_image_card_gives_the_shelf_menu() {
         use crate::shelf::ShelfKind;
@@ -13493,36 +13587,65 @@ mod tests {
             shelf_test_card(ShelfKind::Image, false),
         ];
         assert_eq!(
-            shelf_menu_target(View::Panel(Page::Shelf), Some(&Hit::ShelfCard(1)), &cards),
+            shelf_target(
+                View::Panel(Page::Shelf),
+                Some(&Hit::ShelfCard(1)),
+                &cards,
+                &["a.rs", "a.png"]
+            ),
             Some(1)
         );
     }
 
     #[test]
-    fn a_right_click_on_a_stale_card_a_document_the_wrong_page_or_nothing_gives_no_shelf_menu() {
+    fn a_pdf_card_gives_the_shelf_menu() {
+        use crate::shelf::ShelfKind;
+        let cards = [shelf_test_card(ShelfKind::Document, false)];
+        assert_eq!(
+            shelf_target(View::Panel(Page::Shelf), Some(&Hit::ShelfCard(0)), &cards, &["a.pdf"]),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn a_right_click_on_a_stale_card_an_unsignable_document_the_wrong_page_or_nothing_gives_no_shelf_menu()
+     {
         use crate::shelf::ShelfKind;
         let cards = [
             shelf_test_card(ShelfKind::Image, true),
             shelf_test_card(ShelfKind::Code, false),
             shelf_test_card(ShelfKind::Folder, false),
+            shelf_test_card(ShelfKind::Document, false),
+            shelf_test_card(ShelfKind::Document, true),
             shelf_test_card(ShelfKind::Image, false),
         ];
+        let paths = ["a.png", "a.rs", "dir", "a.txt", "a.pdf", "a.png"];
         let shelf = View::Panel(Page::Shelf);
-        // Stale image, document, folder.
-        for i in 0..3 {
-            assert_eq!(shelf_menu_target(shelf.clone(), Some(&Hit::ShelfCard(i)), &cards), None);
+        // Stale image, code, folder, a .txt document, a stale pdf.
+        for i in 0..5 {
+            assert_eq!(shelf_target(shelf.clone(), Some(&Hit::ShelfCard(i)), &cards, &paths), None);
         }
         // Past the end of the list.
-        assert_eq!(shelf_menu_target(shelf.clone(), Some(&Hit::ShelfCard(9)), &cards), None);
+        assert_eq!(shelf_target(shelf.clone(), Some(&Hit::ShelfCard(9)), &cards, &paths), None);
         // Not a card.
-        assert_eq!(shelf_menu_target(shelf.clone(), Some(&Hit::ShelfClear), &cards), None);
-        assert_eq!(shelf_menu_target(shelf, None, &cards), None);
+        assert_eq!(shelf_target(shelf.clone(), Some(&Hit::ShelfClear), &cards, &paths), None);
+        assert_eq!(shelf_target(shelf, None, &cards, &paths), None);
         // Another page.
         assert_eq!(
-            shelf_menu_target(View::Panel(Page::Notes), Some(&Hit::ShelfCard(3)), &cards),
+            shelf_target(View::Panel(Page::Notes), Some(&Hit::ShelfCard(5)), &cards, &paths),
             None
         );
-        assert_eq!(shelf_menu_target(View::Idle, Some(&Hit::ShelfCard(3)), &cards), None);
+        assert_eq!(shelf_target(View::Idle, Some(&Hit::ShelfCard(5)), &cards, &paths), None);
+    }
+
+    #[test]
+    fn shelf_menu_items_order() {
+        use crate::shelf::ShelfKind::{Document, Image};
+        let items = |kind, path: &str| shelf_menu_items(&shelf_test_card(kind, false), std::path::Path::new(path));
+        assert_eq!(items(Image, "a.png"), [ShelfAction::Sign, ShelfAction::Preview]);
+        assert_eq!(items(Document, "a.pdf"), [ShelfAction::Sign]);
+        assert_eq!(items(Image, "a.heic"), [ShelfAction::Preview]);
+        assert_eq!(items(Document, "a.docx"), [ShelfAction::Sign]);
     }
 
     #[test]

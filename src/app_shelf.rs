@@ -276,6 +276,22 @@ impl App {
         self.shelf_animate(&old, now, delay);
     }
 
+    /// A file Vale made (a signed document): a card of its own on the shelf,
+    /// coming in like a dropped one.
+    pub(super) fn shelf_add_made(&mut self, path: PathBuf, now: Instant) {
+        let old = self.shelf.cards.clone();
+        if self.shelf.shelf.add(vec![path]) == 0 {
+            return;
+        }
+        self.shelf_look();
+        let delay = if self.shelf.shown {
+            Duration::ZERO
+        } else {
+            Duration::from_millis(OPEN_DELAY_MS)
+        };
+        self.shelf_animate(&old, now, delay);
+    }
+
     /// `TIMER_SHELF_HOLD`: the drag stayed away; its hold on the panel ends.
     pub(super) fn on_shelf_hold_timer(&mut self) {
         unsafe {
