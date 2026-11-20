@@ -2,6 +2,7 @@
 //! writers and the shelf entry point.
 
 pub mod names;
+pub mod render;
 pub mod window;
 
 use std::path::{Path, PathBuf};
