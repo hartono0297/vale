@@ -608,6 +608,18 @@ keys! {
     SignDone => "Ditandatangani", "Signed";
     SignNoticeBody => "{name} · klik untuk buka", "{name} · click to open";
     SignTooBig => "File ini terlalu besar untuk dibuka (lebih dari 200 MB).", "This file is too big to open (over 200 MB).";
+    SignClose => "Tutup", "Close";
+    SignLoading => "Membuka dokumen\u{2026}", "Opening the document\u{2026}";
+    SignMore => "Lainnya", "More";
+    SignPlaceHint => "Klik di halaman untuk menaruhnya.", "Click on the page to place it.";
+    SignTextHint => "Ketik teksnya, lalu tekan Enter.", "Type the text, then press Enter.";
+    SignAllPagesDone => "Paraf dipasang di {n} halaman lain.", "Initials put on {n} other pages.";
+    SignAllPagesDoneOne => "Paraf dipasang di 1 halaman lain.", "Initials put on 1 other page.";
+    SignAllPagesNone => "Tidak ada halaman lain yang muat untuk paraf ini.", "No other page has room for these initials.";
+    SignMakerNewSignature => "Tanda tangan baru", "New signature";
+    SignMakerNewInitials => "Paraf baru", "New initials";
+    SignMakerPadHint => "Gambar di sini pakai mouse, touchpad, atau pen", "Draw here with a mouse, touchpad or pen";
+    SignMakerPhotoFailed => "Foto ini tidak bisa dipakai. Pakai foto tanda tangan di kertas putih, paling besar 40 MP.", "This photo cannot be used. Use a photo of a signature on white paper, at most 40 MP.";
     PhoneStarting => "Mencari jaringan\u{2026}", "Finding the network\u{2026}";
     PhoneStep1 => "Scan pakai kamera HP", "Scan with the phone's camera";
     PhoneStep1Sub => "Atau salin link-nya ke laptop", "Or copy the link to a laptop";
@@ -5652,6 +5664,18 @@ mod copy_preview_tests {
             Key::SignDone,
             Key::SignNoticeBody,
             Key::SignTooBig,
+            Key::SignClose,
+            Key::SignLoading,
+            Key::SignMore,
+            Key::SignPlaceHint,
+            Key::SignTextHint,
+            Key::SignAllPagesDone,
+            Key::SignAllPagesDoneOne,
+            Key::SignAllPagesNone,
+            Key::SignMakerNewSignature,
+            Key::SignMakerNewInitials,
+            Key::SignMakerPadHint,
+            Key::SignMakerPhotoFailed,
         ] {
             assert_ne!(text(Lang::Id, key), text(Lang::En, key), "{key:?}");
         }
