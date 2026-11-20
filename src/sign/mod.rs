@@ -2,8 +2,11 @@
 //! writers and the shelf entry point.
 
 pub mod geom;
+pub mod ink;
 pub mod names;
+pub mod raster;
 pub mod session;
+pub mod store;
 pub mod window;
 
 use std::path::{Path, PathBuf};
