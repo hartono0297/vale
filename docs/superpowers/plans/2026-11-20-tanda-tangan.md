@@ -15,7 +15,7 @@
 - Windows 11 only; Rust stable 1.99 (lopdf 0.47 needs ≥ 1.88).
 - `lopdf = { version = "0.47", default-features = false }`. Never enable `embed_image`, `image`, `font_embedding`, `rayon`, `chrono-clock`.
 - New `windows` features: `Data_Pdf` (pulls `Data`). `Storage_Streams`, `Foundation`, `Win32_System_WinRT`, `Win32_System_Com`, `Win32_System_Variant`, `Win32_System_Ole` already exist.
-- Size gate: the whole module may add at most **1,048,576 bytes** to `vale.exe` over the baseline measured in Task 1. Over that: stop and report to the owner, do not trim features on your own.
+- Size gate: the whole module may add at most **1,363,148 bytes** (1.3 MiB, owner's cap) to `vale.exe` over the baseline measured in Task 1. Over that: stop and report to the owner, do not trim features on your own.
 - Never touch `src/shot_edit/` (another session edits it). Copy code from it; calling its `pub` helpers (`shot_edit::gfx::bitmap`, etc.) is allowed.
 - Nothing goes over the network. No registry writes.
 - Idle cost zero: no timer on the main window, no thread alive while no signing window is open.
@@ -413,7 +413,7 @@ Load `antislop:antislop`, `antislop:antislop-ui` and `antislop:antislop-human` b
 **Files:**
 - Modify: `THIRD-PARTY-NOTICES.md`, this plan's Size log
 
-- [ ] **Step 1:** `cargo build --release --locked`; size − baseline. ≤ 1,048,576 → record in the Size log. Over → stop, report the number and the biggest contributors (`cargo bloat --release --crates -n 20` if installed, else say so) to the owner.
+- [ ] **Step 1:** `cargo build --release --locked`; size − baseline. ≤ 1,363,148 → record in the Size log. Over → stop, report the number and the biggest contributors (`cargo bloat --release --crates -n 20` if installed, else say so) to the owner.
 - [ ] **Step 2:** `cargo tree -e normal --prefix none | Sort-Object -Unique` for the new crates; add lopdf (MIT) and each new crate's licence line to `THIRD-PARTY-NOTICES.md` in the file's existing format.
 - [ ] **Step 3:** `cargo test --locked` → all pass; paste the summary line.
 - [ ] **Step 4: Commit** `docs: third-party notices for lopdf; size log`.

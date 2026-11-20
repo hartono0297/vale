@@ -82,8 +82,9 @@ data leaves the PC).
 
 - Rust 2024, Win32 + Direct2D, `windows` 0.62; Windows 11 only.
 - `vale.exe` size is guarded per feature ([[exe-size]]). Expected cost: about
-  0.3 to 0.7 MB for the PDF writer. Measure it; if the module adds more than 1 MB,
-  stop and report before going on.
+  about 0.7 MB for the PDF writer (spike: lopdf 712 KB with its encryption code) and
+  about 1.0 to 1.1 MB for the whole module. Owner's cap (2026-11-20, "Naikin ke 1,3
+  MB"): if the module adds more than 1.3 MB, stop and report before going on.
 - Do not touch `src/shot_edit/` (another session is changing it). Copy patterns from
   it, do not share its document model.
 - WPS and LibreOffice paths can only be verified live on a PC that has them; if not,
