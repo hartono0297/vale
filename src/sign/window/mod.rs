@@ -109,6 +109,33 @@ fn with_store<R>(demo: bool, f: impl FnOnce(&mut Kept) -> R) -> R {
     })
 }
 
+/// Drops the saved signatures this thread holds (decrypted from disk), with
+/// every pixel buffer nothing else shares zeroed first. Returns how many
+/// buffers were zeroed.
+fn forget_store() -> usize {
+    let Some(mut k) = STORE.with(|s| s.borrow_mut().take()) else { return 0 };
+    let mut wiped = 0;
+    let mut wipe = |m: &mut Mark| {
+        m.rgba.fill(0);
+        std::hint::black_box(&m.rgba);
+        wiped += 1;
+    };
+    for m in k.saved.signatures.iter_mut().chain(k.saved.initials.iter_mut()) {
+        wipe(m);
+    }
+    for a in k.signatures.iter_mut().chain(k.initials.iter_mut()) {
+        if let Some(m) = Arc::get_mut(a) {
+            wipe(m);
+        }
+    }
+    wiped
+}
+
+#[cfg(test)]
+fn store_loaded() -> bool {
+    STORE.with(|s| s.borrow().is_some())
+}
+
 fn persist(demo: bool) {
     if demo {
         return;
@@ -306,6 +333,18 @@ mod tests {
         assert!(Arc::ptr_eq(&c[0], &a[1]));
         forget_mark(true, 0, true);
         assert_eq!(saved_count(true, true), 0);
+    }
+
+    #[test]
+    fn forgetting_the_store_wipes_its_pixels() {
+        let m = Mark { w: 1, h: 1, rgba: vec![9, 9, 9, 255] };
+        keep_mark(&m, false, true);
+        let shared = saved_marks(false, true);
+        assert!(store_loaded());
+        drop(shared);
+        let wiped = forget_store();
+        assert!(!store_loaded());
+        assert!(wiped >= 1, "the kept copy and its Arc were zeroed");
     }
 
     #[test]

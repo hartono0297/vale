@@ -605,6 +605,7 @@ keys! {
     SignSaving => "Menyimpan\u{2026}", "Saving\u{2026}";
     SignSaveFailed => "Gagal menyimpan. File aslinya tidak berubah.", "Could not save. The original file is unchanged.";
     SignLastPage => "Halaman terakhir tidak bisa dihapus.", "The last page cannot be deleted.";
+    SignNothingAdded => "Belum ada yang ditambahkan.", "Nothing added yet.";
     SignDone => "Ditandatangani", "Signed";
     SignNoticeBody => "{name} · klik untuk buka", "{name} · click to open";
     SignTooBig => "File ini terlalu besar untuk dibuka (lebih dari 200 MB).", "This file is too big to open (over 200 MB).";
@@ -5663,6 +5664,7 @@ mod copy_preview_tests {
             Key::SignSaving,
             Key::SignSaveFailed,
             Key::SignLastPage,
+            Key::SignNothingAdded,
             Key::SignDone,
             Key::SignNoticeBody,
             Key::SignTooBig,

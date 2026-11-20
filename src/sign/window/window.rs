@@ -1980,6 +1980,13 @@ fn do_save(hwnd: HWND, confirmed: bool) {
             return false;
         }
         let Some(d) = &w.doc else { return false };
+        if !d.session.has_changes() {
+            // An unsigned copy is not worth a file.
+            w.ask = Ask::None;
+            say(w, Key::SignNothingAdded, Tone::Hint);
+            relayout(w);
+            return false;
+        }
         if !confirmed && let Some(o) = &d.opened {
             let incremental = pdf_write::save_is_incremental(o, &d.session.pages);
             if breaks_signature(o.signed, incremental, d.session.has_rotated()) {
@@ -2740,6 +2747,11 @@ extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
                 // Ends the threads, hands the renderer to a reaper, removes
                 // the Office copy.
                 drop(w);
+                // The last window took the saved signatures out of memory
+                // with it.
+                if WINDOWS.with(|m| m.try_borrow().is_ok_and(|m| m.is_empty())) {
+                    super::forget_store();
+                }
                 if demo && ON_SCREEN {
                     unsafe { PostQuitMessage(0) };
                 }
@@ -2788,6 +2800,7 @@ mod tests {
             assert!(!IsWindow(Some(hwnd)).as_bool());
         }
         assert_eq!(ENGINES.load(Ordering::SeqCst), 0, "no sign-render thread left");
+        assert!(!super::super::store_loaded(), "the saved signatures left memory with the last window");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2815,6 +2828,13 @@ mod tests {
     /// The window-level rules, on the hidden window of `opens_hidden_and_closes`
     /// (one window per test run keeps the renderer count exact).
     fn the_open_window_behaves(hwnd: HWND) {
+        // Simpan with nothing placed writes nothing and says so.
+        do_save(hwnd, false);
+        assert_eq!(
+            with(hwnd, |w| (w.phase, w.note.clone(), w.save_job.is_none())),
+            Some((Phase::Ready, Some((tr(Key::SignNothingAdded).to_owned(), Tone::Hint)), true))
+        );
+
         // A date at the page centre, selected.
         with(hwnd, |w| {
             let v = view(w).expect("a page");

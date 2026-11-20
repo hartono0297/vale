@@ -1,5 +1,7 @@
 //! The editing session: pages, placed items and whole-snapshot undo.
 
+use std::sync::Arc;
+
 use crate::sign::geom::{self, PageGeom};
 use crate::sign::{Item, ItemKind, Quarter};
 
@@ -132,7 +134,8 @@ impl Session {
 
     /// Copies an initials item to every other live page at the same spot,
     /// each turned to stand upright on its own page as shown, skipping pages
-    /// where it would fall outside the page. Returns how many copies were
+    /// where it would fall outside the page or that already have the same
+    /// initials there (within half a point). Returns how many copies were
     /// made.
     pub fn initials_on_all(&mut self, i: usize) -> usize {
         let Some(src) = self.items.get(i) else { return 0 };
@@ -149,7 +152,13 @@ impl Session {
                 let copy = Item { kind: ItemKind::Initials(mark.clone()), page: p, x, y, w, h, turn };
                 let (bw, bh) = geom::occupied(&copy);
                 let g = page.geom;
-                (x >= 0.0 && y >= 0.0 && x + bw <= g.w && y + bh <= g.h).then_some(copy)
+                let already = self.items.iter().any(|it| {
+                    it.page == p
+                        && matches!(&it.kind, ItemKind::Initials(m) if Arc::ptr_eq(m, &mark) || **m == *mark)
+                        && (it.x - x).abs() <= 0.5
+                        && (it.y - y).abs() <= 0.5
+                });
+                (!already && x >= 0.0 && y >= 0.0 && x + bw <= g.w && y + bh <= g.h).then_some(copy)
             })
             .collect();
         if copies.is_empty() {
@@ -183,6 +192,12 @@ impl Session {
         !self.undo.is_empty()
     }
 
+    /// Something to save: an item placed, a page turned or deleted (an item
+    /// added and removed again is nothing).
+    pub fn has_changes(&self) -> bool {
+        !self.items.is_empty() || self.pages.iter().any(|p| p.deleted || p.extra != Quarter::R0)
+    }
+
     pub fn live_pages(&self) -> Vec<usize> {
         (0..self.pages.len()).filter(|&i| !self.pages[i].deleted).collect()
     }
@@ -213,6 +228,41 @@ mod tests {
 
     fn three() -> Session {
         Session::new(vec![geom(612.0, 792.0), geom(612.0, 792.0), geom(612.0, 792.0)])
+    }
+
+    #[test]
+    fn has_changes_only_with_something_to_save() {
+        let mut s = three();
+        assert!(!s.has_changes());
+        let i = s.add(item(ItemKind::Check, 0, 10.0, 10.0, 20.0, 20.0));
+        assert!(s.has_changes());
+        s.remove_item(i);
+        assert!(s.dirty() && !s.has_changes(), "added then removed: nothing to save");
+        s.rotate_page(1);
+        assert!(s.has_changes());
+        s.undo();
+        assert!(!s.has_changes());
+        assert_eq!(s.delete_page(2), Ok(()));
+        assert!(s.has_changes());
+    }
+
+    #[test]
+    fn initials_on_all_twice_makes_no_duplicates() {
+        let mut s = three();
+        let m = mark();
+        let i = s.add(item(ItemKind::Initials(m.clone()), 0, 500.0, 40.0, 48.0, 24.0));
+        assert_eq!(s.initials_on_all(i), 2);
+        assert_eq!(s.initials_on_all(i), 0, "every other page already has it");
+        assert_eq!(s.items.len(), 3);
+        // An equal mark (not the same Arc) within half a point is the same.
+        let same = Arc::new((*m).clone());
+        s.items[2].kind = ItemKind::Initials(same);
+        s.items[2].x += 0.4;
+        assert_eq!(s.initials_on_all(i), 0);
+        // Moved away on one page: that page gets a copy again.
+        s.items[2].x -= 100.0;
+        assert_eq!(s.initials_on_all(i), 1);
+        assert_eq!(s.items.len(), 4);
     }
 
     #[test]
