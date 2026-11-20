@@ -437,16 +437,17 @@ mod tests {
     use std::sync::Arc;
     use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
 
-    struct Com;
+    struct Com(bool);
     impl Com {
         fn new() -> Com {
-            let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
-            Com
+            Com(unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok())
         }
     }
     impl Drop for Com {
         fn drop(&mut self) {
-            unsafe { CoUninitialize() };
+            if self.0 {
+                unsafe { CoUninitialize() };
+            }
         }
     }
 

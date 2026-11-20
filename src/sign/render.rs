@@ -19,10 +19,8 @@ use windows::Win32::Graphics::Imaging::{
     WICBitmapDitherTypeNone, WICBitmapInterpolationModeFant, WICBitmapPaletteTypeCustom,
     WICDecodeMetadataCacheOnDemand, WICRect,
 };
-use windows::Win32::System::Com::{
-    CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
-};
-use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
+use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
+use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize};
 use windows::Win32::UI::Shell::SHCreateMemStream;
 use windows::core::{HSTRING, Interface};
 
@@ -139,12 +137,11 @@ impl Renderer {
             .spawn(move || {
                 worker_alive.fetch_add(1, Ordering::SeqCst);
                 let _count = CountGuard(worker_alive);
-                let com = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
-                let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+                // One init for the thread (RoInitialize also sets up COM in the
+                // MTA), undone only if it succeeded. `work` owns every WinRT and
+                // COM object and drops them before the guard runs.
+                let _apartment = Apartment::enter();
                 work(&worker_shared, open, tx, &notify);
-                if com {
-                    unsafe { CoUninitialize() };
-                }
             })
             .map_err(|_| RenderOpenError::Unsupported)?;
         let mut renderer = Renderer {
@@ -218,6 +215,22 @@ impl Drop for Renderer {
         self.shared.wake.notify_all();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
+        }
+    }
+}
+
+struct Apartment(bool);
+
+impl Apartment {
+    fn enter() -> Apartment {
+        Apartment(unsafe { RoInitialize(RO_INIT_MULTITHREADED) }.is_ok())
+    }
+}
+
+impl Drop for Apartment {
+    fn drop(&mut self) {
+        if self.0 {
+            unsafe { RoUninitialize() };
         }
     }
 }
@@ -475,6 +488,62 @@ fn scale_image(full: &Pixels, width_px: u32) -> Option<Pixels> {
     }
 }
 
+/// Test processes only: renders one PDF page before `main`, so Windows.Data.Pdf
+/// creates its Direct3D device before any test builds a Direct2D target. The
+/// other order (a Direct2D WIC target first, a PDF page afterwards, from any
+/// module) makes the AMD user-mode driver (amdxx64.dll) fail fast with
+/// 0xC0000409 while the process exits, after every test has passed.
+/// The app needs no such step: `app::end_process` ends it with `TerminateProcess`,
+/// skipping the DLL teardown where the driver fails; a test process has no such
+/// exit path, so this mirrors that protection by avoiding the bad order.
+#[cfg(test)]
+#[used]
+#[unsafe(link_section = ".CRT$XCU")]
+static PDF_DEVICE_FIRST: extern "C" fn() = {
+    extern "C" fn init() {
+        // Runs on every launch of the test exe, `--list` and filtered runs
+        // included. The whole warm-up lives on its own thread so a stuck open
+        // or render (driver hang, no WinRT) cannot hang the exe before `main`:
+        // after the timeout that thread is left detached. What the worker
+        // holds (`Shared`, the `|| {}` notify) is plain data; every COM and
+        // WinRT object lives inside `work` and is gone before its apartment ends.
+        let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
+        let spawned = std::thread::Builder::new()
+            .name("pdf-device-first".into())
+            .spawn(move || {
+                let outcome = match Renderer::start_pdf(tests::pdf_bytes(1, None), None, || {}) {
+                    Ok(r) => {
+                        r.request(Job::Page { page: 0, width_px: 64, r#gen: 0 });
+                        let start = std::time::Instant::now();
+                        while r.take().is_empty() {
+                            if start.elapsed() > std::time::Duration::from_secs(10) {
+                                break;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(5));
+                        }
+                        Ok(())
+                    }
+                    Err(_) => Err("the PDF did not open".to_string()),
+                };
+                let _ = tx.send(outcome);
+            });
+        let note = match spawned {
+            Err(e) => Some(format!("could not start the thread: {e}")),
+            Ok(_) => match rx.recv_timeout(std::time::Duration::from_secs(15)) {
+                Ok(Ok(())) => None,
+                Ok(Err(e)) => Some(e),
+                Err(_) => Some("timed out".to_string()),
+            },
+        };
+        if let Some(note) = note {
+            eprintln!(
+                "vale tests: PDF device warm-up failed: {note}; the exit may crash on AMD drivers"
+            );
+        }
+    }
+    init
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -495,7 +564,7 @@ mod tests {
 
     /// A Letter-size PDF whose pages each draw a black square at (100, 100),
     /// 200 points wide.
-    fn pdf_bytes(pages: usize, password: Option<&str>) -> Vec<u8> {
+    pub(super) fn pdf_bytes(pages: usize, password: Option<&str>) -> Vec<u8> {
         let mut doc = Document::with_version("1.5");
         let pages_id = doc.new_object_id();
         let mut kids = Vec::new();
