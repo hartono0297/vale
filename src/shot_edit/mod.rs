@@ -16,6 +16,7 @@ pub mod export;
 pub mod gfx;
 pub mod icons;
 pub mod paint;
+pub mod rotate;
 pub mod text;
 pub mod window;
 
