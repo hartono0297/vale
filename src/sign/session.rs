@@ -131,31 +131,34 @@ impl Session {
     }
 
     /// Copies an initials item to every other live page at the same spot,
-    /// skipping pages where it would fall outside the page. Returns how many
-    /// copies were made.
+    /// each turned to stand upright on its own page as shown, skipping pages
+    /// where it would fall outside the page. Returns how many copies were
+    /// made.
     pub fn initials_on_all(&mut self, i: usize) -> usize {
         let Some(src) = self.items.get(i) else { return 0 };
         let ItemKind::Initials(mark) = &src.kind else { return 0 };
         let mark = mark.clone();
-        let (from, x, y, w, h, turn) = (src.page, src.x, src.y, src.w, src.h, src.turn);
-        let (bw, bh) = geom::occupied(src);
-        let targets: Vec<usize> = self
+        let (from, x, y, w, h) = (src.page, src.x, src.y, src.w, src.h);
+        let copies: Vec<Item> = self
             .live_pages()
             .into_iter()
             .filter(|&p| p != from)
-            .filter(|&p| {
-                let g = self.pages[p].geom;
-                x >= 0.0 && y >= 0.0 && x + bw <= g.w && y + bh <= g.h
+            .filter_map(|p| {
+                let page = &self.pages[p];
+                let turn = geom::upright_turn(page.geom, page.extra);
+                let copy = Item { kind: ItemKind::Initials(mark.clone()), page: p, x, y, w, h, turn };
+                let (bw, bh) = geom::occupied(&copy);
+                let g = page.geom;
+                (x >= 0.0 && y >= 0.0 && x + bw <= g.w && y + bh <= g.h).then_some(copy)
             })
             .collect();
-        if targets.is_empty() {
+        if copies.is_empty() {
             return 0;
         }
         self.checkpoint();
-        for &p in &targets {
-            self.items.push(Item { kind: ItemKind::Initials(mark.clone()), page: p, x, y, w, h, turn });
-        }
-        targets.len()
+        let n = copies.len();
+        self.items.extend(copies);
+        n
     }
 
     pub fn undo(&mut self) -> bool {
@@ -283,6 +286,24 @@ mod tests {
         s.initials_on_all(i);
         assert!(s.items.iter().any(|it| it.page == 1));
         assert!(!s.items.iter().any(|it| it.page == 2));
+    }
+
+    #[test]
+    fn initials_copies_stand_upright_on_their_own_page() {
+        let mut s = Session::new(vec![
+            geom(612.0, 792.0),
+            PageGeom { w: 612.0, h: 792.0, base: Quarter::R90 },
+            geom(612.0, 792.0),
+        ]);
+        s.rotate_page(2);
+        let i = s.add(item(ItemKind::Initials(mark()), 0, 300.0, 40.0, 60.0, 30.0));
+        assert_eq!(s.initials_on_all(i), 2);
+        let turn_on = |p: usize| s.items.iter().find(|it| it.page == p).map(|it| it.turn);
+        assert_eq!(turn_on(1), Some(Quarter::R90));
+        assert_eq!(turn_on(2), Some(Quarter::R90));
+        // Upright on page 1 means turned a quarter: its box there is 30 x 60.
+        let copy = s.items.iter().find(|it| it.page == 1).unwrap();
+        assert_eq!(geom::occupied(copy), (30.0, 60.0));
     }
 
     #[test]
