@@ -1,7 +1,9 @@
 //! Signing documents ("Tanda tangan"): shared types for the editor, the
 //! writers and the shelf entry point.
 
+pub mod geom;
 pub mod names;
+pub mod session;
 pub mod window;
 
 use std::path::{Path, PathBuf};
