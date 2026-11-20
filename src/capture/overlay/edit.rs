@@ -39,6 +39,7 @@ use crate::i18n::{Key, tr};
 use crate::shot_edit::gfx::{Align, Gfx, bitmap, color, rect_f};
 use crate::shot_edit::icons::{Glyph, fill_round, glyph, line};
 use crate::shot_edit::paint::{Pix, draw_annotations_clipped, draw_selection};
+use crate::shot_edit::rotate::Turn;
 use crate::shot_edit::text::{
     self, TEXT_COMMIT, TextClick, TextEdit, edit_text, text_click_action, text_msg_is_current,
 };
@@ -785,6 +786,7 @@ fn do_btn(hwnd: HWND, btn: Btn) {
         Btn::Copy => copy(),
         Btn::Save => super::finish_inline(FinishKind::Save),
         Btn::OpenEditor => super::finish_inline(FinishKind::OpenEditor),
+        Btn::Rotate => super::finish_inline(FinishKind::OpenEditorTurned(Turn::Right)),
         Btn::Close => esc(hwnd, FinishKind::Close),
         Btn::Discard => super::finish_inline(FinishKind::Discard),
         Btn::Keep => keep(hwnd),
@@ -941,6 +943,7 @@ pub(super) fn on_key(hwnd: HWND, vk: u16, repeat: bool) {
         InlineKey::Keep => keep(hwnd),
         InlineKey::Undo => do_btn(hwnd, Btn::Undo),
         InlineKey::Redo => do_btn(hwnd, Btn::Redo),
+        InlineKey::Rotate(t) => super::finish_inline(FinishKind::OpenEditorTurned(t)),
         InlineKey::Delete => {
             ed(|e, _| e.session.delete_selected());
             invalidate(hwnd);
@@ -1118,6 +1121,13 @@ impl Paint<'_> {
                 };
                 let alpha = if can { a } else { 0.3 * a };
                 glyph(self.rt, self.brush, self.gfx, g, r, 0xF2F2F2, alpha, ui);
+            }
+            Btn::Rotate => {
+                if hot {
+                    self.lit(r, false, true);
+                }
+                let g = Glyph::RotateRight;
+                glyph(self.rt, self.brush, self.gfx, g, r, 0xF2F2F2, a, ui);
             }
             _ => {}
         }
