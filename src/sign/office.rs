@@ -8,12 +8,15 @@ use std::ffi::OsString;
 use std::io;
 use std::mem::ManuallyDrop;
 use std::os::windows::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::os::windows::io::AsRawHandle;
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
-use windows::Win32::Foundation::{CloseHandle, HWND, VARIANT_BOOL};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, VARIANT_BOOL};
+use windows::Win32::System::JobObjects::{AssignProcessToJobObject, TerminateJobObject};
 use windows::Win32::System::Com::{
     CLSCTX_LOCAL_SERVER, CLSIDFromProgID, COINIT_APARTMENTTHREADED, CoCreateInstance,
     CoInitializeEx, CoUninitialize, DISPATCH_FLAGS, DISPATCH_METHOD, DISPATCH_PROPERTYGET,
@@ -34,7 +37,7 @@ use windows::Win32::System::Variant::{
     VARENUM, VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0_0_0, VT_BOOL, VT_ERROR, VT_I4,
 };
 use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
-use windows::core::{GUID, PCWSTR};
+use windows::core::{BSTR, GUID, PCWSTR};
 
 /// How long one conversion may take before the instance we started is killed.
 const TIMEOUT: Duration = Duration::from_secs(90);
@@ -177,8 +180,27 @@ pub fn temp_root() -> PathBuf {
     std::env::temp_dir().join("Vale").join("sign")
 }
 
+/// `p` is `base` itself or inside it (no `..`, case-insensitive). Everything
+/// this module deletes must pass this against `temp_root()`.
+fn is_within(base: &Path, p: &Path) -> bool {
+    if p.components().any(|c| matches!(c, Component::ParentDir)) {
+        return false;
+    }
+    let norm = |x: &Path| x.to_string_lossy().replace('/', "\\").trim_end_matches('\\').to_lowercase();
+    let (b, p) = (norm(base), norm(p));
+    !b.is_empty() && (p == b || (p.starts_with(&b) && p.as_bytes().get(b.len()) == Some(&b'\\')))
+}
+
+fn sweep_within(base: &Path, root: &Path) {
+    if is_within(base, root) {
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+/// Removes `root` (normally `temp_root()` or a job folder); anything outside
+/// `temp_root()` is left alone.
 pub fn sweep(root: &Path) {
-    let _ = std::fs::remove_dir_all(root);
+    sweep_within(&temp_root(), root);
 }
 
 static JOB: AtomicU32 = AtomicU32::new(0);
@@ -245,11 +267,29 @@ fn should_quit(before: &[u32], after: &[u32], app_pid: Option<u32>) -> Option<u3
     }
 }
 
-fn terminate(pid: u32) {
-    unsafe {
-        if let Ok(h) = OpenProcess(PROCESS_TERMINATE, false, pid) {
-            let _ = TerminateProcess(h, 1);
-            let _ = CloseHandle(h);
+/// A process we started, opened once right after it appeared so that a late
+/// kill cannot hit a recycled pid.
+struct ProcHandle(HANDLE);
+
+unsafe impl Send for ProcHandle {}
+unsafe impl Sync for ProcHandle {}
+
+impl ProcHandle {
+    fn open(pid: u32) -> Option<ProcHandle> {
+        unsafe { OpenProcess(PROCESS_TERMINATE, false, pid) }.ok().map(ProcHandle)
+    }
+
+    fn kill(&self) {
+        unsafe {
+            let _ = TerminateProcess(self.0, 1);
+        }
+    }
+}
+
+impl Drop for ProcHandle {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseHandle(self.0);
         }
     }
 }
@@ -416,6 +456,7 @@ fn to_i32(v: &VARIANT) -> Option<i32> {
 struct Session {
     app: Disp,
     ours: Option<u32>,
+    handle: Option<Arc<ProcHandle>>,
 }
 
 impl Session {
@@ -445,8 +486,20 @@ impl Session {
                 (pid != 0).then_some(pid)
             })
         };
-        let ours = should_quit(&before, &after, window_pid);
-        Ok(Session { app, ours })
+        let mut ours = should_quit(&before, &after, window_pid);
+        if app_kind == App::Slides && ours.is_some() {
+            // PowerPoint is shared: only an instance with nothing open is surely new.
+            let open = app
+                .get_disp("Presentations")
+                .ok()
+                .and_then(|d| d.get("Count").ok())
+                .and_then(|v| to_i32(&v));
+            if open != Some(0) {
+                ours = None;
+            }
+        }
+        let handle = ours.and_then(ProcHandle::open).map(Arc::new);
+        Ok(Session { app, ours, handle })
     }
 }
 
@@ -462,73 +515,111 @@ fn open_error(e: &DispErr) -> ConvertError {
     if e.is_password() { ConvertError::Locked } else { ConvertError::Failed }
 }
 
-/// Quiet settings for the instance we started. A user's instance keeps its
-/// window and its alerts; only macros are switched off while we open the file,
-/// and the old setting comes back through `unquiet`.
-fn quiet(app: &Disp, ours: bool, alerts_off: VARIANT) -> Result<Option<VARIANT>, ConvertError> {
+/// What `quiet` changed on a user's instance, to put back afterwards.
+type Saved = Vec<(&'static str, VARIANT)>;
+
+/// Quiet settings while we open the file. The instance we started is hidden
+/// with alerts off. A user's instance keeps its window; its alerts and macro
+/// security are switched off only for the open and restored through `unquiet`
+/// (a setting that cannot be read cannot be restored, so it is left alone).
+fn quiet(app: &Disp, ours: bool, alerts_off: VARIANT) -> Result<Saved, ConvertError> {
     let step = |_: DispErr| ConvertError::Failed;
-    let mut old = None;
+    let mut saved = Vec::new();
     if ours {
         app.put("Visible", vb(false)).map_err(step)?;
         app.put("DisplayAlerts", alerts_off).map_err(step)?;
-    } else {
-        old = app.get("AutomationSecurity").ok();
+        app.put("AutomationSecurity", vi(3)).map_err(step)?;
+        return Ok(saved);
     }
-    app.put("AutomationSecurity", vi(3)).map_err(step)?;
-    Ok(old)
+    for (name, value) in [("DisplayAlerts", alerts_off), ("AutomationSecurity", vi(3))] {
+        let Ok(old) = app.get(name) else { continue };
+        if app.put(name, value).is_err() {
+            unquiet(app, &saved);
+            return Err(ConvertError::Failed);
+        }
+        saved.push((name, old));
+    }
+    Ok(saved)
 }
 
-fn unquiet(app: &Disp, old: Option<VARIANT>) {
-    if let Some(v) = old {
-        let _ = app.put("AutomationSecurity", v);
+fn unquiet(app: &Disp, saved: &[(&'static str, VARIANT)]) {
+    for (name, old) in saved.iter().rev() {
+        let _ = app.put(name, old.clone());
     }
 }
 
-fn drive_writer(app: &Disp, src: &Path, out: &Path, ours: bool) -> Result<(), ConvertError> {
+fn full_name(d: &Disp) -> Option<String> {
+    let v = d.get("FullName").ok()?;
+    BSTR::try_from(&v).ok().map(|b| b.to_string())
+}
+
+/// `open` returned the very file we copied, not a document the user already
+/// had open. Only then may we close or save it.
+fn owns(d: &Disp, copy: &Path) -> bool {
+    full_name(d).is_some_and(|n| same_path(&n, copy))
+}
+
+fn same_path(a: &str, b: &Path) -> bool {
+    let norm = |s: &str| s.replace('/', "\\").to_lowercase();
+    norm(a) == norm(&b.to_string_lossy())
+}
+
+fn drive_writer(app: &Disp, copy: &Path, out: &Path, ours: bool) -> Result<(), ConvertError> {
     let step = |_: DispErr| ConvertError::Failed;
-    let old = quiet(app, ours, vi(0))?;
+    let saved = quiet(app, ours, vi(0))?;
     let r = (|| {
         let docs = app.get_disp("Documents").map_err(step)?;
         let doc = docs
             .call_disp(
                 "Open",
-                &[vs(&src.to_string_lossy()), vb(false), vb(true), vb(false), vs(NO_PASSWORD)],
+                &[vs(&copy.to_string_lossy()), vb(false), vb(true), vb(false), vs(NO_PASSWORD)],
             )
             .map_err(|e| open_error(&e))?;
+        if !owns(&doc, copy) {
+            return Err(ConvertError::Failed);
+        }
         let exported = doc.call("ExportAsFixedFormat", &[vs(&out.to_string_lossy()), vi(17)]);
         let _ = doc.call("Close", &[vi(0)]);
         exported.map(|_| ()).map_err(step)
     })();
-    unquiet(app, old);
+    unquiet(app, &saved);
     r
 }
 
-fn drive_sheets(app: &Disp, src: &Path, out: &Path, ours: bool) -> Result<(), ConvertError> {
+fn drive_sheets(app: &Disp, copy: &Path, out: &Path, ours: bool) -> Result<(), ConvertError> {
     let step = |_: DispErr| ConvertError::Failed;
-    let old = quiet(app, ours, vb(false))?;
+    let saved = quiet(app, ours, vb(false))?;
     let r = (|| {
         let books = app.get_disp("Workbooks").map_err(step)?;
         let book = books
             .call_disp(
                 "Open",
-                &[vs(&src.to_string_lossy()), vi(0), vb(true), missing(), vs(NO_PASSWORD)],
+                &[vs(&copy.to_string_lossy()), vi(0), vb(true), missing(), vs(NO_PASSWORD)],
             )
             .map_err(|e| open_error(&e))?;
+        if !owns(&book, copy) {
+            return Err(ConvertError::Failed);
+        }
         let exported = book.call("ExportAsFixedFormat", &[vi(0), vs(&out.to_string_lossy())]);
         let _ = book.call("Close", &[vb(false)]);
         exported.map(|_| ()).map_err(step)
     })();
-    unquiet(app, old);
+    unquiet(app, &saved);
     r
 }
 
-fn drive_slides(app: &Disp, src: &Path, out: &Path) -> Result<(), ConvertError> {
+fn drive_slides(app: &Disp, copy: &Path, out: &Path) -> Result<(), ConvertError> {
     let step = |_: DispErr| ConvertError::Failed;
     let decks = app.get_disp("Presentations").map_err(step)?;
-    let name = format!("{}::{NO_PASSWORD}", src.to_string_lossy());
+    let name = format!("{}::{NO_PASSWORD}", copy.to_string_lossy());
     let deck = decks
         .call_disp("Open", &[vs(&name), vi(-1), vi(0), vi(0)])
         .map_err(|e| open_error(&e))?;
+    // SaveAs would rename a presentation the user has open, and Close would
+    // drop its edits: touch only our own copy.
+    if !owns(&deck, copy) {
+        return Err(ConvertError::Failed);
+    }
     let result = (|| {
         let slides = deck.get_disp("Slides")?;
         let count = to_i32(&slides.get("Count")?).unwrap_or(0);
@@ -541,54 +632,80 @@ fn drive_slides(app: &Disp, src: &Path, out: &Path) -> Result<(), ConvertError> 
     result.map_err(step)
 }
 
+/// One conversion at a time: the pid snapshots that tell our office process
+/// from the user's would race otherwise.
+static COM_GATE: Mutex<()> = Mutex::new(());
+
+type Killer = Arc<Mutex<Option<Arc<ProcHandle>>>>;
+
+/// The COM work, on its own thread (see `convert_com`).
+fn com_job(suite: &Suite, app_kind: App, copy: &Path, out: &Path, killer: &Killer) -> Result<(), ConvertError> {
+    let _gate = COM_GATE.lock().unwrap_or_else(|e| e.into_inner());
+    let _com = ComGuard::new();
+    let session = Session::start(suite, app_kind)?;
+    if let Some(h) = &session.handle
+        && let Ok(mut slot) = killer.lock()
+    {
+        *slot = Some(h.clone());
+    }
+    let ours = session.ours.is_some();
+    match app_kind {
+        App::Writer => drive_writer(&session.app, copy, out, ours),
+        App::Sheets => drive_sheets(&session.app, copy, out, ours),
+        App::Slides => drive_slides(&session.app, copy, out),
+    }
+}
+
+/// Waits for the worker's answer. On timeout or cancel it calls `abort` (which
+/// ends only a process we started), sets `cancel` and gives up; a worker stuck
+/// in a user's instance is left behind, never waited for.
+fn wait_result(
+    rx: &mpsc::Receiver<Result<(), ConvertError>>,
+    timeout: Duration,
+    cancel: &AtomicBool,
+    abort: impl FnOnce(),
+) -> Result<(), ConvertError> {
+    let start = Instant::now();
+    loop {
+        match rx.recv_timeout(Duration::from_millis(50)) {
+            Ok(r) => return r,
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Err(ConvertError::Failed),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+        let timed_out = start.elapsed() >= timeout;
+        if timed_out || cancel.load(Ordering::Relaxed) {
+            cancel.store(true, Ordering::Release);
+            abort();
+            return Err(if timed_out { ConvertError::TimedOut } else { ConvertError::Failed });
+        }
+    }
+}
+
 fn convert_com(
     suite: &Suite,
     app_kind: App,
-    src: &Path,
+    copy: &Path,
     out: &Path,
     cancel: &AtomicBool,
 ) -> Result<(), ConvertError> {
-    let _com = ComGuard::new();
-    let done = AtomicBool::new(false);
-    let timed_out = AtomicBool::new(false);
-    let ours_pid = AtomicU32::new(0);
-    let result = std::thread::scope(|scope| {
-        scope.spawn(|| {
-            let start = Instant::now();
-            while !done.load(Ordering::Acquire) {
-                let expired = start.elapsed() >= TIMEOUT;
-                if expired || cancel.load(Ordering::Relaxed) {
-                    if expired {
-                        timed_out.store(true, Ordering::Release);
-                    }
-                    cancel.store(true, Ordering::Release);
-                    let pid = ours_pid.load(Ordering::Acquire);
-                    if pid != 0 {
-                        terminate(pid);
-                    }
-                    return;
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
-        });
-        let r = (|| {
-            let session = Session::start(suite, app_kind)?;
-            if let Some(pid) = session.ours {
-                ours_pid.store(pid, Ordering::Release);
-            }
-            match app_kind {
-                App::Writer => drive_writer(&session.app, src, out, session.ours.is_some()),
-                App::Sheets => drive_sheets(&session.app, src, out, session.ours.is_some()),
-                App::Slides => drive_slides(&session.app, src, out),
-            }
-        })();
-        done.store(true, Ordering::Release);
-        r
-    });
-    if timed_out.load(Ordering::Acquire) {
-        return Err(ConvertError::TimedOut);
+    let killer: Killer = Arc::new(Mutex::new(None));
+    let (tx, rx) = mpsc::channel();
+    let worker = {
+        let (suite, copy, out, killer) = (suite.clone(), copy.to_path_buf(), out.to_path_buf(), killer.clone());
+        std::thread::Builder::new().name("sign-office-com".into()).spawn(move || {
+            let _ = tx.send(com_job(&suite, app_kind, &copy, &out, &killer));
+        })
+    };
+    if worker.is_err() {
+        return Err(ConvertError::Failed);
     }
-    result
+    wait_result(&rx, TIMEOUT, cancel, || {
+        if let Ok(slot) = killer.lock()
+            && let Some(h) = slot.as_ref()
+        {
+            h.kill();
+        }
+    })
 }
 
 // -------------------------------------------------------------- LibreOffice
@@ -608,7 +725,11 @@ fn soffice_args(src: &Path, job: &Path) -> Vec<OsString> {
     ]
 }
 
+/// `soffice.com` is only a launcher for `soffice.bin`, so the whole tree runs
+/// in a job object that ends with it: everything in it is ours to kill.
 fn convert_soffice(exe: &Path, src: &Path, job: &Path, cancel: &AtomicBool) -> Result<(), ConvertError> {
+    let group = crate::cli::kill_on_close_job().ok_or(ConvertError::Failed)?;
+    let group_handle = HANDLE(group.as_raw_handle());
     let mut child = Command::new(exe)
         .args(soffice_args(src, job))
         .stdin(Stdio::null())
@@ -617,16 +738,24 @@ fn convert_soffice(exe: &Path, src: &Path, job: &Path, cancel: &AtomicBool) -> R
         .creation_flags(CREATE_NO_WINDOW.0)
         .spawn()
         .map_err(|_| ConvertError::Failed)?;
+    if unsafe { AssignProcessToJobObject(group_handle, HANDLE(child.as_raw_handle())) }.is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(ConvertError::Failed);
+    }
     let start = Instant::now();
     loop {
         match child.try_wait() {
             Ok(Some(_)) => return Ok(()),
             Ok(None) => {}
-            Err(_) => return Err(ConvertError::Failed),
+            Err(_) => {
+                let _ = unsafe { TerminateJobObject(group_handle, 1) };
+                return Err(ConvertError::Failed);
+            }
         }
         let timed_out = start.elapsed() >= TIMEOUT;
         if timed_out || cancel.load(Ordering::Relaxed) {
-            let _ = child.kill();
+            let _ = unsafe { TerminateJobObject(group_handle, 1) };
             let _ = child.wait();
             return Err(if timed_out { ConvertError::TimedOut } else { ConvertError::Failed });
         }
@@ -635,6 +764,40 @@ fn convert_soffice(exe: &Path, src: &Path, job: &Path, cancel: &AtomicBool) -> R
 }
 
 // ------------------------------------------------------------------- public
+
+/// Where the private copy of `src` goes inside its own job folder.
+fn copy_target(dir: &Path, src: &Path) -> Option<PathBuf> {
+    let ext = src.extension()?.to_str()?.to_ascii_lowercase();
+    Some(dir.join(format!("vale-source.{ext}")))
+}
+
+/// `\\?\C:\x` to `C:\x`, so it can be compared with the name Office reports.
+fn strip_verbatim(p: &Path) -> PathBuf {
+    let s = p.to_string_lossy();
+    match s.strip_prefix(r"\\?\") {
+        Some(rest) if !rest.starts_with("UNC\\") => PathBuf::from(rest),
+        _ => p.to_path_buf(),
+    }
+}
+
+/// Copies `src` into a fresh folder of its own and returns that folder and the
+/// copy (long path form). Office opens the copy, so it can never hand back, nor
+/// close, a document the user has open under the same path.
+fn private_copy(src: &Path) -> Result<(PathBuf, PathBuf), ConvertError> {
+    let dir = job_dir().map_err(|_| ConvertError::Failed)?;
+    let made = (|| {
+        let target = copy_target(&dir, src)?;
+        std::fs::copy(src, &target).ok()?;
+        Some(strip_verbatim(&std::fs::canonicalize(&target).ok()?))
+    })();
+    match made {
+        Some(copy) => Ok((dir, copy)),
+        None => {
+            let _ = std::fs::remove_dir_all(&dir);
+            Err(ConvertError::Failed)
+        }
+    }
+}
 
 /// Converts one Office file to `<out_dir>\<stem>.pdf`. Blocks the caller's
 /// thread (up to 90 s); `cancel` aborts it.
@@ -646,10 +809,21 @@ pub fn convert(src: &Path, out_dir: &Path, cancel: &AtomicBool) -> Result<PathBu
     let mut name = stem.to_os_string();
     name.push(".pdf");
     let out = out_dir.join(name);
-    let _ = std::fs::remove_file(&out);
+    if out.exists() {
+        // Only a leftover of ours may be replaced.
+        if !is_within(&temp_root(), &out) {
+            return Err(ConvertError::Failed);
+        }
+        let _ = std::fs::remove_file(&out);
+    }
     match &suite {
         Suite::LibreOffice(exe) => convert_soffice(exe, src, out_dir, cancel)?,
-        _ => convert_com(&suite, app, src, &out, cancel)?,
+        _ => {
+            let (copy_dir, copy) = private_copy(src)?;
+            let r = convert_com(&suite, app, &copy, &out, cancel);
+            let _ = std::fs::remove_dir_all(&copy_dir);
+            r?
+        }
     }
     if out.is_file() { Ok(out) } else { Err(ConvertError::Failed) }
 }
@@ -697,8 +871,86 @@ mod tests {
         let dir = crate::phone::files::tests::temp_dir("sign-office-sweep");
         std::fs::create_dir_all(dir.join("a")).unwrap();
         std::fs::write(dir.join("a").join("f.txt"), b"x").unwrap();
-        sweep(&dir);
+        sweep_within(dir.parent().unwrap(), &dir);
         assert!(!dir.exists());
+    }
+
+    #[test]
+    fn sweep_and_deletes_stay_under_temp_root() {
+        let dir = crate::phone::files::tests::temp_dir("sign-office-guard");
+        std::fs::write(dir.join("keep.txt"), b"x").unwrap();
+        // Not under %TEMP%\Vale\sign: refused.
+        sweep(&dir);
+        assert!(dir.join("keep.txt").exists());
+        let root = temp_root();
+        assert!(is_within(&root, &root));
+        assert!(is_within(&root, &root.join("1-0")));
+        assert!(is_within(&root, &root.join("1-0").join("x.pdf")));
+        assert!(!is_within(&root, &root.parent().unwrap().to_path_buf()));
+        assert!(!is_within(&root, &root.join("..").join("..").join("x")));
+        let sibling = PathBuf::from(format!("{}-other", root.display()));
+        assert!(!is_within(&root, &sibling));
+        assert!(!is_within(&root, Path::new(r"C:\Users\x\Documents\a.pdf")));
+        assert!(is_within(Path::new(r"C:\T\Vale\Sign"), Path::new("c:/t/vale/sign/1-0")));
+    }
+
+    #[test]
+    fn private_copy_naming_and_paths() {
+        let dir = Path::new(r"C:\t\1-0");
+        assert_eq!(
+            copy_target(dir, Path::new(r"D:\docs\Report.DOCX")),
+            Some(PathBuf::from(r"C:\t\1-0\vale-source.docx"))
+        );
+        assert_eq!(copy_target(dir, Path::new("noext")), None);
+        assert_eq!(strip_verbatim(Path::new(r"\\?\C:\a\b.docx")), PathBuf::from(r"C:\a\b.docx"));
+        assert_eq!(strip_verbatim(Path::new(r"\\?\UNC\srv\s\b.docx")), PathBuf::from(r"\\?\UNC\srv\s\b.docx"));
+        assert!(same_path(r"c:\A\b.docx", Path::new(r"C:\a\B.DOCX")));
+        assert!(!same_path(r"C:\users\me\Report.docx", Path::new(r"C:\t\1-0\vale-source.docx")));
+    }
+
+    #[test]
+    fn private_copy_is_a_separate_file() {
+        let dir = crate::phone::files::tests::temp_dir("sign-office-copy");
+        let src = dir.join("a.docx");
+        std::fs::write(&src, b"doc").unwrap();
+        let (job, copy) = private_copy(&src).unwrap();
+        assert_ne!(copy, src);
+        assert_eq!(std::fs::read(&copy).unwrap(), b"doc");
+        assert!(is_within(&temp_root(), &job));
+        let _ = std::fs::remove_dir_all(&job);
+    }
+
+    #[test]
+    fn a_stuck_worker_gives_timed_out_without_waiting_for_it() {
+        let (tx, rx) = mpsc::channel::<Result<(), ConvertError>>();
+        let cancel = AtomicBool::new(false);
+        let aborted = AtomicBool::new(false);
+        let start = Instant::now();
+        // `tx` stays alive and silent: a worker blocked inside a user's instance.
+        let r = wait_result(&rx, Duration::from_millis(200), &cancel, || aborted.store(true, Ordering::SeqCst));
+        assert_eq!(r, Err(ConvertError::TimedOut));
+        assert!(aborted.load(Ordering::SeqCst));
+        assert!(cancel.load(Ordering::SeqCst));
+        assert!(start.elapsed() < Duration::from_secs(5));
+        drop(tx);
+    }
+
+    #[test]
+    fn wait_result_passes_answers_and_honours_cancel() {
+        let (tx, rx) = mpsc::channel();
+        tx.send(Err(ConvertError::Locked)).unwrap();
+        let cancel = AtomicBool::new(false);
+        assert_eq!(wait_result(&rx, Duration::from_secs(5), &cancel, || {}), Err(ConvertError::Locked));
+        let (tx2, rx2) = mpsc::channel::<Result<(), ConvertError>>();
+        let cancel = AtomicBool::new(true);
+        assert_eq!(wait_result(&rx2, Duration::from_secs(5), &cancel, || {}), Err(ConvertError::Failed));
+        drop(tx2);
+        let (tx3, rx3) = mpsc::channel::<Result<(), ConvertError>>();
+        drop(tx3);
+        assert_eq!(
+            wait_result(&rx3, Duration::from_secs(5), &AtomicBool::new(false), || {}),
+            Err(ConvertError::Failed)
+        );
     }
 
     // Live tests: run by hand with `cargo test --locked -- --ignored sign::office`.
@@ -847,5 +1099,31 @@ mod tests {
         // Close the stand-in document so Quit does not wait on a save prompt.
         _users_doc.call("Close", &[vi(0)]).unwrap();
         // `user` drops here and quits the instance this test started.
+    }
+
+    #[test]
+    #[ignore]
+    fn live_word_leaves_the_users_open_copy_of_the_same_file() {
+        if busy(&["winword.exe"]) {
+            return;
+        }
+        let _com = ComGuard::new();
+        let dir = crate::phone::files::tests::temp_dir("sign-office-same");
+        let src = dir.join("same.docx");
+        make_docx(&src, None);
+        let user = Session::start(&Suite::Microsoft, App::Writer).expect("word");
+        user.ours.expect("we started it");
+        user.app.put("Visible", vb(false)).unwrap();
+        let docs = user.app.get_disp("Documents").unwrap();
+        let mine = docs.call_disp("Add", &[]).unwrap();
+        mine.get_disp("Content").unwrap().put("Text", vs("unsaved edit")).unwrap();
+        // The same file open in the stand-in user's Word too.
+        let same = docs.call_disp("Open", &[vs(&src.to_string_lossy())]).unwrap();
+        let out = convert(&src, &dir.join("job"), &AtomicBool::new(false)).expect("convert");
+        pdf_ok(&out);
+        assert_eq!(to_i32(&docs.get("Count").unwrap()), Some(2), "a user's document was closed");
+        assert!(full_name(&same).is_some());
+        same.call("Close", &[vi(0)]).unwrap();
+        mine.call("Close", &[vi(0)]).unwrap();
     }
 }
