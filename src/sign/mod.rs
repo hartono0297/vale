@@ -40,7 +40,8 @@ pub fn is_signable(path: &Path) -> bool {
     kind_of(path).is_some()
 }
 
-/// A rotation in quarter turns, counter-clockwise (as PDF `cm` applies it).
+/// A rotation in quarter turns. A page's quarter is clockwise as displayed
+/// (PDF `/Rotate`); an item's `turn` is counter-clockwise in page space (PDF `cm`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Quarter {
     R0,
@@ -79,18 +80,20 @@ impl Quarter {
 
     /// One quarter turn clockwise.
     pub fn turn_cw(self) -> Quarter {
-        Quarter::from_degrees(self.degrees() - 90)
+        Quarter::from_degrees(self.degrees() + 90)
     }
 }
 
 /// A signature or initials bitmap: straight (not premultiplied) RGBA,
 /// top-down, cropped to the ink.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Mark {
     pub w: u32,
     pub h: u32,
     pub rgba: Vec<u8>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
 pub enum ItemKind {
     Signature(Arc<Mark>),
     Initials(Arc<Mark>),
@@ -103,6 +106,7 @@ pub enum ItemKind {
 /// page space (PDF points, origin at the page box's lower-left); `w, h` is
 /// the size in the item's own upright frame; `turn` is its rotation relative
 /// to page space.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Item {
     pub kind: ItemKind,
     pub page: usize,
@@ -135,8 +139,8 @@ mod tests {
         assert_eq!(Quarter::from_degrees(-90), Quarter::R270);
         assert_eq!(Quarter::from_degrees(450), Quarter::R90);
         assert_eq!(Quarter::from_degrees(45), Quarter::R0);
-        assert_eq!(Quarter::R270.turn_cw(), Quarter::R180);
-        assert_eq!(Quarter::R0.turn_cw(), Quarter::R270);
+        assert_eq!(Quarter::R270.turn_cw(), Quarter::R0);
+        assert_eq!(Quarter::R0.turn_cw(), Quarter::R90);
         assert_eq!(Quarter::R90.add(Quarter::R270), Quarter::R0);
         assert_eq!(Quarter::R180.degrees(), 180);
     }
