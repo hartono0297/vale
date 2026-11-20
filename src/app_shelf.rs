@@ -13,7 +13,7 @@
 //! changes and hand both to the motion state. It counts in `animating_at`,
 //! so the frame clock runs only while something moves.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -44,6 +44,22 @@ pub(super) const DRAG_START_DIP: f32 = 6.0;
 /// Files dropped while the panel is shut wait this long before the cards
 /// come in, so the panel's own opening (240 ms) is not what hides them.
 const OPEN_DELAY_MS: u64 = 120;
+
+/// How long new cards wait before they come in: none when the cards are
+/// already showing, else the panel's opening goes first.
+fn new_cards_delay(shown: bool) -> Duration {
+    if shown {
+        Duration::ZERO
+    } else {
+        Duration::from_millis(OPEN_DELAY_MS)
+    }
+}
+
+/// The index of the card whose file is `path` on `shelf`.
+fn index_of(shelf: &shelf::Shelf, path: &Path) -> Option<usize> {
+    let key = shelf::key_of(path);
+    (0..shelf.len()).find(|&i| shelf.get(i).is_some_and(|p| shelf::key_of(p) == key))
+}
 
 #[derive(Default)]
 pub(super) struct ShelfState {
@@ -267,13 +283,31 @@ impl App {
         if self.shelf.shelf.add_from(paths, shelf::Origin::Phone) == 0 {
             return;
         }
+        self.shelf_cards_came(&old, now);
+    }
+
+    /// A file Vale made (a signed document): a card of its own on the shelf,
+    /// coming in like a dropped one. When the shelf is full or the file is
+    /// already on it (`Shelf::add` returns 0) no card is added; the caller's
+    /// notice still shows.
+    pub(super) fn shelf_add_made(&mut self, path: PathBuf, now: Instant) {
+        let old = self.shelf.cards.clone();
+        if self.shelf.shelf.add(vec![path]) == 0 {
+            return;
+        }
+        self.shelf_cards_came(&old, now);
+    }
+
+    /// New cards were added to the shelf (`old` is the list before): look
+    /// again and move them in, after the panel's own opening if it is shut.
+    fn shelf_cards_came(&mut self, old: &[ShelfCard], now: Instant) {
         self.shelf_look();
-        let delay = if self.shelf.shown {
-            Duration::ZERO
-        } else {
-            Duration::from_millis(OPEN_DELAY_MS)
-        };
-        self.shelf_animate(&old, now, delay);
+        self.shelf_animate(old, now, new_cards_delay(self.shelf.shown));
+    }
+
+    /// The card whose file is `path` (as Windows sees the name), if still there.
+    pub(super) fn shelf_index_of(&self, path: &Path) -> Option<usize> {
+        index_of(&self.shelf.shelf, path)
     }
 
     /// `TIMER_SHELF_HOLD`: the drag stayed away; its hold on the panel ends.
@@ -435,6 +469,24 @@ pub(super) fn past_threshold(from: (i32, i32), to: (i32, i32), min: f32) -> bool
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_cards_wait_for_the_panel_only_while_it_is_shut() {
+        assert_eq!(new_cards_delay(true), Duration::ZERO);
+        assert_eq!(new_cards_delay(false), Duration::from_millis(OPEN_DELAY_MS));
+    }
+
+    #[test]
+    fn a_card_is_found_by_its_file_after_the_list_changed() {
+        let mut shelf = shelf::Shelf::default();
+        shelf.add(vec![PathBuf::from(r"C:\x\a.pdf"), PathBuf::from(r"C:\x\b.pdf")]);
+        assert_eq!(index_of(&shelf, Path::new(r"C:\x\b.pdf")), Some(1));
+        shelf.add(vec![PathBuf::from(r"C:\x\c.pdf")]);
+        assert_eq!(index_of(&shelf, Path::new(r"C:\X\B.PDF")), Some(1));
+        shelf.remove(0);
+        assert_eq!(index_of(&shelf, Path::new(r"C:\x\b.pdf")), Some(0));
+        assert_eq!(index_of(&shelf, Path::new(r"C:\x\gone.pdf")), None);
+    }
 
     #[test]
     fn a_move_without_the_button_ends_a_press() {

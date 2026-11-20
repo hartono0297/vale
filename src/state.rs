@@ -1060,6 +1060,11 @@ impl IslandState {
                     self.latch_on_shelf();
                 }
             }
+            Event::ShelfSign(i) => {
+                if self.view() == View::Panel(Page::Shelf) {
+                    self.collapse_for(Effect::ShelfSign(i), &mut effects);
+                }
+            }
             // The phone link needs the owner (files arrive): the same latch
             // as a drop, with the phone's stage on it. Not in fullscreen,
             // where the island is hidden.
@@ -10260,6 +10265,24 @@ mod tests {
             s.apply(Event::Dismiss, t0 + secs(20));
             assert!(!matches!(s.view(), View::Panel(_)), "{m:?}");
         }
+    }
+
+    #[test]
+    fn a_sign_pick_collapses_the_panel_like_a_card_click() {
+        let t0 = Instant::now();
+        let mut s = st();
+        open_on(&mut s, Page::Shelf, t0);
+        assert_eq!(s.apply(Event::ShelfSign(1), t0), vec![Effect::ShelfSign(1)]);
+        assert!(!s.panel_is_open());
+        // The same collapse as opening the card.
+        let mut o = st();
+        open_on(&mut o, Page::Shelf, t0);
+        o.apply(Event::Click(Hit::ShelfCard(1)), t0);
+        assert_eq!(s.view(), o.view());
+        // Another page: nothing.
+        let mut s = st();
+        open_on(&mut s, Page::Notes, t0);
+        assert!(s.apply(Event::ShelfSign(1), t0).is_empty());
     }
 
     #[test]
