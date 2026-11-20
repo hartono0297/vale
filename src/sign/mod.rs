@@ -6,10 +6,12 @@ pub mod image_out;
 pub mod ink;
 pub mod names;
 pub mod office;
+pub mod pdf_write;
 pub mod raster;
 pub mod render;
 pub mod session;
 pub mod store;
+pub mod winansi;
 pub mod window;
 
 use std::path::{Path, PathBuf};
