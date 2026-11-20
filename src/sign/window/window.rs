@@ -70,6 +70,16 @@ const CLASS: PCWSTR = w!("ValeSign");
 /// Tests build the real window but never show it or take the focus.
 pub(super) const ON_SCREEN: bool = !cfg!(test);
 
+/// Gives `hwnd` the keyboard focus, never in tests (`ON_SCREEN`). Every
+/// focus change of the signing window and the maker goes through here.
+pub(super) fn take_focus(hwnd: HWND) {
+    if ON_SCREEN {
+        unsafe {
+            let _ = SetFocus(Some(hwnd));
+        }
+    }
+}
+
 /// The renderer finished something (`Renderer::take`).
 const WM_RENDERED: u32 = WM_APP + 98;
 /// The opening worker left its outcome in the inbox.
@@ -204,6 +214,26 @@ pub(super) struct Loaded {
     opened: Option<Opened>,
     geoms: Vec<PageGeom>,
     image: bool,
+    outs: Outs,
+}
+
+/// Where the copy goes, worked out off the UI thread (the writable probe
+/// makes a file in the folder): `(path, fell back to Documents)`.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct Outs {
+    /// In the source's own format (PDF for a PDF or Office file).
+    pub own: (PathBuf, bool),
+    /// As a PDF, for an image (Simpan sebagai PDF).
+    pub pdf: Option<(PathBuf, bool)>,
+}
+
+impl Outs {
+    pub(super) fn pick(&self, as_pdf: bool) -> &(PathBuf, bool) {
+        match &self.pdf {
+            Some(p) if as_pdf => p,
+            _ => &self.own,
+        }
+    }
 }
 
 enum Outcome {
@@ -214,7 +244,8 @@ enum Outcome {
 
 enum Saved {
     To(PathBuf),
-    Failed(Key),
+    /// With the outputs worked out again (the folder may have changed).
+    Failed(Key, Outs),
 }
 
 #[derive(Default)]
@@ -251,6 +282,7 @@ pub(super) struct Win {
     pub note: Option<(String, Tone)>,
     /// Where the copy goes and whether that is the fallback folder.
     pub out: Option<(PathBuf, bool)>,
+    outs: Option<Outs>,
     /// Images: save as PDF instead of the image's own format.
     pub as_pdf: bool,
     pub rail_scroll: f32,
@@ -680,6 +712,7 @@ fn try_open(owner: HWND, src: Source, demo: bool) -> windows::core::Result<()> {
         pop: None,
         note: None,
         out: None,
+        outs: None,
         as_pdf: false,
         rail_scroll: 0.0,
         text: None,
@@ -730,9 +763,9 @@ fn try_open(owner: HWND, src: Source, demo: bool) -> windows::core::Result<()> {
         unsafe {
             let _ = ShowWindow(hwnd, SW_SHOW);
             let _ = SetForegroundWindow(hwnd);
-            let _ = SetFocus(Some(hwnd));
         }
     }
+    take_focus(hwnd);
     Ok(())
 }
 
@@ -854,11 +887,12 @@ fn start_open(w: &mut Win, password: Option<String>) {
             office::sweep(d);
         }
     };
+    let demo = w.demo;
     let name = if src.kind == Kind::Office && pending.is_none() { "sign-office" } else { "sign-open" };
     let spawned = std::thread::Builder::new().name(name.into()).spawn(move || {
         let outcome = {
             let _com = Com::init();
-            open_document(&src, pending, password, job_dir.as_deref(), &cancel, hwnd)
+            open_document(&src, demo, pending, password, job_dir.as_deref(), &cancel, hwnd)
         };
         if cancel.load(Ordering::SeqCst) {
             // The window closed without waiting: what was opened (a renderer
@@ -892,6 +926,7 @@ fn read_capped(path: &Path) -> Result<Vec<u8>, Key> {
 
 fn open_document(
     src: &Source,
+    demo: bool,
     pending: Option<Arc<Vec<u8>>>,
     password: Option<String>,
     job_dir: Option<&Path>,
@@ -904,7 +939,8 @@ fn open_document(
             Ok(r) => {
                 let (pw, ph) = r.page_size_dip(0);
                 let geoms = vec![image_out::image_geom(pw as u32, ph as u32)];
-                Outcome::Ready(Box::new(Loaded { engine: Engine::new(r), opened: None, geoms, image: true }))
+                let outs = outs_now(&src.path, demo, true);
+                Outcome::Ready(Box::new(Loaded { engine: Engine::new(r), opened: None, geoms, image: true, outs }))
             }
             Err(crate::sign::render::RenderOpenError::TooBig) => Outcome::Failed(Key::SignImageTooBig),
             Err(_) => Outcome::Failed(Key::SignCannotOpen),
@@ -947,7 +983,8 @@ fn open_document(
     match Renderer::start_pdf(opened.bytes.clone(), password, notify) {
         Ok(r) if r.page_count() as usize == opened.geoms.len() => {
             let geoms = opened.geoms.clone();
-            Outcome::Ready(Box::new(Loaded { engine: Engine::new(r), opened: Some(opened), geoms, image: false }))
+            let outs = outs_now(&src.path, demo, false);
+            Outcome::Ready(Box::new(Loaded { engine: Engine::new(r), opened: Some(opened), geoms, image: false, outs }))
         }
         Ok(_) => Outcome::Failed(Key::SignCannotOpen),
         Err(crate::sign::render::RenderOpenError::Password) => Outcome::Password { bytes, wrong: tried },
@@ -969,10 +1006,11 @@ fn on_opened(hwnd: HWND) {
         w.phase = phase_after(&outcome);
         let field = match outcome {
             Outcome::Ready(l) => {
-                let Loaded { engine, opened, geoms, image } = *l;
+                let Loaded { engine, opened, geoms, image, outs } = *l;
                 w.pending = None;
                 w.doc = Some(Doc { session: Session::new(geoms), engine, opened: opened.map(Arc::new), image });
                 w.cur = 0;
+                w.outs = Some(outs);
                 refresh_out(w);
                 w.password.take().map_or(Field_::Keep, Field_::Drop)
             }
@@ -1003,11 +1041,7 @@ fn on_opened(hwnd: HWND) {
         }
     };
     with(hwnd, |w| place_password(w));
-    if ON_SCREEN {
-        unsafe {
-            let _ = SetFocus(Some(focus_field.unwrap_or(hwnd)));
-        }
-    }
+    take_focus(focus_field.unwrap_or(hwnd));
     invalidate(hwnd);
 }
 
@@ -1393,12 +1427,51 @@ fn naming(src: &Path, demo: bool) -> (PathBuf, PathBuf) {
     }
 }
 
+/// The outputs of `src` for its own format and, for an image, PDF: one
+/// writable probe of the folder serves both.
+fn outs_for(
+    src: &Path,
+    demo: bool,
+    image: bool,
+    l: Lang,
+    writable: impl Fn(&Path) -> bool,
+    exists: impl Fn(&Path) -> bool,
+) -> Outs {
+    let (named, fallback) = naming(src, demo);
+    let probed = std::cell::Cell::new(None);
+    let writable = |d: &Path| match probed.get() {
+        Some(ok) => ok,
+        None => {
+            let ok = writable(d);
+            probed.set(Some(ok));
+            ok
+        }
+    };
+    let out = |ext: &str| {
+        let path = names::output_path(&named, ext, l, &exists, &writable, &fallback);
+        let fell_back = path.parent() != named.parent();
+        (path, fell_back)
+    };
+    let own_ext = if image {
+        src.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_else(|| "png".into())
+    } else {
+        "pdf".into()
+    };
+    let own = out(&own_ext);
+    let pdf = (image && own_ext != "pdf").then(|| out("pdf"));
+    Outs { own, pdf }
+}
+
+/// `outs_for` against the disk. Off the UI thread only: it probes the folder.
+fn outs_now(src: &Path, demo: bool, image: bool) -> Outs {
+    outs_for(src, demo, image, lang(), names::dir_is_writable, |p| p.exists())
+}
+
+/// Shows the output for the chosen format from what the worker worked out;
+/// nothing touches the disk here.
 fn refresh_out(w: &mut Win) {
-    let ext = out_ext(w);
-    let (src, fallback) = naming(&w.src.path, w.demo);
-    let path = names::output_path(&src, &ext, lang(), |p| p.exists(), names::dir_is_writable, &fallback);
-    let fell_back = path.parent() != src.parent();
-    w.out = Some((path, fell_back));
+    let image = w.doc.as_ref().is_some_and(|d| d.image);
+    w.out = w.outs.as_ref().map(|o| o.pick(image && w.as_pdf).clone());
 }
 
 // ---- actions ----
@@ -1535,9 +1608,7 @@ fn on_maker(hwnd: HWND) {
             arm_mark(w, tool, Arc::new(mark));
         }
     });
-    unsafe {
-        let _ = SetFocus(Some(hwnd));
-    }
+    take_focus(hwnd);
     invalidate(hwnd);
 }
 
@@ -1730,8 +1801,8 @@ fn close_maker(hwnd: HWND) {
     if let Some(m) = mk {
         unsafe {
             let _ = DestroyWindow(m);
-            let _ = SetFocus(Some(hwnd));
         }
+        take_focus(hwnd);
     }
     invalidate(hwnd);
 }
@@ -1826,9 +1897,7 @@ fn open_text(hwnd: HWND, at: (f32, f32), index: Option<usize>, typed: Option<Str
     }
     fit_text(hwnd);
     if focus {
-        unsafe {
-            let _ = SetFocus(Some(edit));
-        }
+        take_focus(edit);
     }
     invalidate(hwnd);
     Some(edit)
@@ -1868,9 +1937,7 @@ fn rescale_fields(hwnd: HWND) {
         if let Some(e) = make_password(hwnd, &typed)
             && had_focus
         {
-            unsafe {
-                let _ = SetFocus(Some(e));
-            }
+            take_focus(e);
         }
     }
     let mk = with(hwnd, |w| w.maker.map(|m| (m, ui_of(w), w.client))).flatten();
@@ -1957,10 +2024,8 @@ fn finish_text(hwnd: HWND, keep: bool) -> bool {
             }
         }
     });
-    unsafe {
-        if IsWindow(Some(hwnd)).as_bool() {
-            let _ = SetFocus(Some(hwnd));
-        }
+    if unsafe { IsWindow(Some(hwnd)) }.as_bool() {
+        take_focus(hwnd);
     }
     invalidate(hwnd);
     true
@@ -2027,12 +2092,17 @@ fn start_save(w: &mut Win) {
     let l = lang();
     let hwnd = w.hwnd.0 as isize;
     let inbox = w.inbox.clone();
+    let (src_path, demo, image) = (w.src.path.clone(), w.demo, d.image);
     let spawned = std::thread::Builder::new().name("sign-save".into()).spawn(move || {
         let result = {
             let _com = Com::init();
-            match save_bytes(job, &pages, &items) {
+            let saved = match save_bytes(job, &pages, &items) {
                 Ok(bytes) => write_out(&src, &ext, l, &fallback, &bytes),
-                Err(k) => Saved::Failed(k),
+                Err(k) => Err(k),
+            };
+            match saved {
+                Ok(p) => Saved::To(p),
+                Err(k) => Saved::Failed(k, outs_now(&src_path, demo, image)),
             }
         };
         if let Ok(mut i) = inbox.lock() {
@@ -2082,7 +2152,7 @@ pub(super) fn encodable(items: &[Item]) -> Result<Vec<Item>, Key> {
         .collect()
 }
 
-fn write_out(src: &Path, ext: &str, l: Lang, fallback: &Path, bytes: &[u8]) -> Saved {
+fn write_out(src: &Path, ext: &str, l: Lang, fallback: &Path, bytes: &[u8]) -> Result<PathBuf, Key> {
     // The folder can turn out unwritable (or the name taken) between the
     // check and the write: then the fallback folder, then give up.
     for writable in [true, false] {
@@ -2098,10 +2168,10 @@ fn write_out(src: &Path, ext: &str, l: Lang, fallback: &Path, bytes: &[u8]) -> S
             let _ = std::fs::create_dir_all(dir);
         }
         if let Some(p) = crate::screenshot::win::write_at(&path, bytes) {
-            return Saved::To(p);
+            return Ok(p);
         }
     }
-    Saved::Failed(Key::SignSaveFailed)
+    Err(Key::SignSaveFailed)
 }
 
 fn on_saved(hwnd: HWND) {
@@ -2112,9 +2182,10 @@ fn on_saved(hwnd: HWND) {
         let saved = w.inbox.lock().ok().and_then(|mut i| i.saved.take())?;
         match saved {
             Saved::To(p) => Some((w.owner, p)),
-            Saved::Failed(k) => {
+            Saved::Failed(k, outs) => {
                 w.phase = Phase::Ready;
                 say(w, k, Tone::Error);
+                w.outs = Some(outs);
                 refresh_out(w);
                 relayout(w);
                 None
@@ -2163,9 +2234,7 @@ fn request_close(hwnd: HWND) {
     match action {
         Some(CloseAction::Destroy) => destroy(hwnd),
         Some(CloseAction::Ask) => {
-            unsafe {
-                let _ = SetFocus(Some(hwnd));
-            }
+            take_focus(hwnd);
             invalidate(hwnd);
         }
         _ => {}
@@ -2684,9 +2753,7 @@ extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
                     EDIT_CANCEL => request_close(hwnd),
                     EDIT_TAB => {
                         with(hwnd, |w| w.focus = Some(Hit::OpenPassword));
-                        unsafe {
-                            let _ = SetFocus(Some(hwnd));
-                        }
+                        take_focus(hwnd);
                         invalidate(hwnd);
                     }
                     _ => {}
@@ -2967,7 +3034,7 @@ mod tests {
         std::fs::write(&path, crate::sign::raster::encode_png_rgba(&white).unwrap()).unwrap();
         let src = Source { path: path.clone(), kind: Kind::Image };
         let cancel = AtomicBool::new(false);
-        let Outcome::Ready(l) = open_document(&src, None, None, None, &cancel, 0) else {
+        let Outcome::Ready(l) = open_document(&src, false, None, None, None, &cancel, 0) else {
             panic!("the image did not open");
         };
         assert!(l.image && l.opened.is_none());
@@ -2993,7 +3060,7 @@ mod tests {
         let path = dir.join("Besar.png");
         std::fs::write(&path, crate::sign::render::tests::png_header_only(8001, 8000)).unwrap();
         let src = Source { path, kind: Kind::Image };
-        let outcome = open_document(&src, None, None, None, &AtomicBool::new(false), 0);
+        let outcome = open_document(&src, false, None, None, None, &AtomicBool::new(false), 0);
         assert!(matches!(outcome, Outcome::Failed(Key::SignImageTooBig)));
         assert_eq!(phase_after(&outcome), Phase::Failed(Key::SignImageTooBig));
         let _ = std::fs::remove_dir_all(&dir);
@@ -3014,6 +3081,35 @@ mod tests {
         assert!(worker_ended(&e));
         // No worker ever ran: the window sweeps.
         assert!(window_closed(&Mutex::new(JobEnd::default())));
+    }
+
+    #[test]
+    fn the_focus_is_only_taken_through_the_on_screen_guard() {
+        let call = concat!("SetFocus", "(Some(");
+        for (name, src, allowed) in [("window.rs", include_str!("window.rs"), 1), ("maker.rs", include_str!("maker.rs"), 0)] {
+            assert_eq!(src.matches(call).count(), allowed, "{name}: use take_focus, which checks ON_SCREEN");
+        }
+    }
+
+    #[test]
+    fn output_paths_are_worked_out_once_with_one_probe() {
+        let probes = std::cell::Cell::new(0);
+        let writable = |_: &Path| {
+            probes.set(probes.get() + 1);
+            true
+        };
+        let src = Path::new(r"C:\Kerja\Surat.JPG");
+        let o = outs_for(src, false, true, Lang::Id, writable, |_| false);
+        assert_eq!(probes.get(), 1, "one probe for both formats");
+        assert_eq!(o.own, (PathBuf::from(r"C:\Kerja\Surat (ditandatangani).jpg"), false));
+        assert_eq!(o.pdf, Some((PathBuf::from(r"C:\Kerja\Surat (ditandatangani).pdf"), false)));
+        assert_eq!(o.pick(true), &o.pdf.clone().unwrap());
+        assert_eq!(o.pick(false), &o.own);
+        // A PDF has one output; a folder that cannot be written falls back.
+        let o = outs_for(Path::new(r"C:\Kerja\Kontrak.pdf"), false, false, Lang::Id, |_| false, |_| false);
+        assert!(o.pdf.is_none() && o.own.1, "{o:?}");
+        assert_eq!(o.own.0.extension().and_then(|e| e.to_str()), Some("pdf"));
+        assert_eq!(o.pick(true), &o.own);
     }
 
     #[test]

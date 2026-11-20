@@ -26,7 +26,7 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, ReleaseCapture, SetCapture, SetFocus, VK_BACK, VK_DELETE, VK_ESCAPE, VK_RETURN,
+    GetKeyState, ReleaseCapture, SetCapture, VK_BACK, VK_DELETE, VK_ESCAPE, VK_RETURN,
     VK_SHIFT, VK_SPACE, VK_TAB,
 };
 use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
@@ -44,7 +44,7 @@ use windows_numerics::Vector2;
 
 use super::paint::{PAPER, premultiplied};
 use super::text_edit::{self, EDIT_CANCEL, EDIT_COMMIT, EDIT_TAB, Field, WM_SIGN_EDIT};
-use super::window::{ON_SCREEN, WM_MAKER};
+use super::window::{WM_MAKER, take_focus};
 use crate::i18n::{Key, tr};
 use crate::shot_edit::gfx::{Align, Gfx, Target, bitmap, color, rect_f};
 use crate::shot_edit::icons::fill_round;
@@ -373,11 +373,7 @@ pub(super) fn open(
         focus: None,
     };
     MAKERS.with(|m| m.borrow_mut().insert(hwnd.0 as isize, mk));
-    if ON_SCREEN {
-        unsafe {
-            let _ = SetFocus(Some(hwnd));
-        }
-    }
+    take_focus(hwnd);
     Some(hwnd)
 }
 
@@ -583,11 +579,7 @@ fn set_tab(hwnd: HWND, t: Tab) {
     })
     .unwrap_or(false);
     if need && let Some(edit) = make_name(hwnd, "") {
-        if ON_SCREEN {
-            unsafe {
-                let _ = SetFocus(Some(edit));
-            }
-        }
+        take_focus(edit);
     }
     show_name(hwnd);
     relayout(hwnd);
@@ -803,9 +795,7 @@ fn on_key(hwnd: HWND, vk: u16) {
             .flatten();
             if let Some(e) = edit {
                 with(hwnd, |m| m.focus = None);
-                unsafe {
-                    let _ = SetFocus(Some(e));
-                }
+                take_focus(e);
             }
             invalidate(hwnd);
         }
@@ -1303,11 +1293,9 @@ extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
             } else if let Some(Some(h)) = with(hwnd, |m| m.layout.hit(x, y)) {
                 act(hwnd, h);
             }
-            unsafe {
-                let typing = with(hwnd, |m| m.tab == Tab::Type).unwrap_or(false);
-                if !typing {
-                    let _ = SetFocus(Some(hwnd));
-                }
+            let typing = with(hwnd, |m| m.tab == Tab::Type).unwrap_or(false);
+            if !typing {
+                take_focus(hwnd);
             }
             invalidate(hwnd);
             LRESULT(0)
@@ -1402,9 +1390,7 @@ extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
                     EDIT_CANCEL => act(hwnd, MHit::Cancel),
                     EDIT_TAB => {
                         with(hwnd, |m| m.focus = Some(MHit::Ink(true)));
-                        unsafe {
-                            let _ = SetFocus(Some(hwnd));
-                        }
+                        take_focus(hwnd);
                         invalidate(hwnd);
                     }
                     _ => {}
