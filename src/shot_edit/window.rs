@@ -344,6 +344,9 @@ struct Editor {
     original: Arc<Shot>,
     /// The turn count `base` was built for (`session.turns()` once synced).
     shown_turns: u8,
+    /// A turn changed the shape while the window was maximized: the restore
+    /// that follows re-fits the normal window to the turned picture.
+    refit_on_restore: bool,
     session: Session,
     gfx: Gfx,
     target: Option<Target>,
@@ -540,6 +543,7 @@ fn try_open(
         base: original.clone(),
         original,
         shown_turns: 0,
+        refit_on_restore: false,
         session: Session::with_doc(doc),
         gfx,
         target: None,
@@ -779,9 +783,11 @@ fn sync_picture(hwnd: HWND) {
             let c = e.layout.canvas;
             let avail = (c.w - 2.0 * PAD * ui, c.h - 2.0 * PAD * ui);
             e.scale = initial_scale((e.base.w, e.base.h), avail);
+            e.refit_on_restore = true;
             recompute_view(e);
         });
     } else {
+        with(hwnd, |e| e.refit_on_restore = false);
         refit_window(hwnd);
     }
     invalidate(hwnd);
@@ -1798,13 +1804,20 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 (lparam.0 & 0xFFFF) as u32,
                 ((lparam.0 >> 16) & 0xFFFF) as u32,
             );
-            with(hwnd, |e| {
+            let restored = wparam.0 == 0 /* SIZE_RESTORED */;
+            let refit = with(hwnd, |e| {
                 e.client = (w.max(1), h.max(1));
                 if let Some(t) = &e.target {
                     t.resize(w, h);
                 }
                 recompute_view(e);
+                restored && std::mem::take(&mut e.refit_on_restore)
             });
+            // Back from maximized after a turn: the old normal size was for
+            // the other shape.
+            if refit == Some(true) {
+                refit_window(hwnd);
+            }
             invalidate(hwnd);
             LRESULT(0)
         }
