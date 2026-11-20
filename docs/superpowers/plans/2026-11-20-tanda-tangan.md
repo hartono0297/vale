@@ -215,7 +215,6 @@
     - Any deleted page → full rewrite: `let state = doc.encryption_state.clone()`; apply edits on a clone; `delete_pages`; `prune_objects()`; if `state` is `Some`: `doc.encryption_state = None; doc.encrypt(&state)` and on any error `Err(CannotKeepLock)`; `save_to`.
     - Content stream per page: `q` + per item `q <item_matrix> cm` + draw + `Q`, closing `Q`. Signature/Initials: Image XObject `/DeviceRGB` 8 bpc Flate (compress with `miniz_oxide::deflate::compress_to_vec_zlib(…, 6)`) + `/SMask` DeviceGray from alpha; resource names `/ValeS0`, `/ValeS1`, … (never clash: skip names already in the page's `/XObject`). Date / Text: `BT /ValeF 1 Tf … Tj ET` with Helvetica `WinAnsiEncoding`, font size = item `h * 0.8`, if `winansi::encode` returns `None` the caller (window) has already turned the text into a Mark, so the writer only gets encodable text. Check: a stroked path, line width 0.12 of the unit box, colour `0.12 0.23 0.54 RG` (ink blue `#1F3A8A`).
     - Before returning, reload the output with `load_mem_with_password` (same password) to prove it parses; failure → `Err(Write)`.
-  - `pub fn new_pdf_from_image(png_rgba: &Mark, w_pt: f32, h_pt: f32) -> Vec<u8>` (used by Task 4): one-page PDF with the image full-page.
   - `winansi.rs`: `pub fn encode(s: &str) -> Option<Vec<u8>>` (cp1252, including `€ ‚ ƒ „ … † ‡ ˆ ‰ Š ‹ Œ Ž ‘ ’ “ ” • – — ˜ ™ š › œ ž Ÿ` in 0x80-0x9F), `pub fn pdf_string(bytes: &[u8]) -> Vec<u8>` (escape `\ ( )`).
 
 - [ ] **Step 1: Write failing tests:**
@@ -246,11 +245,12 @@
 - Test: in-file
 
 **Interfaces:**
-- Consumes: Task 1 types, Task 2 `geom`, Task 3 `pdf_write::new_pdf_from_image`, `crate::shelf_thumb::decode`-style WIC decode (copy the needed part; full size, cap 250 M pixels), `crate::screenshot::win::encode_png`, JPEG encode copied from `src/phone/thumb.rs`.
+- Consumes: Task 1 types, Task 2 `geom`, Task 7 `raster` (offscreen D2D on WIC), `crate::shelf_thumb::decode`-style WIC decode (copy the needed part; full size, cap 250 M pixels), `crate::screenshot::win::encode_png`, JPEG encode copied from `src/phone/thumb.rs`.
 - Produces:
   - `pub fn image_geom(w_px: u32, h_px: u32) -> PageGeom`: points = px × 0.75, base R0.
   - `pub enum ImageFormat { Png, Jpg, Pdf }`
-  - `pub fn compose(src_bgra: &[u8], w: u32, h: u32, page: &Page, items: &[Item], marks_for_text: &dyn Fn(&str, f32) -> Mark) -> (u32, u32, Vec<u8>)`: draws items onto a copy of the pixels with a D2D WIC bitmap render target (pattern: `shot_edit/export.rs:63-82`, copied, not called), then applies `page.extra` by rotating pixels. Text/date drawn via DirectWrite "Arial" at `h × 0.8` pt × (1/0.75) px, ink blue; check as a path.
+  - `pub fn compose(src_bgra: &[u8], w: u32, h: u32, page: &Page, items: &[Item], marks_for_text: &dyn Fn(&str, f32) -> Mark) -> (u32, u32, Vec<u8>)`: draws items onto a copy of the pixels with `raster::offscreen` (draw the source as a bitmap first), then applies `page.extra` by rotating pixels. Text/date drawn via DirectWrite "Arial" at `h × 0.8` pt × (1/0.75) px, ink blue; check as a path.
+  - `pub fn new_pdf_from_image(img: &Mark, w_pt: f32, h_pt: f32) -> Vec<u8>`: one-page lopdf PDF with the image full-page (Flate RGB, no SMask needed for opaque input).
   - `pub fn save_image(composed: (u32, u32, Vec<u8>), fmt: ImageFormat) -> Result<Vec<u8>, String>`: PNG via `encode_png` (keeps opaque), JPG quality 0.92, PDF via `new_pdf_from_image` with the page in points.
 - [ ] **Step 1: Failing tests** (COM initialised in the test; no window):
   - `geom_is_three_quarters_of_pixels`: 1600×1200 → `{1200, 900, R0}`.
@@ -322,20 +322,24 @@
 ### Task 7: Ink and the signature store
 
 **Files:**
-- Create: `src/sign/ink.rs`, `src/sign/store.rs`
+- Create: `src/sign/ink.rs`, `src/sign/store.rs`, `src/sign/raster.rs`
 - Test: in-file
 
 **Interfaces:**
+- Produces (`raster.rs`, shared with Tasks 4 and 8):
+  - `pub fn offscreen(w: u32, h: u32, draw: impl FnOnce(&ID2D1RenderTarget, &ID2D1Factory, &IDWriteFactory)) -> Option<Vec<u8>>`: D2D render target on a WIC bitmap (`GUID_WICPixelFormat32bppPBGRA`), transparent clear, runs `draw`, returns premultiplied BGRA top-down. COM must be initialised by the caller.
+  - `pub fn to_mark(w: u32, h: u32, pbgra: &[u8]) -> Mark` (unpremultiply to straight RGBA).
+  - `pub fn encode_png_rgba(m: &Mark) -> Option<Vec<u8>>` and `pub fn decode_png_rgba(bytes: &[u8]) -> Option<Mark>` (WIC, alpha kept).
 - Produces (`ink.rs`):
   - `pub enum Ink { Blue, Black }` → `#1F3A8A`, `#1C1C1C`.
-  - `pub fn from_strokes(strokes: &[Vec<(f32, f32)>], ink: Ink) -> Option<Mark>`: Catmull-Rom smoothing, stroke width 3.2 at a 300×90 logical pad rendered at 2× (600×180 px), antialiased with a D2D WIC render target, then `crop`. Empty / all-transparent → `None`.
+  - `pub fn from_strokes(strokes: &[Vec<(f32, f32)>], ink: Ink) -> Option<Mark>`: Catmull-Rom smoothing, stroke width 3.2 at a 300×90 logical pad rendered at 2× (600×180 px), antialiased with `raster::offscreen`, then `crop`. Empty / all-transparent → `None`.
   - `pub fn from_text(name: &str, ink: Ink) -> Option<Mark>`: DirectWrite system font "Ink Free", fallback "Segoe Script", fallback "Segoe Print", 64 px, then `crop`.
   - `pub fn from_photo(path: &Path, ink: Ink) -> Option<Mark>`: WIC decode (cap 40 M px, downscale long side to 1600), luminance `L`; alpha = 255 when `L < t_low`, 0 when `L > t_high`, linear between, with `t_low`/`t_high` from the image's own median (`t_high = median - 25`, `t_low = t_high - 60`, clamped), colour = ink; then `crop`. No ink found → `None`.
   - `pub fn crop(m: Mark, pad: u32) -> Option<Mark>`: bounding box of alpha > 8, plus `pad` px.
 - Produces (`store.rs`):
   - `pub struct Saved { pub signatures: Vec<Mark>, pub initials: Vec<Mark> }` (each at most 4; newest first; adding a fifth drops the oldest).
   - `pub fn path() -> PathBuf` = `crate::data_dir::dir().join("signatures.bin")`.
-  - `pub fn load_from(path: &Path) -> Saved` (empty on any error), `pub fn save_to(path: &Path, s: &Saved) -> io::Result<()>`: plain = a small binary (`b"VSIG1"`, counts, per mark `w, h, len, PNG bytes` via `encode_png`-equivalent that keeps alpha; copy `clipboard/pack.rs:96`'s approach), `dpapi::protect(&plain, w!("Vale signatures"))`, `dpapi::wipe(&mut plain)`, write `signatures.bin.tmp` then rename (pattern `clipboard/persist.rs:176`).
+  - `pub fn load_from(path: &Path) -> Saved` (empty on any error), `pub fn save_to(path: &Path, s: &Saved) -> io::Result<()>`: plain = a small binary (`b"VSIG1"`, counts, per mark `w, h, len, PNG bytes` via `raster::encode_png_rgba`), `dpapi::protect(&plain, w!("Vale signatures"))`, `dpapi::wipe(&mut plain)`, write `signatures.bin.tmp` then rename (pattern `clipboard/persist.rs:176`).
   - `pub fn add(s: &mut Saved, m: Mark, initials: bool)`, `pub fn remove(s: &mut Saved, initials: bool, i: usize)`.
 - [ ] **Step 1: Failing tests:**
   - `strokes_make_a_cropped_mark`: one diagonal stroke → `Some`, `w < 600`, `h < 180`, some pixel with alpha 255 and RGB ≈ ink blue.
