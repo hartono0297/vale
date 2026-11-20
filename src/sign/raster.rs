@@ -16,8 +16,8 @@ use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Imaging::{
     CLSID_WICImagingFactory, GUID_ContainerFormatPng, GUID_WICPixelFormat32bppBGRA,
     GUID_WICPixelFormat32bppPBGRA, IWICBitmapSource, IWICImagingFactory, WICBitmapCacheOnLoad,
-    WICBitmapDitherTypeNone, WICBitmapEncoderNoCache, WICBitmapPaletteTypeCustom,
-    WICDecodeMetadataCacheOnDemand,
+    WICBitmapDitherTypeNone, WICBitmapEncoderNoCache, WICBitmapLockWrite,
+    WICBitmapPaletteTypeCustom, WICDecodeMetadataCacheOnDemand, WICRect,
 };
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, CoCreateInstance, STREAM_SEEK_END, STREAM_SEEK_SET,
@@ -39,7 +39,31 @@ pub fn offscreen(
     h: u32,
     draw: impl FnOnce(&ID2D1RenderTarget, &ID2D1Factory, &IDWriteFactory),
 ) -> Option<Vec<u8>> {
-    if w == 0 || h == 0 || u64::from(w) * u64::from(h) > MAX_PIXELS {
+    target(w, h, MAX_PIXELS, None::<fn(&mut [u8], u32) -> bool>, draw)
+}
+
+/// Like `offscreen`, but up to `cap` pixels, and the target starts as the
+/// pixels `fill` writes straight into it (premultiplied BGRA, top-down; it
+/// gets the target's buffer and stride, false gives up), so a big image is
+/// never held twice before drawing.
+pub fn offscreen_over(
+    w: u32,
+    h: u32,
+    cap: u64,
+    fill: impl FnOnce(&mut [u8], u32) -> bool,
+    draw: impl FnOnce(&ID2D1RenderTarget, &ID2D1Factory, &IDWriteFactory),
+) -> Option<Vec<u8>> {
+    target(w, h, cap, Some(fill), draw)
+}
+
+fn target(
+    w: u32,
+    h: u32,
+    cap: u64,
+    fill: Option<impl FnOnce(&mut [u8], u32) -> bool>,
+    draw: impl FnOnce(&ID2D1RenderTarget, &ID2D1Factory, &IDWriteFactory),
+) -> Option<Vec<u8>> {
+    if w == 0 || h == 0 || u64::from(w) * u64::from(h) > cap {
         return None;
     }
     unsafe {
@@ -50,6 +74,21 @@ pub fn offscreen(
         let target = wic
             .CreateBitmap(w, h, &GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad)
             .ok()?;
+        let filled = fill.is_some();
+        if let Some(fill) = fill {
+            let rect = WICRect { X: 0, Y: 0, Width: i32::try_from(w).ok()?, Height: i32::try_from(h).ok()? };
+            // The lock ends before the render target is made over the bitmap.
+            let lock = target.Lock(&rect, WICBitmapLockWrite.0 as u32).ok()?;
+            let stride = lock.GetStride().ok()?;
+            let (mut size, mut data) = (0u32, std::ptr::null_mut::<u8>());
+            lock.GetDataPointer(&mut size, &mut data).ok()?;
+            if data.is_null() || u64::from(size) < u64::from(stride) * u64::from(h) || stride < w.checked_mul(4)? {
+                return None;
+            }
+            if !fill(std::slice::from_raw_parts_mut(data, size as usize), stride) {
+                return None;
+            }
+        }
         let props = D2D1_RENDER_TARGET_PROPERTIES {
             r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
             pixelFormat: D2D1_PIXEL_FORMAT {
@@ -62,12 +101,14 @@ pub fn offscreen(
         };
         let rt: ID2D1RenderTarget = d2d.CreateWicBitmapRenderTarget(&target, &props).ok()?;
         rt.BeginDraw();
-        rt.Clear(Some(&D2D1_COLOR_F {
-            r: 0.0,
-            g: 0.0,
-            b: 0.0,
-            a: 0.0,
-        }));
+        if !filled {
+            rt.Clear(Some(&D2D1_COLOR_F {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 0.0,
+            }));
+        }
         draw(&rt, &d2d, &dwrite);
         rt.EndDraw(None, None).ok()?;
         let mut out = vec![0u8; w as usize * h as usize * 4];

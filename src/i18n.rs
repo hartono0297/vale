@@ -619,7 +619,9 @@ keys! {
     SignMakerNewSignature => "Tanda tangan baru", "New signature";
     SignMakerNewInitials => "Paraf baru", "New initials";
     SignMakerPadHint => "Gambar di sini pakai mouse, touchpad, atau pen", "Draw here with a mouse, touchpad or pen";
-    SignMakerPhotoFailed => "Foto ini tidak bisa dipakai. Pakai foto tanda tangan di kertas putih, paling besar 40 MP.", "This photo cannot be used. Use a photo of a signature on white paper, at most 40 MP.";
+    SignMakerPhotoFailed => "Foto ini tidak bisa dipakai. Pakai foto tanda tangan di kertas putih.", "This photo cannot be used. Use a photo of a signature on white paper.";
+    SignMakerPhotoTooBig => "Foto ini terlalu besar (lebih dari 250 megapiksel).", "This photo is too big (over 250 megapixels).";
+    SignImageTooBig => "Gambar ini terlalu besar (lebih dari 64 megapiksel).", "This image is too big (over 64 megapixels).";
     PhoneStarting => "Mencari jaringan\u{2026}", "Finding the network\u{2026}";
     PhoneStep1 => "Scan pakai kamera HP", "Scan with the phone's camera";
     PhoneStep1Sub => "Atau salin link-nya ke laptop", "Or copy the link to a laptop";
@@ -5676,6 +5678,8 @@ mod copy_preview_tests {
             Key::SignMakerNewInitials,
             Key::SignMakerPadHint,
             Key::SignMakerPhotoFailed,
+            Key::SignMakerPhotoTooBig,
+            Key::SignImageTooBig,
         ] {
             assert_ne!(text(Lang::Id, key), text(Lang::En, key), "{key:?}");
         }

@@ -61,8 +61,8 @@ const CROP_PAD: u32 = 4;
 const MAX_NAME: usize = 40;
 const TEXT_PX: f32 = 64.0;
 /// Photos above this many pixels are refused; the long side is cut to
-/// `PHOTO_SIDE`.
-const MAX_PHOTO_PIXELS: u64 = 40_000_000;
+/// `PHOTO_SIDE` by WIC's scaler, so the full size is never held in memory.
+pub const MAX_PHOTO_PIXELS: u64 = 250_000_000;
 const PHOTO_SIDE: u32 = 1600;
 
 /// Drawn strokes (logical pad coordinates, 300 x 90) as a smooth mark.
@@ -220,11 +220,35 @@ pub fn from_text(name: &str, ink: Ink) -> Option<Mark> {
     crop(raster::to_mark(w, h, &pbgra), CROP_PAD)
 }
 
+/// Why a photo gave no mark.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PhotoError {
+    /// More pixels than `MAX_PHOTO_PIXELS`.
+    TooBig,
+    /// Not an image WIC reads, or no ink stands out from the paper.
+    Unusable,
+}
+
+/// The size a `w` x `h` photo is decoded at.
+pub fn photo_size(w: u32, h: u32) -> Result<(u32, u32), PhotoError> {
+    if w == 0 || h == 0 {
+        return Err(PhotoError::Unusable);
+    }
+    if u64::from(w) * u64::from(h) > MAX_PHOTO_PIXELS {
+        return Err(PhotoError::TooBig);
+    }
+    let long = w.max(h);
+    if long <= PHOTO_SIDE {
+        return Ok((w, h));
+    }
+    let side = |v: u32| ((u64::from(v) * u64::from(PHOTO_SIDE) / u64::from(long)) as u32).max(1);
+    Ok((side(w), side(h)))
+}
+
 /// A photo of a signature on paper: the paper goes transparent, the ink
-/// takes `ink`'s colour. `None` when the file is not a usable image or no ink
-/// stands out from the paper.
-pub fn from_photo(path: &Path, ink: Ink) -> Option<Mark> {
-    let file = std::fs::File::open(path).ok()?;
+/// takes `ink`'s colour.
+pub fn from_photo(path: &Path, ink: Ink) -> Result<Mark, PhotoError> {
+    let file = std::fs::File::open(path).map_err(|_| PhotoError::Unusable)?;
     let (w, h, bgra) = unsafe { decode_photo(&file)? };
     let luma: Vec<u8> = bgra
         .chunks_exact(4)
@@ -264,26 +288,29 @@ pub fn from_photo(path: &Path, ink: Ink) -> Option<Mark> {
         };
         rgba.extend_from_slice(&[r, g, b, a]);
     }
-    crop(Mark { w, h, rgba }, CROP_PAD)
+    crop(Mark { w, h, rgba }, CROP_PAD).ok_or(PhotoError::Unusable)
 }
 
-/// The first frame of `file` (EXIF-rotated), downscaled so the long side is
-/// at most `PHOTO_SIDE`, as `(w, h, premultiplied BGRA)`.
-unsafe fn decode_photo(file: &std::fs::File) -> Option<(u32, u32, Vec<u8>)> {
+/// The first frame of `file` (EXIF-rotated), downscaled by WIC so the long
+/// side is at most `PHOTO_SIDE`, as `(w, h, premultiplied BGRA)`. The size is
+/// read from the header first: an oversized photo is refused undecoded.
+unsafe fn decode_photo(file: &std::fs::File) -> Result<(u32, u32, Vec<u8>), PhotoError> {
+    unsafe { decode_photo_inner(file) }.unwrap_or(Err(PhotoError::Unusable))
+}
+
+unsafe fn decode_photo_inner(file: &std::fs::File) -> Option<Result<(u32, u32, Vec<u8>), PhotoError>> {
     unsafe {
         let wic: IWICImagingFactory =
             CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).ok()?;
         let source = crate::phone::thumb::oriented_source(&wic, file)?;
         let (mut w, mut h) = (0u32, 0u32);
         source.GetSize(&mut w, &mut h).ok()?;
-        if w == 0 || h == 0 || u64::from(w) * u64::from(h) > MAX_PHOTO_PIXELS {
-            return None;
-        }
+        let (nw, nh) = match photo_size(w, h) {
+            Ok(size) => size,
+            Err(e) => return Some(Err(e)),
+        };
         let mut source: IWICBitmapSource = source;
-        let long = w.max(h);
-        if long > PHOTO_SIDE {
-            let nw = ((u64::from(w) * u64::from(PHOTO_SIDE) / u64::from(long)) as u32).max(1);
-            let nh = ((u64::from(h) * u64::from(PHOTO_SIDE) / u64::from(long)) as u32).max(1);
+        if (nw, nh) != (w, h) {
             let scaler = wic.CreateBitmapScaler().ok()?;
             scaler
                 .Initialize(&source, nw, nh, WICBitmapInterpolationModeFant)
@@ -304,7 +331,7 @@ unsafe fn decode_photo(file: &std::fs::File) -> Option<(u32, u32, Vec<u8>)> {
             .ok()?;
         let mut out = vec![0u8; w as usize * h as usize * 4];
         converter.CopyPixels(std::ptr::null(), w * 4, &mut out).ok()?;
-        Some((w, h, out))
+        Some(Ok((w, h, out)))
     }
 }
 
@@ -426,7 +453,7 @@ mod tests {
         let dir = crate::phone::files::tests::temp_dir("sign-photo");
         let path = dir.join("sig.png");
         write_line_png(&path, true);
-        let m = from_photo(&path, Ink::Blue).expect("a mark");
+        let m = from_photo(&path, Ink::Blue).ok().expect("a mark");
         assert!(m.w < 400 && m.h < 200, "{} x {}", m.w, m.h);
         assert_eq!(m.rgba[3], 0, "corner is transparent");
         let mid = ((m.h / 2 * m.w + m.w / 2) * 4) as usize;
@@ -441,8 +468,31 @@ mod tests {
         let dir = crate::phone::files::tests::temp_dir("sign-blank");
         let path = dir.join("blank.png");
         write_line_png(&path, false);
-        assert!(from_photo(&path, Ink::Blue).is_none());
-        assert!(from_photo(&dir.join("missing.png"), Ink::Blue).is_none());
+        assert_eq!(from_photo(&path, Ink::Blue).err(), Some(PhotoError::Unusable));
+        assert_eq!(from_photo(&dir.join("missing.png"), Ink::Blue).err(), Some(PhotoError::Unusable));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn photos_up_to_250_megapixels_scale_to_1600() {
+        assert_eq!(photo_size(20_000, 12_500), Ok((1600, 1000)));
+        assert_eq!(photo_size(9000, 5000), Ok((1600, 888)));
+        assert_eq!(photo_size(800, 600), Ok((800, 600)));
+        assert_eq!(photo_size(20_001, 12_500), Err(PhotoError::TooBig));
+        assert_eq!(photo_size(0, 10), Err(PhotoError::Unusable));
+    }
+
+    #[test]
+    fn an_oversized_photo_says_so_before_decoding() {
+        let _com = Com::new();
+        let dir = crate::phone::files::tests::temp_dir("sign-photo-big");
+        let huge = dir.join("huge.png");
+        std::fs::write(&huge, crate::sign::render::tests::png_header_only(20_001, 12_500)).expect("write");
+        assert_eq!(from_photo(&huge, Ink::Blue).err(), Some(PhotoError::TooBig));
+        // 45 MP is taken (scaled); a header without pixels then cannot be read.
+        let big = dir.join("big.png");
+        std::fs::write(&big, crate::sign::render::tests::png_header_only(9000, 5000)).expect("write");
+        assert_eq!(from_photo(&big, Ink::Blue).err(), Some(PhotoError::Unusable));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

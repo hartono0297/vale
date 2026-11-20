@@ -249,7 +249,8 @@ struct Maker {
     typed: Option<Arc<Mark>>,
     photo_path: Option<PathBuf>,
     photo: Option<Arc<Mark>>,
-    photo_failed: bool,
+    /// Why the last photo picked gave no mark.
+    photo_failed: Option<ink::PhotoError>,
     saved: Vec<Arc<Mark>>,
     bmps: HashMap<usize, (Arc<Mark>, ID2D1Bitmap)>,
     hover: Option<MHit>,
@@ -365,7 +366,7 @@ pub(super) fn open(
         typed: None,
         photo_path: None,
         photo: None,
-        photo_failed: false,
+        photo_failed: None,
         saved,
         bmps: HashMap::new(),
         hover: None,
@@ -530,7 +531,7 @@ fn act(hwnd: HWND, hit: MHit) {
                     retype(m);
                 }
                 if let Some(p) = m.photo_path.clone() {
-                    m.photo = ink::from_photo(&p, ink_of(blue)).map(Arc::new);
+                    m.photo = ink::from_photo(&p, ink_of(blue)).ok().map(Arc::new);
                 }
             });
         }
@@ -700,8 +701,9 @@ fn pick_photo(hwnd: HWND) {
     };
     let Some(path) = path else { return };
     with(hwnd, |m| {
-        m.photo = ink::from_photo(&path, ink_of(m.blue)).map(Arc::new);
-        m.photo_failed = m.photo.is_none();
+        let made = ink::from_photo(&path, ink_of(m.blue));
+        m.photo_failed = made.as_ref().err().copied();
+        m.photo = made.ok().map(Arc::new);
         m.photo_path = m.photo.is_some().then_some(path);
     });
     relayout(hwnd);
@@ -1011,8 +1013,12 @@ fn paint(m: &mut Maker) -> windows::core::Result<()> {
                     &mk,
                     Rect { x: pad.x + 16.0 * ui, y: pad.y + 40.0 * ui, w: pad.w - 32.0 * ui, h: pad.h - 52.0 * ui },
                 );
-            } else if m.photo_failed {
-                m.gfx.text_in(&rt, &brush, tr(Key::SignMakerPhotoFailed), (
+            } else if let Some(e) = m.photo_failed {
+                let why = match e {
+                    ink::PhotoError::TooBig => Key::SignMakerPhotoTooBig,
+                    ink::PhotoError::Unusable => Key::SignMakerPhotoFailed,
+                };
+                m.gfx.text_in(&rt, &brush, tr(why), (
                     pad.x + 12.0 * ui,
                     pad.bottom() - 44.0 * ui,
                     pad.w - 24.0 * ui,

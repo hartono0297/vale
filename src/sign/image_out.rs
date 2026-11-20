@@ -19,7 +19,7 @@ use windows::Win32::Graphics::DirectWrite::{
 use windows::Win32::Graphics::Imaging::{
     CLSID_WICImagingFactory, GUID_ContainerFormatJpeg, GUID_WICPixelFormat24bppBGR,
     GUID_WICPixelFormat32bppBGRA, GUID_WICPixelFormat32bppPBGRA, IWICBitmapSource,
-    IWICImagingFactory, WICBitmapDitherTypeNone, WICBitmapEncoderNoCache,
+    IWICFormatConverter, IWICImagingFactory, WICBitmapDitherTypeNone, WICBitmapEncoderNoCache,
     WICBitmapPaletteTypeCustom, WICRect,
 };
 use windows::Win32::System::Com::StructuredStorage::PROPBAG2;
@@ -44,8 +44,14 @@ const PT_PER_PX: f32 = 0.75;
 const JPEG_QUALITY: f32 = 0.92;
 /// Text and dates fill this much of the item's height.
 const TEXT_FILL: f32 = 0.8;
-/// The most pixels an image may have (same cap as the shelf and the editor).
-const MAX_PIXELS: u64 = 250_000_000;
+/// The most pixels an image may have to be signed: the renderer refuses more
+/// at open, so a save never meets an image it cannot compose.
+pub const MAX_PIXELS: u64 = 64_000_000;
+
+/// Whether a `w` x `h` image is within `MAX_PIXELS` (and not empty).
+pub fn fits(w: u32, h: u32) -> bool {
+    w != 0 && h != 0 && u64::from(w) * u64::from(h) <= MAX_PIXELS
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ImageFormat {
@@ -205,11 +211,11 @@ fn rotate_pixels(pix: Vec<u8>, w: u32, h: u32, q: Quarter) -> (u32, u32, Vec<u8>
     (nw, nh, out)
 }
 
-/// The image at `path` at full resolution as premultiplied BGRA, top-down,
-/// with its EXIF orientation applied (the same source the editor shows), or
-/// `None` (not a file, empty, over the shelf size cap, over 250 M pixels, not
-/// an image WIC can decode). COM must be initialised by the caller.
-pub fn decode_oriented(path: &Path) -> Option<(u32, u32, Vec<u8>)> {
+/// The image at `path` with its EXIF orientation applied, as a premultiplied
+/// BGRA source and its size, or `None` (not a file, empty, over the shelf
+/// size cap, over `MAX_PIXELS`, not an image WIC can decode). The file stays
+/// open with the source: WIC reads it as pixels are asked for.
+unsafe fn oriented_pbgra(path: &Path) -> Option<(std::fs::File, IWICFormatConverter, u32, u32)> {
     let file = std::fs::OpenOptions::new().read(true).share_mode(7).open(path).ok()?;
     let meta = file.metadata().ok()?;
     if !meta.is_file() || meta.len() == 0 || meta.len() > MAX_BYTES {
@@ -221,7 +227,7 @@ pub fn decode_oriented(path: &Path) -> Option<(u32, u32, Vec<u8>)> {
         let source = oriented_source(&wic, &file)?;
         let (mut w, mut h) = (0u32, 0u32);
         source.GetSize(&mut w, &mut h).ok()?;
-        if w == 0 || h == 0 || u64::from(w) * u64::from(h) > MAX_PIXELS {
+        if !fits(w, h) {
             return None;
         }
         let converter = wic.CreateFormatConverter().ok()?;
@@ -235,6 +241,18 @@ pub fn decode_oriented(path: &Path) -> Option<(u32, u32, Vec<u8>)> {
                 WICBitmapPaletteTypeCustom,
             )
             .ok()?;
+        Some((file, converter, w, h))
+    }
+}
+
+/// The image at `path` at full resolution as premultiplied BGRA, top-down,
+/// with its EXIF orientation applied (the same source the editor shows), or
+/// `None` as for `oriented_pbgra`. COM must be initialised by the caller.
+/// Tests only: the save composes from the file (`compose_file`).
+#[cfg(test)]
+pub fn decode_oriented(path: &Path) -> Option<(u32, u32, Vec<u8>)> {
+    unsafe {
+        let (_file, converter, w, h) = oriented_pbgra(path)?;
         let stride = w.checked_mul(4)?;
         let mut bgra = vec![0u8; usize::try_from(stride).ok()?.checked_mul(h as usize)?];
         let rect = WICRect { X: 0, Y: 0, Width: i32::try_from(w).ok()?, Height: i32::try_from(h).ok()? };
@@ -250,6 +268,8 @@ pub fn decode_oriented(path: &Path) -> Option<(u32, u32, Vec<u8>)> {
 /// dates and checks are drawn directly (Arial in ink blue, a stroked tick),
 /// so `marks_for_text` is never called. `None` when the source length is
 /// wrong or drawing fails: never untouched pixels presented as signed.
+/// Tests only: the save composes from the file (`compose_file`).
+#[cfg(test)]
 pub fn compose(
     src_bgra: &[u8],
     w: u32,
@@ -258,27 +278,51 @@ pub fn compose(
     items: &[Item],
     _marks_for_text: &dyn Fn(&str, f32) -> Mark,
 ) -> Option<(u32, u32, Vec<u8>)> {
-    let expected = (w as usize).checked_mul(h as usize)?.checked_mul(4)?;
-    if src_bgra.len() != expected {
+    let row = (w as usize).checked_mul(4)?;
+    if src_bgra.len() != row.checked_mul(h as usize)? {
+        return None;
+    }
+    compose_with(w, h, page, items, |buf, stride| {
+        for (y, src) in src_bgra.chunks_exact(row).enumerate() {
+            let at = y * stride as usize;
+            let Some(dst) = buf.get_mut(at..at + row) else { return false };
+            dst.copy_from_slice(src);
+        }
+        true
+    })
+}
+
+/// `compose` straight from the file at `path`: its pixels are decoded into
+/// the drawing target itself, so only the target and the result are ever
+/// held at full size. `None` as for `decode_oriented` or `compose`.
+pub fn compose_file(path: &Path, page: &Page, items: &[Item]) -> Option<(u32, u32, Vec<u8>)> {
+    unsafe {
+        let (_file, converter, w, h) = oriented_pbgra(path)?;
+        let rect = WICRect { X: 0, Y: 0, Width: i32::try_from(w).ok()?, Height: i32::try_from(h).ok()? };
+        compose_with(w, h, page, items, |buf, stride| converter.CopyPixels(&rect, stride, buf).is_ok())
+    }
+}
+
+/// The items drawn over the pixels `fill` writes into a `w` x `h` target,
+/// then turned by `page.extra`.
+fn compose_with(
+    w: u32,
+    h: u32,
+    page: &Page,
+    items: &[Item],
+    fill: impl FnOnce(&mut [u8], u32) -> bool,
+) -> Option<(u32, u32, Vec<u8>)> {
+    if !fits(w, h) {
         return None;
     }
     let scale = 1.0 / PT_PER_PX;
     let g = page.geom;
-    let mut ok = true;
-    let pixels = raster::offscreen(w, h, |rt, d2d, dwrite| {
-        let Ok(bitmap) = crate::shot_edit::gfx::bitmap(rt, w, h, src_bgra) else {
-            ok = false;
-            return;
-        };
-        let dest = D2D_RECT_F { left: 0.0, top: 0.0, right: w as f32, bottom: h as f32 };
-        unsafe {
-            rt.DrawBitmap(&bitmap, Some(&dest), 1.0, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, None);
-        }
+    let pixels = raster::offscreen_over(w, h, MAX_PIXELS, fill, |rt, d2d, dwrite| {
         for item in items {
             draw_item(rt, d2d, dwrite, item, g, scale);
         }
     })?;
-    ok.then(|| rotate_pixels(pixels, w, h, page.extra))
+    Some(rotate_pixels(pixels, w, h, page.extra))
 }
 
 /// A one-page PDF of `w_pt` x `h_pt` points showing `img` full page (RGB,
@@ -342,17 +386,15 @@ pub fn new_pdf_from_image(img: &Mark, w_pt: f32, h_pt: f32) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// Premultiplied BGRA flattened onto white: opaque BGRA.
-fn flatten_on_white(bgra: &[u8]) -> Vec<u8> {
-    let mut out = bgra.to_vec();
-    for p in out.chunks_exact_mut(4) {
+/// Premultiplied BGRA flattened onto white, in place: opaque BGRA.
+fn flatten_on_white(bgra: &mut [u8]) {
+    for p in bgra.chunks_exact_mut(4) {
         let inv = 255 - p[3];
         for c in &mut p[..3] {
             *c = c.saturating_add(inv);
         }
         p[3] = 255;
     }
-    out
 }
 
 fn encode_jpeg(w: u32, h: u32, bgra: &[u8]) -> Option<Vec<u8>> {
@@ -414,16 +456,20 @@ fn encode_jpeg(w: u32, h: u32, bgra: &[u8]) -> Option<Vec<u8>> {
 /// is the image in points. Everything is flattened onto white first, so a
 /// source with transparency never saves as garbage.
 pub fn save_image(composed: (u32, u32, Vec<u8>), fmt: ImageFormat) -> Result<Vec<u8>, String> {
-    let (w, h, pbgra) = composed;
-    if w == 0 || h == 0 || pbgra.len() != w as usize * h as usize * 4 {
+    let (w, h, mut flat) = composed;
+    if w == 0 || h == 0 || flat.len() != w as usize * h as usize * 4 {
         return Err("Gambar tidak valid".to_string());
     }
-    let flat = flatten_on_white(&pbgra);
+    flatten_on_white(&mut flat);
     let bytes = match fmt {
         ImageFormat::Png => crate::screenshot::win::encode_png(w, h, &flat),
         ImageFormat::Jpg => encode_jpeg(w, h, &flat),
         ImageFormat::Pdf => {
-            let mark = raster::to_mark(w, h, &flat);
+            // Opaque now, so BGRA to RGBA is only a swap, in place.
+            for p in flat.chunks_exact_mut(4) {
+                p.swap(0, 2);
+            }
+            let mark = Mark { w, h, rgba: flat };
             new_pdf_from_image(&mark, w as f32 * PT_PER_PX, h as f32 * PT_PER_PX)
         }
     };
@@ -540,6 +586,27 @@ mod tests {
         let short = vec![255u8; 400 * 300 * 4 - 4];
         assert!(compose(&short, 400, 300, &page(g, Quarter::R0), &[], &no_text).is_none());
         assert!(compose(&white(400, 300), 0, 300, &page(g, Quarter::R0), &[], &no_text).is_none());
+    }
+
+    #[test]
+    fn a_45_megapixel_image_composes() {
+        let _com = Com::new();
+        let (w, h) = (9000u32, 5000u32);
+        let g = image_geom(w, h);
+        let it = sig(blue_mark(40, 20), 30.0, 30.0, 40.0, 20.0, Quarter::R0);
+        let out = compose(&white(w, h), w, h, &page(g, Quarter::R0), &[it.clone()], &no_text)
+            .expect("45 MP composes");
+        assert_eq!((out.0, out.1), (w, h));
+        let (rx, ry, rw, rh) = item_view_rect(&it, g, Quarter::R0, 4.0 / 3.0);
+        assert!(px(&out, (rx + rw / 2.0) as u32, (ry + rh / 2.0) as u32)[2] < 80);
+        assert_eq!(px(&out, w - 1, 0), [255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn the_image_cap_is_64_megapixels() {
+        assert!(fits(8000, 8000));
+        assert!(!fits(8001, 8000));
+        assert!(!fits(0, 10));
     }
 
     #[test]

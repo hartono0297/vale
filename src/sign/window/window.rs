@@ -882,6 +882,7 @@ fn open_document(
                 let geoms = vec![image_out::image_geom(pw as u32, ph as u32)];
                 Outcome::Ready(Box::new(Loaded { engine: Engine::new(r), opened: None, geoms, image: true }))
             }
+            Err(crate::sign::render::RenderOpenError::TooBig) => Outcome::Failed(Key::SignImageTooBig),
             Err(_) => Outcome::Failed(Key::SignCannotOpen),
         };
     }
@@ -2027,10 +2028,8 @@ fn save_bytes(job: SaveJob, pages: &[Page], items: &[Item]) -> Result<Vec<u8>, K
         }
         SaveJob::Image { path, fmt } => {
             let page = pages.first().ok_or(Key::SignSaveFailed)?;
-            let (w, h, bgra) = image_out::decode_oriented(&path).ok_or(Key::SignSaveFailed)?;
             let mine: Vec<Item> = items.iter().filter(|i| i.page == 0).cloned().collect();
-            let unused = |_: &str, _: f32| Mark { w: 0, h: 0, rgba: Vec::new() };
-            let composed = image_out::compose(&bgra, w, h, page, &mine, &unused).ok_or(Key::SignSaveFailed)?;
+            let composed = image_out::compose_file(&path, page, &mine).ok_or(Key::SignSaveFailed)?;
             image_out::save_image(composed, fmt).map_err(|_| Key::SignSaveFailed)
         }
     }
@@ -2940,6 +2939,19 @@ mod tests {
         // Turned a quarter: 20 x 40, and the check is ink on the white.
         assert_eq!((out.w, out.h), (20, 40));
         assert!(out.rgba.chunks_exact(4).any(|p| u16::from(p[2]) > u16::from(p[0]) + 40));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_image_over_64_megapixels_says_so_at_open() {
+        let _com = Com::init();
+        let dir = crate::phone::files::tests::temp_dir("sign-window-image-big");
+        let path = dir.join("Besar.png");
+        std::fs::write(&path, crate::sign::render::tests::png_header_only(8001, 8000)).unwrap();
+        let src = Source { path, kind: Kind::Image };
+        let outcome = open_document(&src, None, None, None, &AtomicBool::new(false), 0);
+        assert!(matches!(outcome, Outcome::Failed(Key::SignImageTooBig)));
+        assert_eq!(phase_after(&outcome), Phase::Failed(Key::SignImageTooBig));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

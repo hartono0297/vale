@@ -26,8 +26,7 @@ use windows::core::{HSTRING, Interface};
 
 use crate::phone::thumb::{MAX_BYTES, oriented_source};
 
-/// The most pixels an image may declare (WIC decodes them before scaling).
-const MAX_PIXELS: u64 = 250_000_000;
+use super::image_out;
 
 /// The most pixels one rendered page may have, so a huge width request cannot
 /// ask for gigabytes.
@@ -62,6 +61,8 @@ pub enum RenderOpenError {
     Broken,
     /// Something else stopped the load.
     Unsupported,
+    /// An image with more pixels than signing takes (`image_out::MAX_PIXELS`).
+    TooBig,
 }
 
 #[derive(Default)]
@@ -400,16 +401,17 @@ fn decode_png(png: &[u8]) -> Option<Pixels> {
             .ok()?;
         let frame = decoder.GetFrame(0).ok()?;
         let source: IWICBitmapSource = frame.cast().ok()?;
-        copy_pixels(&wic, &source)
+        copy_pixels(&wic, &source, MAX_PAGE_PIXELS)
     }
 }
 
-/// `source` converted to premultiplied BGRA, at its own size.
-unsafe fn copy_pixels(wic: &IWICImagingFactory, source: &IWICBitmapSource) -> Option<Pixels> {
+/// `source` converted to premultiplied BGRA, at its own size; `None` over
+/// `cap` pixels.
+unsafe fn copy_pixels(wic: &IWICImagingFactory, source: &IWICBitmapSource, cap: u64) -> Option<Pixels> {
     unsafe {
         let (mut w, mut h) = (0u32, 0u32);
         source.GetSize(&mut w, &mut h).ok()?;
-        if w == 0 || h == 0 || u64::from(w) * u64::from(h) > MAX_PIXELS {
+        if w == 0 || h == 0 || u64::from(w) * u64::from(h) > cap {
             return None;
         }
         let converter = wic.CreateFormatConverter().ok()?;
@@ -449,7 +451,14 @@ fn decode_image(path: &std::path::Path) -> Result<Pixels, RenderOpenError> {
     unsafe {
         let wic = wic().ok_or(RenderOpenError::Unsupported)?;
         let source = oriented_source(&wic, &file).ok_or(RenderOpenError::Broken)?;
-        copy_pixels(&wic, &source).ok_or(RenderOpenError::Unsupported)
+        // The size comes from the header: an image too big to sign is
+        // refused before any pixel is decoded.
+        let (mut w, mut h) = (0u32, 0u32);
+        source.GetSize(&mut w, &mut h).map_err(|_| RenderOpenError::Broken)?;
+        if !image_out::fits(w, h) {
+            return Err(if w == 0 || h == 0 { RenderOpenError::Broken } else { RenderOpenError::TooBig });
+        }
+        copy_pixels(&wic, &source, image_out::MAX_PIXELS).ok_or(RenderOpenError::Unsupported)
     }
 }
 
@@ -484,7 +493,7 @@ fn scale_image(full: &Pixels, width_px: u32) -> Option<Pixels> {
             .Initialize(&bitmap, width_px, h, WICBitmapInterpolationModeFant)
             .ok()?;
         let source: IWICBitmapSource = scaler.cast().ok()?;
-        copy_pixels(&wic, &source)
+        copy_pixels(&wic, &source, image_out::MAX_PIXELS)
     }
 }
 
@@ -545,7 +554,7 @@ static PDF_DEVICE_FIRST: extern "C" fn() = {
 };
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::phone::files::tests::temp_dir;
     use crate::phone::thumb::tests::write_gradient_png;
@@ -732,6 +741,53 @@ mod tests {
         std::fs::write(&bad, b"not an image").expect("write");
         assert!(Renderer::start_image(bad, || {}).is_err());
         drop(r);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn crc32(bytes: &[u8]) -> u32 {
+        let mut c = !0u32;
+        for &b in bytes {
+            c ^= u32::from(b);
+            for _ in 0..8 {
+                c = if c & 1 == 1 { (c >> 1) ^ 0xEDB8_8320 } else { c >> 1 };
+            }
+        }
+        !c
+    }
+
+    /// A PNG that only declares its size: a valid IHDR, no pixels. WIC reads
+    /// the size from it; decoding the pixels would fail.
+    pub(crate) fn png_header_only(w: u32, h: u32) -> Vec<u8> {
+        let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
+        let mut chunk = |kind: &[u8], data: &[u8]| {
+            out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            let mut body = kind.to_vec();
+            body.extend_from_slice(data);
+            out.extend_from_slice(&body);
+            out.extend_from_slice(&crc32(&body).to_be_bytes());
+        };
+        let mut ihdr = Vec::new();
+        ihdr.extend_from_slice(&w.to_be_bytes());
+        ihdr.extend_from_slice(&h.to_be_bytes());
+        ihdr.extend_from_slice(&[8, 6, 0, 0, 0]);
+        chunk(b"IHDR", &ihdr);
+        // An empty zlib stream: far too little for the declared pixels.
+        chunk(b"IDAT", &[0x78, 0x9C, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01]);
+        chunk(b"IEND", &[]);
+        out
+    }
+
+    #[test]
+    fn an_image_over_the_cap_is_too_big_at_open() {
+        let dir = temp_dir("sign-render-too-big");
+        // 8001 x 8000 is just over 64 megapixels.
+        let big = dir.join("besar.png");
+        std::fs::write(&big, png_header_only(8001, 8000)).expect("write");
+        assert_eq!(Renderer::start_image(big, || {}).err(), Some(RenderOpenError::TooBig));
+        // Just under the cap is not refused for its size.
+        let fits = dir.join("pas.png");
+        std::fs::write(&fits, png_header_only(8000, 8000)).expect("write");
+        assert_ne!(Renderer::start_image(fits, || {}).err(), Some(RenderOpenError::TooBig));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
