@@ -576,48 +576,103 @@ fn act(hwnd: HWND, hit: MHit) {
 }
 
 fn set_tab(hwnd: HWND, t: Tab) {
-    let made = with(hwnd, |m| {
+    let need = with(hwnd, |m| {
         m.tab = t;
-        if t == Tab::Type && m.name.is_none() {
-            let r = m.layout.field;
-            let spec = text_edit::Spec {
-                rect: (r.x as i32, r.y as i32, r.w as i32, r.h as i32),
-                initial: "",
-                px: 15.0 * m.ui,
-                face: crate::ui::fonts::gdi_text_face(),
-                color: m.p.text,
-                back: m.p.field,
-                password: false,
-                commit_on_blur: false,
-            };
-            return Some(spec_field(hwnd, &spec));
-        }
-        None
+        t == Tab::Type && m.name.is_none()
     })
-    .flatten();
-    if let Some(f) = made.flatten() {
-        let edit = f.edit;
-        with(hwnd, |m| m.name = Some(f));
+    .unwrap_or(false);
+    if need && let Some(edit) = make_name(hwnd, "") {
         if ON_SCREEN {
             unsafe {
                 let _ = SetFocus(Some(edit));
             }
         }
     }
-    let show = with(hwnd, |m| m.name.as_ref().map(|f| (f.edit, m.tab == Tab::Type))).flatten();
-    if let Some((edit, on)) = show {
-        unsafe {
-            let _ = windows::Win32::UI::WindowsAndMessaging::ShowWindow(
-                edit,
-                if on { windows::Win32::UI::WindowsAndMessaging::SW_SHOW } else { windows::Win32::UI::WindowsAndMessaging::SW_HIDE },
-            );
-        }
-    }
+    show_name(hwnd);
     relayout(hwnd);
 }
 
-fn spec_field(hwnd: HWND, spec: &text_edit::Spec) -> Option<Field> {
-    text_edit::create(hwnd, spec)
+/// The name field (Ketik), made outside the maker's borrow (making an EDIT
+/// sends messages to its parent), holding `initial`. Returns its HWND.
+fn make_name(hwnd: HWND, initial: &str) -> Option<HWND> {
+    let (r, ui, p) = with(hwnd, |m| (m.layout.field, m.ui, m.p))?;
+    let inset = (6.0 * ui).round();
+    let spec = text_edit::Spec {
+        rect: (
+            (r.x + inset) as i32,
+            (r.y + inset) as i32,
+            (r.w - 2.0 * inset) as i32,
+            (r.h - 2.0 * inset) as i32,
+        ),
+        initial,
+        px: 15.0 * ui,
+        face: crate::ui::fonts::gdi_text_face(),
+        color: p.text,
+        back: p.field,
+        password: false,
+        commit_on_blur: false,
+    };
+    let f = text_edit::create(hwnd, &spec)?;
+    let edit = f.edit;
+    let mut slot = Some(f);
+    with(hwnd, |m| m.name = slot.take());
+    if let Some(f) = slot {
+        text_edit::destroy(f);
+        return None;
+    }
+    Some(edit)
+}
+
+fn show_name(hwnd: HWND) {
+    use windows::Win32::UI::WindowsAndMessaging::{SW_HIDE, SW_SHOW, ShowWindow};
+    let show = with(hwnd, |m| m.name.as_ref().map(|f| (f.edit, m.tab == Tab::Type))).flatten();
+    if let Some((edit, on)) = show {
+        unsafe {
+            let _ = ShowWindow(edit, if on { SW_SHOW } else { SW_HIDE });
+        }
+    }
+}
+
+/// The signing window moved to a monitor with another scale: new sizes, the
+/// drawing kept on the pad, the name field remade at the new font size.
+pub(super) fn rescale(hwnd: HWND, ui: f32) {
+    let plan = with(hwnd, |m| {
+        if (m.ui - ui).abs() < f32::EPSILON {
+            return None;
+        }
+        m.ui = ui;
+        let mw = |k: Key, weight: i32| m.gfx.measure(tr(k), 13.0 * ui, weight).0;
+        m.labels = MLabels {
+            redo: mw(Key::SignMakerRedo, 500),
+            pick: mw(Key::SignMakerPhotoPick, 500),
+            cancel: mw(Key::SignCancel, 500),
+            use_: mw(Key::SignMakerUse, 600),
+        };
+        m.bmps.clear();
+        Some((m.layout.pad, m.name.take()))
+    })
+    .flatten();
+    let Some((old_pad, name)) = plan else { return };
+    let typed = name.map(|f| {
+        let t = text_edit::text(f.edit);
+        text_edit::destroy(f);
+        t
+    });
+    relayout(hwnd);
+    with(hwnd, |m| {
+        let new = m.layout.pad;
+        let k = new.w / old_pad.w.max(1.0);
+        for s in &mut m.strokes {
+            for p in s.iter_mut() {
+                *p = (new.x + (p.0 - old_pad.x) * k, new.y + (p.1 - old_pad.y) * k);
+            }
+        }
+    });
+    if let Some(t) = typed {
+        make_name(hwnd, &t);
+        show_name(hwnd);
+    }
+    invalidate(hwnd);
 }
 
 /// The system's file dialog, images only. Runs modal on this thread.
@@ -1215,7 +1270,9 @@ extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
                 BeginPaint(hwnd, &mut ps);
             }
             let failed = with(hwnd, |m| {
-                if let Err(e) = paint(m) {
+                let drawn = paint(m);
+                super::paint::evict_unused(&mut m.bmps);
+                if let Err(e) = drawn {
                     m.target = None;
                     m.bmps.clear();
                     return e.code() == windows::Win32::Foundation::D2DERR_RECREATE_TARGET;

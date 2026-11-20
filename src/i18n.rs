@@ -614,6 +614,7 @@ keys! {
     SignPlaceHint => "Klik di halaman untuk menaruhnya.", "Click on the page to place it.";
     SignTextHint => "Ketik teksnya, lalu tekan Enter.", "Type the text, then press Enter.";
     SignAllPagesDone => "Paraf dipasang di {n} halaman lain.", "Initials put on {n} other pages.";
+    SignAllPagesDoneOne => "Paraf dipasang di 1 halaman lain.", "Initials put on 1 other page.";
     SignAllPagesNone => "Tidak ada halaman lain yang muat untuk paraf ini.", "No other page has room for these initials.";
     SignMakerNewSignature => "Tanda tangan baru", "New signature";
     SignMakerNewInitials => "Paraf baru", "New initials";
@@ -5669,6 +5670,7 @@ mod copy_preview_tests {
             Key::SignPlaceHint,
             Key::SignTextHint,
             Key::SignAllPagesDone,
+            Key::SignAllPagesDoneOne,
             Key::SignAllPagesNone,
             Key::SignMakerNewSignature,
             Key::SignMakerNewInitials,

@@ -211,6 +211,13 @@ pub(super) fn premultiplied(m: &Mark) -> Vec<u8> {
     out
 }
 
+/// Drops the bitmaps of marks nothing else holds any more (a removed item,
+/// a forgotten saved mark, an old typed preview), so the cache follows what
+/// can still be drawn.
+pub(super) fn evict_unused<B>(cache: &mut std::collections::HashMap<usize, (Arc<Mark>, B)>) {
+    cache.retain(|_, (m, _)| Arc::strong_count(m) > 1);
+}
+
 fn mark_bitmap(w: &mut Win, rt: &ID2D1RenderTarget, m: &Arc<Mark>) -> Option<ID2D1Bitmap> {
     let key = Arc::as_ptr(m) as usize;
     if let Some((_, b)) = w.mark_bmps.get(&key) {
@@ -395,7 +402,9 @@ pub(super) fn paint(w: &mut Win) {
     unsafe {
         BeginPaint(w.hwnd, &mut ps);
     }
-    match draw(w) {
+    let drawn = draw(w);
+    evict_unused(&mut w.mark_bmps);
+    match drawn {
         Ok(()) => w.lost = 0,
         Err(e) if e.code() == D2DERR_RECREATE_TARGET => {
             w.target = None;
@@ -1080,6 +1089,19 @@ mod tests {
         // An item placed upright on a page shown at R90 has turn R90: no
         // visual turn.
         assert_eq!(Quarter::R90.add(neg(Quarter::R90)), Quarter::R0);
+    }
+
+    #[test]
+    fn the_mark_cache_keeps_only_marks_still_held() {
+        let held = Arc::new(Mark { w: 1, h: 1, rgba: vec![0; 4] });
+        let gone = Arc::new(Mark { w: 1, h: 1, rgba: vec![0; 4] });
+        let mut cache = std::collections::HashMap::new();
+        cache.insert(Arc::as_ptr(&held) as usize, (held.clone(), ()));
+        cache.insert(Arc::as_ptr(&gone) as usize, (gone.clone(), ()));
+        drop(gone);
+        evict_unused(&mut cache);
+        assert_eq!(cache.len(), 1);
+        assert!(cache.contains_key(&(Arc::as_ptr(&held) as usize)));
     }
 
     #[test]

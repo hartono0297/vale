@@ -67,22 +67,45 @@ pub fn take_reports() -> Vec<Report> {
 
 // ---- saved signatures ----
 
-thread_local! {
-    /// The saved signatures and initials of this UI thread's windows, and
-    /// whether they came from disk (a demo never reads or writes the file).
-    static STORE: RefCell<Option<(bool, Saved)>> = const { RefCell::new(None) };
+/// The saved marks of this UI thread's windows: the store as on disk (or
+/// in memory for a demo) and the same marks as shared `Arc`s, made once, so
+/// a picker drawn many times shows the same `Arc` every time and its bitmap
+/// cache stays one entry per mark.
+struct Kept {
+    disk: bool,
+    saved: Saved,
+    signatures: Vec<Arc<Mark>>,
+    initials: Vec<Arc<Mark>>,
 }
 
-fn with_store<R>(demo: bool, f: impl FnOnce(&mut Saved) -> R) -> R {
+impl Kept {
+    fn load(disk: bool) -> Kept {
+        let saved = if disk { store::load_from(&store::path()) } else { Saved::default() };
+        let arcs = |l: &[Mark]| l.iter().cloned().map(Arc::new).collect();
+        Kept { disk, signatures: arcs(&saved.signatures), initials: arcs(&saved.initials), saved }
+    }
+
+    fn arcs(&mut self, initials: bool) -> (&Vec<Mark>, &mut Vec<Arc<Mark>>) {
+        if initials {
+            (&self.saved.initials, &mut self.initials)
+        } else {
+            (&self.saved.signatures, &mut self.signatures)
+        }
+    }
+}
+
+thread_local! {
+    static STORE: RefCell<Option<Kept>> = const { RefCell::new(None) };
+}
+
+fn with_store<R>(demo: bool, f: impl FnOnce(&mut Kept) -> R) -> R {
     STORE.with(|s| {
         let mut s = s.borrow_mut();
         let disk = !demo;
-        if s.as_ref().is_none_or(|(d, _)| *d != disk) {
-            let saved = if disk { store::load_from(&store::path()) } else { Saved::default() };
-            *s = Some((disk, saved));
+        if s.as_ref().is_none_or(|k| k.disk != disk) {
+            *s = Some(Kept::load(disk));
         }
-        let (_, saved) = s.as_mut().expect("filled above");
-        f(saved)
+        f(s.as_mut().expect("filled above"))
     })
 }
 
@@ -91,29 +114,43 @@ fn persist(demo: bool) {
         return;
     }
     STORE.with(|s| {
-        if let Some((true, saved)) = s.borrow().as_ref()
-            && let Err(e) = store::save_to(&store::path(), saved)
+        if let Some(k) = s.borrow().as_ref()
+            && k.disk
+            && let Err(e) = store::save_to(&store::path(), &k.saved)
         {
             eprintln!("vale: the saved signatures could not be written: {e}");
         }
     });
 }
 
-/// The saved signatures (or initials), newest first.
+/// The saved signatures (or initials), newest first, as the same `Arc`s on
+/// every call.
 fn saved_marks(initials: bool, demo: bool) -> Vec<Arc<Mark>> {
-    with_store(demo, |s| {
-        let list = if initials { &s.initials } else { &s.signatures };
-        list.iter().cloned().map(Arc::new).collect()
-    })
+    with_store(demo, |k| if initials { k.initials.clone() } else { k.signatures.clone() })
+}
+
+fn saved_count(initials: bool, demo: bool) -> usize {
+    with_store(demo, |k| if initials { k.initials.len() } else { k.signatures.len() })
 }
 
 fn keep_mark(m: &Mark, initials: bool, demo: bool) {
-    with_store(demo, |s| store::add(s, m.clone(), initials));
+    with_store(demo, |k| {
+        store::add(&mut k.saved, m.clone(), initials);
+        let (list, arcs) = k.arcs(initials);
+        arcs.insert(0, Arc::new(m.clone()));
+        arcs.truncate(list.len());
+    });
     persist(demo);
 }
 
 fn forget_mark(initials: bool, i: usize, demo: bool) {
-    with_store(demo, |s| store::remove(s, initials, i));
+    with_store(demo, |k| {
+        store::remove(&mut k.saved, initials, i);
+        let (list, arcs) = k.arcs(initials);
+        if i < arcs.len() && arcs.len() > list.len() {
+            arcs.remove(i);
+        }
+    });
     persist(demo);
 }
 
@@ -121,8 +158,15 @@ fn forget_mark(initials: bool, i: usize, demo: bool) {
 
 /// A made-up three-page document: a heading, grey lines for text, and two
 /// signature boxes on the last page. No user data.
-#[cfg(any(test, debug_assertions))]
+#[cfg(test)]
 pub(crate) fn demo_pdf() -> Option<Vec<u8>> {
+    demo_pdf_pages(3)
+}
+
+/// `demo_pdf` with `pages` pages (the last one with the signature boxes).
+#[cfg(any(test, debug_assertions))]
+fn demo_pdf_pages(pages: usize) -> Option<Vec<u8>> {
+    let pages = pages.max(1);
     use lopdf::{Dictionary, Document, Object, Stream, dictionary};
     let (w, h) = (595.0f32, 842.0f32);
     let mut doc = Document::with_version("1.5");
@@ -131,19 +175,20 @@ pub(crate) fn demo_pdf() -> Option<Vec<u8>> {
     let font = doc.add_object(dictionary! {"Type"=>"Font","Subtype"=>"Type1","BaseFont"=>"Helvetica"});
     let res = doc.add_object(dictionary! {"Font"=>dictionary!{"F1"=>bold,"F2"=>font}});
     let mut kids = Vec::new();
-    for n in 0..3 {
+    for n in 0..pages {
         let mut c = String::new();
         c.push_str(&format!("BT /F1 16 Tf {} 770 Td (Contoh dokumen) Tj ET\n", w / 2.0 - 62.0));
-        c.push_str(&format!("BT /F2 10 Tf {} 750 Td (halaman {} dari 3) Tj ET\n", w / 2.0 - 34.0, n + 1));
+        c.push_str(&format!("BT /F2 10 Tf {} 750 Td (halaman {} dari {pages}) Tj ET\n", w / 2.0 - 34.0, n + 1));
         c.push_str("0.89 0.87 0.83 rg\n");
-        let lines = if n == 2 { 9 } else { 26 };
+        let last = n + 1 == pages;
+        let lines = if last { 9 } else { 26 };
         let mut y = 712.0;
         for i in 0..lines {
             let len = if i % 5 == 4 { 0.62 } else if i % 7 == 3 { 0.86 } else { 1.0 };
             c.push_str(&format!("72 {y} {} 6 re f\n", (w - 144.0) * len));
             y -= if i % 9 == 8 { 30.0 } else { 20.0 };
         }
-        if n == 2 {
+        if last {
             c.push_str("0.33 0.33 0.33 rg BT /F2 10 Tf 72 460 Td (Pihak pertama) Tj ET\n");
             c.push_str("BT /F2 10 Tf 330 460 Td (Pihak kedua) Tj ET\n");
             c.push_str("0.6 0.6 0.6 RG 0.8 w 72 380 m 265 380 l S 330 380 m 523 380 l S\n");
@@ -154,7 +199,7 @@ pub(crate) fn demo_pdf() -> Option<Vec<u8>> {
         let page = dictionary! {"Type"=>"Page","Parent"=>pages_id,"Contents"=>cid,"Resources"=>res};
         kids.push(Object::Reference(doc.add_object(page)));
     }
-    let tree = dictionary! {"Type"=>"Pages","Kids"=>kids,"Count"=>3,
+    let tree = dictionary! {"Type"=>"Pages","Kids"=>kids,"Count"=>pages as i64,
         "MediaBox"=>vec![0.into(),0.into(),Object::Real(w),Object::Real(h)]};
     doc.objects.insert(pages_id, Object::Dictionary(tree));
     let cat = doc.add_object(dictionary! {"Type"=>"Catalog","Pages"=>pages_id});
@@ -180,7 +225,9 @@ pub fn run_demo() {
     let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok();
     let dir = crate::sign::office::job_dir();
     let path = dir.as_ref().ok().map(|d| d.join("Contoh dokumen.pdf"));
-    let written = match (&path, demo_pdf()) {
+    // `DI_SIGN_PAGES=n` makes the sample longer (a slow open to close during).
+    let pages = std::env::var("DI_SIGN_PAGES").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+    let written = match (&path, demo_pdf_pages(pages)) {
         (Some(p), Some(bytes)) => std::fs::write(p, bytes).is_ok(),
         _ => false,
     };
@@ -242,6 +289,23 @@ mod tests {
         let got = take_reports();
         assert!(got.contains(&Report::Saved(PathBuf::from(r"C:\x (ditandatangani).pdf"))));
         assert!(!take_reports().contains(&Report::Saved(PathBuf::from(r"C:\x (ditandatangani).pdf"))));
+    }
+
+    #[test]
+    fn saved_marks_keep_their_identity() {
+        let m = Mark { w: 1, h: 1, rgba: vec![1, 2, 3, 255] };
+        keep_mark(&m, true, true);
+        keep_mark(&m, true, true);
+        let (a, b) = (saved_marks(true, true), saved_marks(true, true));
+        assert_eq!(a.len(), 2);
+        assert!(a.iter().zip(&b).all(|(x, y)| Arc::ptr_eq(x, y)));
+        assert_eq!(saved_count(true, true), 2);
+        forget_mark(true, 0, true);
+        let c = saved_marks(true, true);
+        assert_eq!(c.len(), 1);
+        assert!(Arc::ptr_eq(&c[0], &a[1]));
+        forget_mark(true, 0, true);
+        assert_eq!(saved_count(true, true), 0);
     }
 
     #[test]

@@ -542,14 +542,18 @@ pub fn anchor_of(item: Rect, corner: Corner) -> (f32, f32) {
     (if corner.left() { item.right() } else { item.x }, if corner.top() { item.bottom() } else { item.y })
 }
 
-/// How much a corner drag to `pointer` scales an item shown at `item`: the
-/// larger of the two sides' factors, so the corner follows the pointer
-/// while the aspect stays.
-pub fn resize_factor(item: Rect, corner: Corner, pointer: (f32, f32)) -> f32 {
-    let (ax, ay) = anchor_of(item, corner);
-    let fx = (pointer.0 - ax).abs() / item.w.max(1.0);
-    let fy = (pointer.1 - ay).abs() / item.h.max(1.0);
-    fx.max(fy).max(0.01)
+/// How much a corner drag scales an item shown at `item`: the pointer's
+/// move since the press (`press` to `now`) added to the item's width or
+/// height, whichever axis moved more, so a press without a move is exactly 1
+/// wherever on the handle it landed.
+pub fn drag_factor(item: Rect, corner: Corner, press: (f32, f32), now: (f32, f32)) -> f32 {
+    let (dx, dy) = (now.0 - press.0, now.1 - press.1);
+    let sx = if corner.left() { -1.0 } else { 1.0 };
+    let sy = if corner.top() { -1.0 } else { 1.0 };
+    let fx = (item.w + sx * dx) / item.w.max(1.0);
+    let fy = (item.h + sy * dy) / item.h.max(1.0);
+    let f = if (fx - 1.0).abs() >= (fy - 1.0).abs() { fx } else { fy };
+    f.max(0.01)
 }
 
 /// The rect of a `w` x `h` view box held at `anchor` by its `corner`'s
@@ -850,14 +854,39 @@ mod tests {
     }
 
     #[test]
+    fn pressing_a_handle_without_moving_keeps_the_size() {
+        // A small item (a 14 pt date at about 0.68 px/pt): its handles sit
+        // on the outline, outside the item, and take clicks 8 px around.
+        let r = Rect { x: 300.0, y: 400.0, w: 74.0, h: 9.5 };
+        let outline = Rect { x: r.x - 3.0, y: r.y - 3.0, w: r.w + 6.0, h: r.h + 6.0 };
+        for (c, _, hit) in handles(outline, 1.0) {
+            for press in [
+                (hit.x + hit.w / 2.0, hit.y + hit.h / 2.0),
+                (hit.x + 1.0, hit.y + 1.0),
+                (hit.right() - 1.0, hit.bottom() - 1.0),
+            ] {
+                assert_eq!(drag_factor(r, c, press, press), 1.0, "{c:?} {press:?}");
+            }
+        }
+        // Moving the corner outward by the item's width doubles it.
+        let press = (r.right() + 3.0, r.bottom() + 3.0);
+        let f = drag_factor(r, Corner::BottomRight, press, (press.0 + r.w, press.1));
+        assert!((f - 2.0).abs() < 1e-3, "{f}");
+    }
+
+    #[test]
     fn corner_drag_keeps_aspect_and_anchor() {
         let r = Rect { x: 100.0, y: 100.0, w: 150.0, h: 50.0 };
         assert_eq!(anchor_of(r, Corner::BottomRight), (100.0, 100.0));
         assert_eq!(anchor_of(r, Corner::TopLeft), (250.0, 150.0));
         // Dragging the bottom-right corner 150 px right doubles it.
-        assert!((resize_factor(r, Corner::BottomRight, (400.0, 150.0)) - 2.0).abs() < 1e-4);
-        // The larger side's factor wins.
-        assert!((resize_factor(r, Corner::BottomRight, (250.0, 200.0)) - 2.0).abs() < 1e-4);
+        let at = (250.0, 150.0);
+        assert!((drag_factor(r, Corner::BottomRight, at, (400.0, 150.0)) - 2.0).abs() < 1e-4);
+        // The axis that moved more (relative to the side) wins.
+        assert!((drag_factor(r, Corner::BottomRight, at, (260.0, 200.0)) - 2.0).abs() < 1e-4);
+        // Inward on one axis shrinks; the top-left corner grows up-left.
+        assert!((drag_factor(r, Corner::BottomRight, at, (175.0, 150.0)) - 0.5).abs() < 1e-4);
+        assert!((drag_factor(r, Corner::TopLeft, (100.0, 100.0), (25.0, 100.0)) - 1.5).abs() < 1e-4);
         let a = anchored(anchor_of(r, Corner::TopLeft), Corner::TopLeft, 300.0, 100.0);
         assert_eq!((a.right(), a.bottom()), (250.0, 150.0));
     }

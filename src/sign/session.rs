@@ -187,10 +187,6 @@ impl Session {
         (0..self.pages.len()).filter(|&i| !self.pages[i].deleted).collect()
     }
 
-    pub fn has_deleted(&self) -> bool {
-        self.pages.iter().any(|p| p.deleted)
-    }
-
     pub fn has_rotated(&self) -> bool {
         self.pages.iter().any(|p| !p.deleted && p.extra != Quarter::R0)
     }
@@ -233,7 +229,7 @@ mod tests {
     fn delete_refuses_last_page() {
         let mut s = Session::new(vec![geom(100.0, 100.0)]);
         assert_eq!(s.delete_page(0), Err(LastPage));
-        assert!(!s.has_deleted());
+        assert_eq!(s.live_pages(), vec![0]);
     }
 
     #[test]
@@ -245,7 +241,7 @@ mod tests {
         assert_eq!(s.items.len(), 1);
         assert_eq!(s.items[0].page, 1);
         assert_eq!(s.live_pages(), vec![1, 2]);
-        assert!(s.has_deleted());
+        assert!(s.pages[0].deleted);
     }
 
     #[test]

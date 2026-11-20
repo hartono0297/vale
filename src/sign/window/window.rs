@@ -143,7 +143,7 @@ pub(super) enum Drag {
     /// Page points at the press and now.
     Move { idx: usize, from: (f32, f32), now: (f32, f32) },
     /// The item's view rect at the press, the corner held and the pointer.
-    Resize { idx: usize, corner: Corner, start: Rect, now: (f32, f32) },
+    Resize { idx: usize, corner: Corner, start: Rect, press: (f32, f32), now: (f32, f32) },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -279,10 +279,27 @@ pub(super) struct Win {
     pub lost: u8,
 }
 
+/// Joins `job` when it has already finished; a job still running is left to
+/// end by itself (it sees the cancel flag, drops what it made and cleans up
+/// after itself), so closing never waits on a slow file. True when it was
+/// left running.
+pub(super) fn reap(job: Option<JoinHandle<()>>) -> bool {
+    match job {
+        Some(j) if j.is_finished() => {
+            let _ = j.join();
+            false
+        }
+        Some(_) => true,
+        None => false,
+    }
+}
+
 impl Drop for Win {
     fn drop(&mut self) {
         self.cancel.store(true, Ordering::SeqCst);
-        for job in [self.open_job.take(), self.save_job.take()].into_iter().flatten() {
+        let opening = reap(self.open_job.take());
+        // A save is short and its result is the user's file: waited for.
+        if let Some(job) = self.save_job.take() {
             let _ = job.join();
         }
         // The inbox may hold a renderer the window never took.
@@ -296,7 +313,11 @@ impl Drop for Win {
         if let Some(f) = self.password.take() {
             text_edit::free_gdi(&f);
         }
-        if let Some(d) = self.job_dir.take() {
+        // A worker still opening sweeps the Office folder itself when it
+        // ends; never under its feet.
+        if let Some(d) = self.job_dir.take()
+            && !opening
+        {
             office::sweep(&d);
         }
     }
@@ -345,6 +366,15 @@ pub(super) fn date_text(l: Lang, year: i32, month: u32, day: u32) -> String {
     format!("{day} {m} {year}")
 }
 
+/// "Paraf dipasang di n halaman lain." with the English singular for one.
+pub(super) fn all_pages_note(n: usize) -> String {
+    if n == 1 {
+        tr(Key::SignAllPagesDoneOne).to_owned()
+    } else {
+        tr(Key::SignAllPagesDone).replace("{n}", &n.to_string())
+    }
+}
+
 fn today() -> String {
     use chrono::Datelike;
     let now = chrono::Local::now();
@@ -377,6 +407,7 @@ pub(super) fn breaks_signature(signed: bool, incremental: bool, rotated: bool) -
 /// The step Esc takes, first that applies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum EscStep {
+    Maker,
     Bar,
     Popover,
     Disarm,
@@ -384,8 +415,10 @@ pub(super) enum EscStep {
     Close,
 }
 
-pub(super) fn esc_step(ask: Ask, pop: bool, armed: bool, selected: bool) -> EscStep {
-    if ask != Ask::None {
+pub(super) fn esc_step(maker: bool, ask: Ask, pop: bool, armed: bool, selected: bool) -> EscStep {
+    if maker {
+        EscStep::Maker
+    } else if ask != Ask::None {
         EscStep::Bar
     } else if pop {
         EscStep::Popover
@@ -759,6 +792,12 @@ fn start_open(w: &mut Win, password: Option<String>) {
             open_document(&src, pending, password, job_dir.as_deref(), &cancel, hwnd)
         };
         if cancel.load(Ordering::SeqCst) {
+            // The window closed without waiting: what was opened (a renderer
+            // included) ends here, and so does the Office copy.
+            drop(outcome);
+            if let Some(d) = &job_dir {
+                office::sweep(d);
+            }
             return;
         }
         if let Ok(mut i) = inbox.lock() {
@@ -845,41 +884,53 @@ fn open_document(
 }
 
 fn on_opened(hwnd: HWND) {
-    let mut focus_field = None;
-    with(hwnd, |w| {
-        let Some(outcome) = w.inbox.lock().ok().and_then(|mut i| i.opened.take()) else { return };
+    enum Field_ {
+        Keep,
+        Drop(Field),
+        Make,
+        Clear(HWND),
+    }
+    // Decided under the borrow; EDITs are made, cleared and destroyed after
+    // it (they send messages to this window).
+    let field = with(hwnd, |w| {
+        let Some(outcome) = w.inbox.lock().ok().and_then(|mut i| i.opened.take()) else { return Field_::Keep };
         w.phase = phase_after(&outcome);
-        match outcome {
+        let field = match outcome {
             Outcome::Ready(l) => {
                 let Loaded { engine, opened, geoms, image } = *l;
                 w.pending = None;
                 w.doc = Some(Doc { session: Session::new(geoms), engine, opened: opened.map(Arc::new), image });
                 w.cur = 0;
-                if let Some(f) = w.password.take() {
-                    text_edit::destroy(f);
-                }
                 refresh_out(w);
+                w.password.take().map_or(Field_::Keep, Field_::Drop)
             }
             Outcome::Password { bytes, .. } => {
                 w.pending = Some(bytes);
-                if w.password.is_none() {
-                    w.password = make_password(w);
-                    focus_field = w.password.as_ref().map(|f| f.edit);
-                } else if let Some(f) = &w.password {
-                    text_edit::clear(f.edit);
-                    focus_field = Some(f.edit);
+                match &w.password {
+                    None => Field_::Make,
+                    Some(f) => Field_::Clear(f.edit),
                 }
             }
-            Outcome::Failed(_) => {
-                if let Some(f) = w.password.take() {
-                    text_edit::destroy(f);
-                }
-            }
-        }
+            Outcome::Failed(_) => w.password.take().map_or(Field_::Keep, Field_::Drop),
+        };
         relayout(w);
-        place_password(w);
         want_render(w);
-    });
+        field
+    })
+    .unwrap_or(Field_::Keep);
+    let focus_field = match field {
+        Field_::Keep => None,
+        Field_::Drop(f) => {
+            text_edit::destroy(f);
+            None
+        }
+        Field_::Make => make_password(hwnd, ""),
+        Field_::Clear(e) => {
+            text_edit::clear(e);
+            Some(e)
+        }
+    };
+    with(hwnd, |w| place_password(w));
     if ON_SCREEN {
         unsafe {
             let _ = SetFocus(Some(focus_field.unwrap_or(hwnd)));
@@ -888,24 +939,35 @@ fn on_opened(hwnd: HWND) {
     invalidate(hwnd);
 }
 
-fn make_password(w: &Win) -> Option<Field> {
-    let ui = ui_of(w);
-    let f = w.layout.field.unwrap_or_default();
+/// Makes the password EDIT (outside the window's borrow) on the laid-out
+/// field, holding `initial`, and stores it. Returns its HWND.
+fn make_password(hwnd: HWND, initial: &str) -> Option<HWND> {
+    let (f, ui, p) = with(hwnd, |w| (w.layout.field.unwrap_or_default(), ui_of(w), w.p))?;
     let spec = text_edit::Spec {
         rect: (f.x as i32, f.y as i32, f.w as i32, f.h as i32),
-        initial: "",
+        initial,
         px: 14.0 * ui,
         face: crate::ui::fonts::gdi_text_face(),
-        color: w.p.text,
-        back: w.p.field,
+        color: p.text,
+        back: p.field,
         password: true,
         commit_on_blur: false,
     };
-    let f = text_edit::create(w.hwnd, &spec);
-    if f.is_none() {
+    let Some(made) = text_edit::create(hwnd, &spec) else {
         eprintln!("vale: the password field could not be made");
+        return None;
+    };
+    let edit = made.edit;
+    let mut slot = Some(made);
+    with(hwnd, |w| {
+        w.password = slot.take();
+        place_password(w);
+    });
+    if let Some(f) = slot {
+        text_edit::destroy(f);
+        return None;
     }
-    f
+    Some(edit)
 }
 
 /// Keeps the password EDIT on its laid-out field (inset for the border).
@@ -1014,8 +1076,8 @@ pub(super) fn shown_item(w: &Win, v: &View, i: usize) -> Option<Item> {
             it.x = x;
             it.y = y;
         }
-        Some(Drag::Resize { idx, corner, start, now }) if idx == i => {
-            let f = layout::resize_factor(start, corner, now);
+        Some(Drag::Resize { idx, corner, start, press, now }) if idx == i => {
+            let f = layout::drag_factor(start, corner, press, now);
             let (nw, nh) = (it.w * f, it.h * f);
             resize_in_place(&mut it, v, start, corner, nw, nh);
         }
@@ -1085,7 +1147,7 @@ pub(super) fn popover(w: &Win) -> Option<Popover> {
         Pop::Picker { initials } => {
             let tool = Hit::Tool(if initials { Tool::Initials } else { Tool::Signature });
             let anchor = w.layout.rect_of(tool).or_else(|| w.layout.rect_of(Hit::More))?;
-            let n = super::saved_marks(initials, w.demo).len();
+            let n = super::saved_count(initials, w.demo);
             Some(layout::picker(anchor, n, cw, ui))
         }
     }
@@ -1341,7 +1403,7 @@ fn choose_tool(hwnd: HWND, tool: Tool, kb: bool) {
         match tool {
             Tool::Signature | Tool::Initials => {
                 let initials = tool == Tool::Initials;
-                if super::saved_marks(initials, w.demo).is_empty() {
+                if super::saved_count(initials, w.demo) == 0 {
                     Next::Maker(initials)
                 } else {
                     w.pop = Some(Pop::Picker { initials });
@@ -1487,6 +1549,7 @@ fn act(hwnd: HWND, hit: Hit, kb: bool) {
         Hit::Keep | Hit::NotNow => {
             with(hwnd, |w| {
                 w.ask = Ask::None;
+                w.focus = None;
                 relayout(w);
             });
         }
@@ -1504,7 +1567,7 @@ fn act(hwnd: HWND, hit: Hit, kb: bool) {
                 if n == 0 {
                     say(w, Key::SignAllPagesNone, Tone::Hint);
                 } else {
-                    w.note = Some((tr(Key::SignAllPagesDone).replace("{n}", &n.to_string()), Tone::Hint));
+                    w.note = Some((all_pages_note(n), Tone::Hint));
                 }
             });
         }
@@ -1581,6 +1644,24 @@ fn remove_selected(hwnd: HWND) {
             d.session.remove_item(i);
         }
     });
+}
+
+/// Keys that change the document act only on an open document with no bar
+/// or maker in front of it.
+fn can_edit(w: &Win) -> bool {
+    w.phase == Phase::Ready && w.ask == Ask::None && w.maker.is_none()
+}
+
+/// The maker goes away as if Batal was pressed.
+fn close_maker(hwnd: HWND) {
+    let mk = with(hwnd, |w| w.maker.take()).flatten();
+    if let Some(m) = mk {
+        unsafe {
+            let _ = DestroyWindow(m);
+            let _ = SetFocus(Some(hwnd));
+        }
+    }
+    invalidate(hwnd);
 }
 
 fn undo_redo(hwnd: HWND, redo: bool) {
@@ -1714,6 +1795,11 @@ fn finish_text(hwnd: HWND, keep: bool) -> bool {
             Some(i) => {
                 let Some(d) = &mut w.doc else { return };
                 let Some(old) = d.session.items.get(i).cloned() else { return };
+                if matches!(&old.kind, ItemKind::Text(t) if *t == typed) {
+                    // Nothing changed: no undo step, nothing to save.
+                    w.selected = Some(i);
+                    return;
+                }
                 let nw = width(old.h).max(8.0);
                 // One undo step: the resize takes the snapshot, the text
                 // changes with it.
@@ -1770,6 +1856,7 @@ fn do_save(hwnd: HWND, confirmed: bool) {
             let incremental = pdf_write::save_is_incremental(o, &d.session.pages);
             if breaks_signature(o.signed, incremental, d.session.has_rotated()) {
                 w.ask = Ask::Breaks;
+                w.focus = Some(Hit::NotNow);
                 relayout(w);
                 return false;
             }
@@ -1934,6 +2021,7 @@ fn request_close(hwnd: HWND) {
         let a = close_action(w.phase, dirty);
         if a == CloseAction::Ask {
             w.ask = Ask::Discard;
+            w.focus = Some(Hit::Keep);
             w.pop = None;
             relayout(w);
         }
@@ -1953,10 +2041,12 @@ fn request_close(hwnd: HWND) {
 
 fn on_escape(hwnd: HWND) {
     let step = with(hwnd, |w| {
-        let s = esc_step(w.ask, w.pop.is_some(), w.armed.is_some(), w.selected.is_some());
+        let s = esc_step(w.maker.is_some(), w.ask, w.pop.is_some(), w.armed.is_some(), w.selected.is_some());
         match s {
+            EscStep::Maker => {}
             EscStep::Bar => {
                 w.ask = Ask::None;
+                w.focus = None;
                 relayout(w);
             }
             EscStep::Popover => w.pop = None,
@@ -1970,6 +2060,7 @@ fn on_escape(hwnd: HWND) {
         s
     });
     match step {
+        Some(EscStep::Maker) => close_maker(hwnd),
         Some(EscStep::Close) => request_close(hwnd),
         Some(_) => invalidate(hwnd),
         None => {}
@@ -2031,7 +2122,7 @@ fn on_down(hwnd: HWND, lparam: LPARAM, double: bool) {
             Hit::Handle(corner) => {
                 let Some(i) = w.selected else { return Then::Nothing };
                 let Some(it) = shown_item(w, &v, i) else { return Then::Nothing };
-                w.drag = Some(Drag::Resize { idx: i, corner, start: v.item_rect(&it), now: (x, y) });
+                w.drag = Some(Drag::Resize { idx: i, corner, start: v.item_rect(&it), press: (x, y), now: (x, y) });
                 Then::Capture
             }
             Hit::Item(i) if w.armed.is_none() => {
@@ -2125,8 +2216,8 @@ fn finish_drag(w: &mut Win) {
                 d.session.move_item(idx, dx, dy);
             }
         }
-        Drag::Resize { idx, corner, start, now } => {
-            let f = layout::resize_factor(start, corner, now);
+        Drag::Resize { idx, corner, start, press, now } => {
+            let f = layout::drag_factor(start, corner, press, now);
             let Some(d) = &mut w.doc else { return };
             let Some(old) = d.session.items.get(idx).cloned() else { return };
             if (f - 1.0).abs() < 0.005 {
@@ -2172,6 +2263,12 @@ fn on_wheel(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
         let _ = ScreenToClient(hwnd, &mut pt);
     }
     let (x, y) = (pt.x as f32, pt.y as f32);
+    // Text being typed belongs to the page it was started on: it is
+    // finished first, and this turn of the wheel does nothing else.
+    if with(hwnd, |w| w.text.is_some()) == Some(true) {
+        commit_text(hwnd);
+        return;
+    }
     with(hwnd, |w| {
         if w.phase != Phase::Ready || w.maker.is_some() {
             return;
@@ -2219,9 +2316,16 @@ fn cursor_for(w: &Win, x: f32, y: f32) -> PCWSTR {
 fn on_key(hwnd: HWND, vk: u16) {
     let ctrl = key_down(VK_CONTROL.0);
     let shift = key_down(VK_SHIFT.0);
-    let ask = with(hwnd, |w| w.ask).unwrap_or(Ask::None);
-    if ask != Ask::None && vk == VK_RETURN.0 && with(hwnd, |w| w.focus.is_none()).unwrap_or(true) {
-        act(hwnd, if ask == Ask::Discard { Hit::Discard } else { Hit::SaveAnyway }, true);
+    let (ask, focus, editing) = with(hwnd, |w| (w.ask, w.focus, can_edit(w))).unwrap_or((Ask::None, None, false));
+    // Enter on a bar takes the safe answer unless the keyboard moved to the
+    // other one.
+    if ask != Ask::None && vk == VK_RETURN.0 && focus.is_none() {
+        act(hwnd, if ask == Ask::Discard { Hit::Keep } else { Hit::NotNow }, true);
+        return;
+    }
+    let edit_key = (ctrl && matches!(vk, 0x53 | 0x59 | 0x5A))
+        || [VK_DELETE.0, VK_BACK.0, VK_PRIOR.0, VK_NEXT.0, VK_LEFT.0, VK_RIGHT.0, VK_UP.0, VK_DOWN.0].contains(&vk);
+    if edit_key && !editing {
         return;
     }
     match vk {
@@ -2371,6 +2475,25 @@ extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
                 }
             }
             on_size(hwnd);
+            // The EDIT fonts and the maker follow the new scale.
+            let pw = with(hwnd, |w| w.password.take()).flatten();
+            if let Some(old) = pw {
+                let typed = text_edit::text(old.edit);
+                let had_focus = unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetFocus() } == old.edit;
+                text_edit::destroy(old);
+                if let Some(e) = make_password(hwnd, &typed)
+                    && had_focus
+                {
+                    unsafe {
+                        let _ = SetFocus(Some(e));
+                    }
+                }
+            }
+            let mk = with(hwnd, |w| w.maker.map(|m| (m, ui_of(w), w.client))).flatten();
+            if let Some((m, ui, client)) = mk {
+                maker::rescale(m, ui);
+                maker::place(m, client, ui);
+            }
             invalidate(hwnd);
             LRESULT(0)
         }
@@ -2550,6 +2673,7 @@ mod tests {
         assert_eq!(with(hwnd, |w| w.phase), Some(Phase::Ready));
         assert_eq!(with(hwnd, |w| w.doc.as_ref().map(|d| d.session.pages.len())), Some(Some(3)));
         assert!(ENGINES.load(Ordering::SeqCst) >= 1);
+        the_open_window_behaves(hwnd);
         release();
         assert_eq!(WINDOWS.with(|m| m.borrow().len()), 0);
         unsafe {
@@ -2557,6 +2681,115 @@ mod tests {
         }
         assert_eq!(ENGINES.load(Ordering::SeqCst), 0, "no sign-render thread left");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// How many undo steps the session holds (undone and redone again).
+    fn undo_steps(hwnd: HWND) -> usize {
+        with(hwnd, |w| {
+            let s = &mut w.doc.as_mut().expect("open").session;
+            let mut n = 0;
+            while s.undo() {
+                n += 1;
+            }
+            for _ in 0..n {
+                s.redo();
+            }
+            n
+        })
+        .unwrap_or(0)
+    }
+
+    fn lp(x: f32, y: f32) -> LPARAM {
+        let (x, y) = (x.round() as i32 as u32 & 0xFFFF, y.round() as i32 as u32 & 0xFFFF);
+        LPARAM((y << 16 | x) as isize)
+    }
+
+    /// The window-level rules, on the hidden window of `opens_hidden_and_closes`
+    /// (one window per test run keeps the renderer count exact).
+    fn the_open_window_behaves(hwnd: HWND) {
+        // A date at the page centre, selected.
+        with(hwnd, |w| {
+            let v = view(w).expect("a page");
+            place(w, &v, Tool::Date, None, page_centre(&v));
+        });
+        let sel = with(hwnd, |w| w.selected).flatten().expect("selected");
+        let size = |hwnd| with(
+            hwnd,
+            |w| w.doc.as_ref().map(|d| (d.session.items[sel].w, d.session.items[sel].h)),
+        );
+        let before = size(hwnd);
+        assert_eq!(undo_steps(hwnd), 1);
+        // Pressing each handle and letting go without a move: same size, no
+        // undo step.
+        let hs = with(hwnd, |w| handle_rects(w, &view(w).expect("page"))).unwrap_or_default();
+        assert_eq!(hs.len(), 4);
+        for (_, r) in &hs {
+            let at = lp(r.x + r.w / 2.0, r.y + r.h / 2.0);
+            on_down(hwnd, at, false);
+            assert!(matches!(with(hwnd, |w| w.drag).flatten(), Some(Drag::Resize { .. })));
+            on_up(hwnd, at);
+            assert_eq!(size(hwnd), before);
+        }
+        assert_eq!(undo_steps(hwnd), 1, "a press without a move is no edit");
+
+        // Re-committing a text unchanged adds nothing.
+        let t = with(hwnd, |w| {
+            let page = w.cur;
+            let d = w.doc.as_mut().expect("open");
+            let item = Item { kind: ItemKind::Text("Halo".into()), page, x: 50.0, y: 50.0, w: 30.0, h: 14.0, turn: Quarter::R0 };
+            d.session.add(item)
+        })
+        .expect("added");
+        let steps = undo_steps(hwnd);
+        begin_text(hwnd, (0.0, 0.0), Some(t));
+        assert!(with(hwnd, |w| w.text.is_some()).unwrap_or(false));
+        assert!(finish_text(hwnd, true));
+        assert_eq!(undo_steps(hwnd), steps, "same text, same document");
+
+        // The picker shows the same saved mark on every paint and hit test:
+        // the bitmap cache does not grow.
+        super::super::keep_mark(
+            &Mark { w: 2, h: 1, rgba: vec![0, 0, 255, 255, 0, 0, 255, 255] },
+            false,
+            true,
+        );
+        with(hwnd, |w| w.pop = Some(Pop::Picker { initials: false }));
+        with(hwnd, paint::paint);
+        let n = with(hwnd, |w| w.mark_bmps.len()).unwrap_or(0);
+        assert!(n >= 1, "the tile was drawn");
+        for i in 0..20 {
+            with(hwnd, |w| hit_at(w, 200.0 + i as f32, 70.0));
+            with(hwnd, paint::paint);
+        }
+        assert_eq!(with(hwnd, |w| w.mark_bmps.len()), Some(n));
+        with(hwnd, |w| w.pop = None);
+
+        // Enter on the close bar keeps editing; so does Esc. Delete does
+        // nothing while the bar is up.
+        request_close(hwnd);
+        assert_eq!(with(hwnd, |w| (w.ask, w.focus)), Some((Ask::Discard, Some(Hit::Keep))));
+        with(hwnd, |w| w.selected = Some(sel));
+        let count = with(hwnd, |w| w.doc.as_ref().map_or(0, |d| d.session.items.len()));
+        on_key(hwnd, VK_DELETE.0);
+        assert_eq!(with(hwnd, |w| w.doc.as_ref().map_or(0, |d| d.session.items.len())), count);
+        on_key(hwnd, VK_RETURN.0);
+        assert_eq!(with(hwnd, |w| w.ask), Some(Ask::None));
+        request_close(hwnd);
+        with(hwnd, |w| w.focus = None);
+        on_key(hwnd, VK_RETURN.0);
+        assert_eq!(with(hwnd, |w| w.ask), Some(Ask::None));
+        unsafe {
+            assert!(IsWindow(Some(hwnd)).as_bool());
+        }
+
+        // With the maker up, Esc closes the maker, never the window.
+        open_maker(hwnd, false, false);
+        assert!(with(hwnd, |w| w.maker.is_some()).unwrap_or(false));
+        on_key(hwnd, VK_ESCAPE.0);
+        assert_eq!(with(hwnd, |w| (w.maker.is_none(), w.ask)), Some((true, Ask::None)));
+        unsafe {
+            assert!(IsWindow(Some(hwnd)).as_bool());
+        }
     }
 
     #[test]
@@ -2588,11 +2821,36 @@ mod tests {
     }
 
     #[test]
+    fn closing_never_waits_for_a_slow_opening() {
+        let slow = std::thread::spawn(|| std::thread::sleep(std::time::Duration::from_millis(1500)));
+        let t = std::time::Instant::now();
+        assert!(reap(Some(slow)), "left running");
+        assert!(t.elapsed() < std::time::Duration::from_millis(300));
+        let quick = std::thread::spawn(|| {});
+        while !quick.is_finished() {
+            std::thread::yield_now();
+        }
+        assert!(!reap(Some(quick)), "a finished job is joined");
+        assert!(!reap(None));
+    }
+
+    #[test]
     fn dates_read_in_each_language() {
         assert_eq!(date_text(Lang::Id, 2026, 11, 20), "20 November 2026");
         assert_eq!(date_text(Lang::Id, 2026, 8, 1), "1 Agustus 2026");
         assert_eq!(date_text(Lang::En, 2026, 8, 1), "1 August 2026");
         assert!(winansi::encode(&date_text(Lang::Id, 2026, 3, 9)).is_some());
+    }
+
+    #[test]
+    fn the_copies_note_counts_in_good_english() {
+        use crate::i18n::text;
+        assert_eq!(text(Lang::En, Key::SignAllPagesDoneOne), "Initials put on 1 other page.");
+        assert_eq!(
+            text(Lang::En, Key::SignAllPagesDone).replace("{n}", "2"),
+            "Initials put on 2 other pages.",
+        );
+        assert_eq!(text(Lang::Id, Key::SignAllPagesDoneOne), "Paraf dipasang di 1 halaman lain.");
     }
 
     #[test]
@@ -2615,11 +2873,14 @@ mod tests {
 
     #[test]
     fn esc_goes_bar_popover_tool_selection_then_close() {
-        assert_eq!(esc_step(Ask::Discard, true, true, true), EscStep::Bar);
-        assert_eq!(esc_step(Ask::None, true, true, true), EscStep::Popover);
-        assert_eq!(esc_step(Ask::None, false, true, true), EscStep::Disarm);
-        assert_eq!(esc_step(Ask::None, false, false, true), EscStep::Deselect);
-        assert_eq!(esc_step(Ask::None, false, false, false), EscStep::Close);
+        // With the maker up, Esc only ever closes the maker.
+        assert_eq!(esc_step(true, Ask::None, false, false, false), EscStep::Maker);
+        assert_eq!(esc_step(true, Ask::Discard, true, true, true), EscStep::Maker);
+        assert_eq!(esc_step(false, Ask::Discard, true, true, true), EscStep::Bar);
+        assert_eq!(esc_step(false, Ask::None, true, true, true), EscStep::Popover);
+        assert_eq!(esc_step(false, Ask::None, false, true, true), EscStep::Disarm);
+        assert_eq!(esc_step(false, Ask::None, false, false, true), EscStep::Deselect);
+        assert_eq!(esc_step(false, Ask::None, false, false, false), EscStep::Close);
     }
 
     #[test]
