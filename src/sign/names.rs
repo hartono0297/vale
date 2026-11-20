@@ -41,8 +41,8 @@ pub fn output_path(
         .unwrap_or_else(|| name(" (1000)".to_owned()))
 }
 
-/// `Documents\Vale\Ditandatangani`; under the current directory when Windows
-/// cannot say where Documents is.
+/// `Documents\Vale\Ditandatangani`; under the temp folder when Windows cannot
+/// say where Documents is.
 pub fn fallback_dir() -> PathBuf {
     use windows::Win32::System::Com::CoTaskMemFree;
     use windows::Win32::UI::Shell::{FOLDERID_Documents, KF_FLAG_DEFAULT, SHGetKnownFolderPath};
@@ -56,14 +56,24 @@ pub fn fallback_dir() -> PathBuf {
             })
             .filter(|p| p.is_absolute())
     };
-    docs.unwrap_or_else(|| PathBuf::from("."))
+    docs.unwrap_or_else(std::env::temp_dir)
         .join("Vale")
         .join("Ditandatangani")
 }
 
 /// Whether a file can be created in `dir`: a probe file is made and removed.
 pub fn dir_is_writable(dir: &Path) -> bool {
-    let probe = dir.join(format!(".vale-probe-{}", std::process::id()));
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let probe = dir.join(format!(
+        ".vale-probe-{}-{}-{nanos}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
     let ok = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -162,6 +172,20 @@ mod tests {
             &fb(),
         );
         assert_eq!(p, PathBuf::from("C:/d/Penawaran (ditandatangani).pdf"));
+    }
+
+    #[test]
+    fn numbers_inside_the_fallback_dir_too() {
+        let taken = |p: &Path| p == fb().join("Kontrak sewa (ditandatangani).pdf");
+        let p = output_path(
+            Path::new("C:/d/Kontrak sewa.pdf"),
+            "pdf",
+            Lang::Id,
+            taken,
+            |_| false,
+            &fb(),
+        );
+        assert_eq!(p, fb().join("Kontrak sewa (ditandatangani) (2).pdf"));
     }
 
     #[test]
