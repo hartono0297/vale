@@ -1,10 +1,11 @@
 //! Opening a PDF for signing and writing the signed copy with lopdf.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use lopdf::{
     dictionary, Dictionary, Document, IncrementalDocument, LoadOptions, Object, ObjectId,
-    Permissions, Stream,
+    Permissions, Stream, DEFAULT_MAX_DECOMPRESSED_SIZE,
 };
 use miniz_oxide::deflate::compress_to_vec_zlib;
 
@@ -57,11 +58,18 @@ pub fn open(bytes: Vec<u8>, password: Option<&str>) -> Result<Opened, OpenError>
     // only against changes opens without asking.
     let doc = match load(&bytes, password) {
         Ok(doc) => doc,
-        Err(lopdf::Error::InvalidPassword) => return Err(OpenError::WrongPassword),
+        Err(lopdf::Error::InvalidPassword) => {
+            // A certificate lock has no password that could open it.
+            let standard = Document::load_mem(&bytes).is_ok_and(|d| password_lock(&d));
+            return Err(if standard { OpenError::WrongPassword } else { OpenError::Broken });
+        }
         Err(_) => return Err(OpenError::Broken),
     };
     if doc.is_encrypted() {
         // Loaded, but nothing could be decrypted.
+        if !password_lock(&doc) {
+            return Err(OpenError::Broken);
+        }
         return Err(match password {
             Some(_) => OpenError::WrongPassword,
             None => OpenError::NeedsPassword,
@@ -101,6 +109,14 @@ fn load(bytes: &[u8], password: Option<&str>) -> lopdf::Result<Document> {
         Some(p) => Document::load_mem_with_options(bytes, LoadOptions::with_password(p)),
         None => Document::load_mem(bytes),
     }
+}
+
+/// The file is locked with the standard password handler, not a
+/// certificate (`/Adobe.PubSec`) or another handler lopdf cannot open.
+fn password_lock(doc: &Document) -> bool {
+    doc.get_encrypted()
+        .map(|e| e.get(b"Filter").and_then(Object::as_name).is_ok_and(|f| f == b"Standard"))
+        .unwrap_or(false)
 }
 
 /// Follows references, bounded so a reference loop cannot hang.
@@ -197,20 +213,39 @@ pub fn save(o: &Opened, pages: &[Page], items: &[Item]) -> Result<Vec<u8>, SaveE
     if live == 0 {
         return Err(SaveError::Write("no page left".into()));
     }
-    // An incremental update needs an intact cross-reference chain to point
-    // back to, and for a locked file the original /Encrypt object.
-    let incremental = live == ids.len()
-        && o.doc.xref_recovery.is_none()
-        && o.doc.xref_start != 0
-        && o.doc.encryption_state.as_ref().is_none_or(|s| s.encrypt_object_id().is_some());
-    let out = if incremental {
+    let out = if save_is_incremental(o, pages) {
         save_incremental(o, &ids, pages, items)?
     } else {
         save_full(o, &ids, pages, items)?
     };
-    match load(&out, o.password.as_deref()) {
-        Ok(d) if !d.is_encrypted() && d.get_pages().len() == live => Ok(out),
-        Ok(_) => Err(SaveError::Write("the saved file does not read back".into())),
+    check_output(&out, o.password.as_deref(), live, o.encrypted)?;
+    Ok(out)
+}
+
+/// Whether `save` appends a revision (keeping an existing digital signature
+/// valid) instead of rewriting the file: no page deleted, an intact
+/// cross-reference chain to point back to and, for a locked file, the
+/// original /Encrypt object.
+pub fn save_is_incremental(o: &Opened, pages: &[Page]) -> bool {
+    !pages.iter().take(o.geoms.len()).any(|p| p.deleted)
+        && o.doc.xref_recovery.is_none()
+        && o.doc.xref_start != 0
+        && o.doc.encryption_state.as_ref().is_none_or(|s| s.encrypt_object_id().is_some())
+}
+
+/// The saved file reads back with the same password, still locked when the
+/// source was, with the expected number of pages.
+fn check_output(
+    out: &[u8],
+    password: Option<&str>,
+    live: usize,
+    locked: bool,
+) -> Result<(), SaveError> {
+    match load(out, password) {
+        Ok(d) if d.is_encrypted() => Err(SaveError::Write("the saved file does not open".into())),
+        Ok(d) if locked && d.encryption_state.is_none() => Err(SaveError::CannotKeepLock),
+        Ok(d) if d.get_pages().len() == live => Ok(()),
+        Ok(_) => Err(SaveError::Write("the saved file has the wrong pages".into())),
         Err(e) => Err(SaveError::Write(e.to_string())),
     }
 }
@@ -275,12 +310,22 @@ fn save_full(
         let dict = write_page(&mut doc, read, &e, &mut shared)?;
         doc.set_object(e.id, dict);
     }
-    let gone: Vec<u32> = (0..ids.len())
-        .filter(|&i| pages.get(i).is_some_and(|p| p.deleted))
-        .filter_map(|i| u32::try_from(i + 1).ok())
-        .collect();
+    let gone: Vec<usize> =
+        (0..ids.len()).filter(|&i| pages.get(i).is_some_and(|p| p.deleted)).collect();
     if !gone.is_empty() {
-        doc.delete_pages(&gone);
+        let dead: BTreeSet<ObjectId> = gone.iter().filter_map(|&i| ids.get(i).copied()).collect();
+        let numbers: Vec<u32> = gone.iter().filter_map(|&i| u32::try_from(i + 1).ok()).collect();
+        // Links into the deleted pages go first, while their references
+        // still say where they point.
+        drop_links_to(&mut doc, &dead);
+        drop_annotations_of(&mut doc, &dead);
+        doc.delete_pages(&numbers);
+        own_resources(&mut doc);
+        // Tags can quote the deleted pages' text (/ActualText, /Alt).
+        if let Ok(catalog) = doc.catalog_mut() {
+            catalog.remove(b"StructTreeRoot");
+            catalog.remove(b"MarkInfo");
+        }
     }
     // Drops everything only the deleted pages used, their content included.
     doc.prune_objects();
@@ -290,6 +335,574 @@ fn save_full(
     let mut out = Vec::new();
     doc.save_to(&mut out).map_err(write_err)?;
     Ok(out)
+}
+
+/// A destination or GoTo action that lands on a deleted page; `names` are
+/// the named destinations already removed for pointing there.
+fn goes_to(
+    doc: &Document,
+    o: &Object,
+    dead: &BTreeSet<ObjectId>,
+    names: &BTreeSet<Vec<u8>>,
+    depth: u8,
+) -> bool {
+    if depth > 8 {
+        return false;
+    }
+    match deref(doc, o) {
+        Some(Object::Array(a)) => {
+            a.first().and_then(|f| f.as_reference().ok()).is_some_and(|r| dead.contains(&r))
+        }
+        Some(Object::Name(n)) => names.contains(n),
+        Some(Object::String(s, _)) => names.contains(s),
+        Some(Object::Dictionary(d)) => {
+            let goto = d.get(b"S").and_then(Object::as_name).map_or(true, |s| s == b"GoTo");
+            goto && d.get(b"D").is_ok_and(|x| goes_to(doc, x, dead, names, depth + 1))
+        }
+        _ => false,
+    }
+}
+
+/// /Dest or /A of an outline item or a link lands on a deleted page.
+fn entry_goes_to(
+    doc: &Document,
+    d: &Dictionary,
+    dead: &BTreeSet<ObjectId>,
+    names: &BTreeSet<Vec<u8>>,
+) -> bool {
+    [b"Dest".as_slice(), b"A"]
+        .iter()
+        .any(|k| d.get(k).is_ok_and(|x| goes_to(doc, x, dead, names, 0)))
+}
+
+/// Removes what points into the deleted pages: named destinations,
+/// /OpenAction, outline items (their children move up a level) and link
+/// annotations on the pages that stay.
+fn drop_links_to(doc: &mut Document, dead: &BTreeSet<ObjectId>) {
+    let names = drop_named_dests(doc, dead);
+    let open = doc
+        .catalog()
+        .ok()
+        .and_then(|c| c.get(b"OpenAction").ok())
+        .is_some_and(|o| goes_to(doc, o, dead, &names, 0));
+    if open && let Ok(c) = doc.catalog_mut() {
+        c.remove(b"OpenAction");
+    }
+    drop_outline_items(doc, dead, &names);
+    let live: Vec<ObjectId> =
+        doc.get_pages().into_values().filter(|id| !dead.contains(id)).collect();
+    for p in live {
+        let list = doc
+            .get_dictionary(p)
+            .ok()
+            .and_then(|d| d.get(b"Annots").ok())
+            .and_then(|o| deref(doc, o))
+            .and_then(|o| o.as_array().ok())
+            .cloned();
+        let Some(list) = list else { continue };
+        let kept: Vec<Object> = list
+            .iter()
+            .filter(|a| {
+                !deref(doc, a)
+                    .and_then(|o| o.as_dict().ok())
+                    .is_some_and(|d| entry_goes_to(doc, d, dead, &names))
+            })
+            .cloned()
+            .collect();
+        if kept.len() != list.len()
+            && let Ok(d) = doc.get_dictionary_mut(p)
+        {
+            d.set("Annots", kept);
+        }
+    }
+}
+
+/// A catalog entry that is a dictionary, with its object id when indirect.
+fn catalog_dict(doc: &Document, key: &[u8]) -> Option<(Option<ObjectId>, Dictionary)> {
+    let o = doc.catalog().ok()?.get(key).ok()?;
+    let d = deref(doc, o)?.as_dict().ok()?.clone();
+    Some((o.as_reference().ok(), d))
+}
+
+fn put_catalog_dict(doc: &mut Document, key: &[u8], at: Option<ObjectId>, d: Dictionary) {
+    match at {
+        Some(id) => doc.set_object(id, d),
+        None => {
+            if let Ok(c) = doc.catalog_mut() {
+                c.set(key.to_vec(), d);
+            }
+        }
+    }
+}
+
+/// Drops named destinations on deleted pages (catalog /Dests and the
+/// /Names /Dests tree) and returns their names.
+fn drop_named_dests(doc: &mut Document, dead: &BTreeSet<ObjectId>) -> BTreeSet<Vec<u8>> {
+    let mut removed = BTreeSet::new();
+    let none = BTreeSet::new();
+    if let Some((at, mut dests)) = catalog_dict(doc, b"Dests") {
+        let gone: Vec<Vec<u8>> = dests
+            .iter()
+            .filter(|(_, v)| goes_to(doc, v, dead, &none, 0))
+            .map(|(k, _)| k.clone())
+            .collect();
+        if !gone.is_empty() {
+            for k in &gone {
+                dests.remove(k);
+            }
+            removed.extend(gone);
+            put_catalog_dict(doc, b"Dests", at, dests);
+        }
+    }
+    if let Some((at, mut names)) = catalog_dict(doc, b"Names")
+        && let Ok(tree) = names.get(b"Dests").cloned()
+    {
+        let mut seen = BTreeSet::new();
+        if let Some(direct) = scrub_name_tree(doc, &tree, dead, &mut removed, &mut seen, 0) {
+            names.set("Dests", direct);
+            put_catalog_dict(doc, b"Names", at, names);
+        }
+    }
+    removed
+}
+
+/// Removes name-tree pairs whose destination is on a deleted page. An
+/// indirect node is rewritten in place; a direct one is returned for the
+/// caller to store.
+fn scrub_name_tree(
+    doc: &mut Document,
+    node: &Object,
+    dead: &BTreeSet<ObjectId>,
+    removed: &mut BTreeSet<Vec<u8>>,
+    seen: &mut BTreeSet<ObjectId>,
+    depth: u32,
+) -> Option<Dictionary> {
+    let id = node.as_reference().ok();
+    if depth > 32 || id.is_some_and(|id| !seen.insert(id)) {
+        return None;
+    }
+    let mut d = deref(doc, node)?.as_dict().ok()?.clone();
+    let kids = d
+        .get(b"Kids")
+        .ok()
+        .and_then(|k| deref(doc, k))
+        .and_then(|k| k.as_array().ok())
+        .cloned();
+    if let Some(kids) = kids {
+        let mut new_kids = Vec::with_capacity(kids.len());
+        for k in kids {
+            match scrub_name_tree(doc, &k, dead, removed, seen, depth + 1) {
+                Some(direct) if k.as_reference().is_err() => {
+                    new_kids.push(Object::Dictionary(direct))
+                }
+                _ => new_kids.push(k),
+            }
+        }
+        d.set("Kids", new_kids);
+    }
+    let pairs = d
+        .get(b"Names")
+        .ok()
+        .and_then(|n| deref(doc, n))
+        .and_then(|n| n.as_array().ok())
+        .cloned();
+    if let Some(pairs) = pairs {
+        let none = BTreeSet::new();
+        let mut kept = Vec::with_capacity(pairs.len());
+        for pair in pairs.chunks(2) {
+            match pair {
+                [k, v] if goes_to(doc, v, dead, &none, 0) => {
+                    if let Ok(name) = k.as_str() {
+                        removed.insert(name.to_vec());
+                    }
+                }
+                _ => kept.extend(pair.iter().cloned()),
+            }
+        }
+        d.set("Names", kept);
+    }
+    match id {
+        Some(id) => {
+            doc.set_object(id, d);
+            None
+        }
+        None => Some(d),
+    }
+}
+
+/// Removes outline items that land on a deleted page; their children take
+/// their place.
+fn drop_outline_items(doc: &mut Document, dead: &BTreeSet<ObjectId>, names: &BTreeSet<Vec<u8>>) {
+    let root = doc
+        .catalog()
+        .ok()
+        .and_then(|c| c.get(b"Outlines").ok())
+        .and_then(|o| o.as_reference().ok());
+    let Some(root) = root else { return };
+    let mut seen = BTreeSet::from([root]);
+    let (kids, visible) = outline_level(doc, root, dead, names, &mut seen, 0);
+    relink(doc, root, &kids, visible, true);
+}
+
+/// The items to keep under `parent` and how many lines they show.
+fn outline_level(
+    doc: &mut Document,
+    parent: ObjectId,
+    dead: &BTreeSet<ObjectId>,
+    names: &BTreeSet<Vec<u8>>,
+    seen: &mut BTreeSet<ObjectId>,
+    depth: u32,
+) -> (Vec<ObjectId>, i64) {
+    let (mut out, mut visible) = (Vec::new(), 0i64);
+    let mut cur = doc
+        .get_dictionary(parent)
+        .ok()
+        .and_then(|d| d.get(b"First").ok())
+        .and_then(|o| o.as_reference().ok());
+    while let Some(id) = cur {
+        if !seen.insert(id) {
+            break;
+        }
+        let Ok(d) = doc.get_dictionary(id) else { break };
+        cur = d.get(b"Next").and_then(Object::as_reference).ok();
+        let gone = entry_goes_to(doc, d, dead, names);
+        let open = d.get(b"Count").and_then(Object::as_i64).map_or(true, |c| c >= 0);
+        if depth > 64 {
+            // Too deep to rebuild: kept as it is.
+            out.push(id);
+            visible += 1;
+            continue;
+        }
+        let (kids, shown) = outline_level(doc, id, dead, names, seen, depth + 1);
+        if gone {
+            out.extend(kids);
+            visible += shown;
+        } else {
+            relink(doc, id, &kids, shown, open);
+            out.push(id);
+            visible += 1 + if open { shown } else { 0 };
+        }
+    }
+    (out, visible)
+}
+
+fn relink(doc: &mut Document, parent: ObjectId, kids: &[ObjectId], visible: i64, open: bool) {
+    for (i, &k) in kids.iter().enumerate() {
+        let prev = i.checked_sub(1).and_then(|j| kids.get(j)).copied();
+        let next = kids.get(i + 1).copied();
+        if let Ok(d) = doc.get_dictionary_mut(k) {
+            d.set("Parent", Object::Reference(parent));
+            match prev {
+                Some(p) => d.set("Prev", Object::Reference(p)),
+                None => {
+                    d.remove(b"Prev");
+                }
+            }
+            match next {
+                Some(n) => d.set("Next", Object::Reference(n)),
+                None => {
+                    d.remove(b"Next");
+                }
+            }
+        }
+    }
+    if let Ok(d) = doc.get_dictionary_mut(parent) {
+        match (kids.first(), kids.last()) {
+            (Some(&first), Some(&last)) => {
+                d.set("First", Object::Reference(first));
+                d.set("Last", Object::Reference(last));
+                d.set("Count", if open { visible } else { -visible });
+            }
+            _ => {
+                d.remove(b"First");
+                d.remove(b"Last");
+                d.remove(b"Count");
+            }
+        }
+    }
+}
+
+/// Removes the deleted pages' annotations everywhere they are listed (form
+/// /Fields, parents' /Kids, /CO), then form fields left without widgets, so
+/// their values and appearances go too.
+fn drop_annotations_of(doc: &mut Document, dead: &BTreeSet<ObjectId>) {
+    let mut annots: BTreeSet<ObjectId> = BTreeSet::new();
+    for &p in dead {
+        let list = doc
+            .get_dictionary(p)
+            .ok()
+            .and_then(|d| d.get(b"Annots").ok())
+            .and_then(|o| deref(doc, o))
+            .and_then(|o| o.as_array().ok());
+        annots.extend(list.into_iter().flatten().filter_map(|o| o.as_reference().ok()));
+    }
+    // Widgets that name a deleted page without being in its /Annots.
+    for (&id, o) in &doc.objects {
+        let on_dead = o.as_dict().is_ok_and(|d| {
+            d.has(b"Rect")
+                && d.get(b"P").and_then(Object::as_reference).is_ok_and(|p| dead.contains(&p))
+        });
+        if on_dead {
+            annots.insert(id);
+        }
+    }
+    let mut parents: Vec<ObjectId> = annots
+        .iter()
+        .filter_map(|&a| doc.get_dictionary(a).ok()?.get(b"Parent").ok()?.as_reference().ok())
+        .collect();
+    for &a in &annots {
+        doc.delete_object(a);
+    }
+    let mut budget = 100_000usize;
+    while let Some(p) = parents.pop() {
+        budget = budget.saturating_sub(1);
+        if budget == 0 {
+            break;
+        }
+        let (empty, up) = match doc.get_dictionary(p) {
+            Ok(d) => (
+                d.get(b"Kids")
+                    .ok()
+                    .and_then(|k| deref(doc, k))
+                    .and_then(|k| k.as_array().ok())
+                    .is_some_and(|k| k.is_empty()),
+                d.get(b"Parent").and_then(Object::as_reference).ok(),
+            ),
+            Err(_) => continue,
+        };
+        if empty {
+            parents.extend(up);
+            doc.delete_object(p);
+        }
+    }
+}
+
+/// Gives every page its own /Resources holding only the XObjects its
+/// content draws, and drops the page tree's shared ones, so an image only a
+/// deleted page drew is no longer reachable.
+fn own_resources(doc: &mut Document) {
+    let ids: Vec<ObjectId> = doc.get_pages().into_values().collect();
+    for id in ids {
+        let Ok(page) = doc.get_dictionary(id) else { continue };
+        let mut res = inherited(doc, page, b"Resources")
+            .and_then(|o| o.as_dict().ok())
+            .cloned()
+            .unwrap_or_default();
+        let xobjects = res
+            .get(b"XObject")
+            .ok()
+            .and_then(|o| deref(doc, o))
+            .and_then(|o| o.as_dict().ok())
+            .cloned();
+        // Content that cannot be decoded keeps every XObject.
+        if let (Some(mut xobjects), Some(content)) = (xobjects, page_content_strict(doc, id)) {
+            let used = drawn_with_forms(doc, &content, &xobjects);
+            let unused: Vec<Vec<u8>> =
+                xobjects.iter().map(|(k, _)| k.clone()).filter(|k| !used.contains(k)).collect();
+            for k in unused {
+                xobjects.remove(&k);
+            }
+            res.set("XObject", xobjects);
+        }
+        if let Ok(page) = doc.get_dictionary_mut(id) {
+            page.set("Resources", res);
+        }
+    }
+    for o in doc.objects.values_mut() {
+        if let Object::Dictionary(d) = o
+            && d.has_type(b"Pages")
+        {
+            d.remove(b"Resources");
+        }
+    }
+}
+
+/// XObject names drawn by `content`, and by the Form XObjects it draws that
+/// use the page's resources (no /Resources of their own). Every name when
+/// such a form cannot be decoded.
+fn drawn_with_forms(doc: &Document, content: &[u8], xobjects: &Dictionary) -> BTreeSet<Vec<u8>> {
+    let mut used = drawn_xobjects(content);
+    let mut todo: Vec<Vec<u8>> = used.iter().cloned().collect();
+    let mut seen = BTreeSet::new();
+    while let Some(name) = todo.pop() {
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        let form = xobjects
+            .get(&name)
+            .ok()
+            .and_then(|o| deref(doc, o))
+            .and_then(|o| o.as_stream().ok());
+        let Some(form) = form else { continue };
+        let is_form = form.dict.get(b"Subtype").and_then(Object::as_name).is_ok_and(|s| s == b"Form");
+        if !is_form || form.dict.has(b"Resources") {
+            continue;
+        }
+        let Ok(data) = form.decompressed_content_with_limit(DEFAULT_MAX_DECOMPRESSED_SIZE) else {
+            return xobjects.iter().map(|(k, _)| k.clone()).collect();
+        };
+        for n in drawn_xobjects(&data) {
+            if used.insert(n.clone()) {
+                todo.push(n);
+            }
+        }
+    }
+    used
+}
+
+/// A page's decoded content, all streams in order; `None` when a stream
+/// cannot be decoded.
+fn page_content_strict(doc: &Document, id: ObjectId) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    for sid in doc.get_page_contents(id) {
+        let Ok(stream) = doc.get_object(sid).and_then(Object::as_stream) else { continue };
+        out.extend(stream.decompressed_content_with_limit(DEFAULT_MAX_DECOMPRESSED_SIZE).ok()?);
+        out.push(b'\n');
+    }
+    Some(out)
+}
+
+enum Tok<'a> {
+    Name(Vec<u8>),
+    Op(&'a [u8]),
+}
+
+fn white(b: u8) -> bool {
+    matches!(b, b' ' | b'\t' | b'\r' | b'\n' | 0x0C | 0)
+}
+
+fn delim(b: u8) -> bool {
+    matches!(b, b'(' | b')' | b'<' | b'>' | b'[' | b']' | b'{' | b'}' | b'/' | b'%')
+}
+
+/// Walks a content stream, calling `on` with each name and each operator
+/// (numbers included); strings, comments and inline image data are
+/// skipped.
+fn scan_content<'a>(c: &'a [u8], mut on: impl FnMut(Tok<'a>)) {
+    let at = |i: usize| c.get(i).copied();
+    let word_end = |mut i: usize| {
+        while at(i).is_some_and(|x| !white(x) && !delim(x)) {
+            i += 1;
+        }
+        i
+    };
+    let mut i = 0;
+    while let Some(b) = at(i) {
+        match b {
+            _ if white(b) => i += 1,
+            b'%' => {
+                while at(i).is_some_and(|x| x != b'\n' && x != b'\r') {
+                    i += 1;
+                }
+            }
+            b'(' => {
+                let mut depth = 0usize;
+                while let Some(x) = at(i) {
+                    i += 1;
+                    match x {
+                        b'\\' => i += 1,
+                        b'(' => depth += 1,
+                        b')' => {
+                            depth = depth.saturating_sub(1);
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            b'<' if at(i + 1) == Some(b'<') => i += 2,
+            b'<' => {
+                while at(i).is_some_and(|x| x != b'>') {
+                    i += 1;
+                }
+                i += 1;
+            }
+            b'/' => {
+                let end = word_end(i + 1);
+                on(Tok::Name(decode_name(c.get(i + 1..end).unwrap_or_default())));
+                i = end;
+            }
+            _ if delim(b) => i += 1,
+            _ => {
+                let end = word_end(i);
+                let word = c.get(i..end).unwrap_or_default();
+                i = end;
+                if word == b"ID" {
+                    // Inline image data runs to an "EI" between white space.
+                    while at(i).is_some() {
+                        let ei = at(i).is_some_and(white)
+                            && at(i + 1) == Some(b'E')
+                            && at(i + 2) == Some(b'I')
+                            && at(i + 3).is_none_or(|y| white(y) || delim(y));
+                        i += 1;
+                        if ei {
+                            i += 2;
+                            break;
+                        }
+                    }
+                } else {
+                    on(Tok::Op(word));
+                }
+            }
+        }
+    }
+}
+
+/// A name token with its `#xx` escapes decoded.
+fn decode_name(raw: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(raw.len());
+    let mut i = 0;
+    while let Some(&b) = raw.get(i) {
+        let hex = raw
+            .get(i + 1..i + 3)
+            .filter(|h| h.iter().all(u8::is_ascii_hexdigit))
+            .and_then(|h| std::str::from_utf8(h).ok())
+            .and_then(|h| u8::from_str_radix(h, 16).ok());
+        match (b, hex) {
+            (b'#', Some(v)) => {
+                out.push(v);
+                i += 3;
+            }
+            _ => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+/// How many `q` the content leaves without a matching `Q`.
+fn unclosed_q(content: &[u8]) -> usize {
+    let mut depth = 0usize;
+    scan_content(content, |t| {
+        if let Tok::Op(op) = t {
+            match op {
+                b"q" => depth += 1,
+                b"Q" => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+    });
+    depth
+}
+
+/// Names drawn with `Do`.
+fn drawn_xobjects(content: &[u8]) -> BTreeSet<Vec<u8>> {
+    let mut used = BTreeSet::new();
+    let mut last: Option<Vec<u8>> = None;
+    scan_content(content, |t| match t {
+        Tok::Name(n) => last = Some(n),
+        Tok::Op(op) => {
+            if let (b"Do", Some(n)) = (op, last.take()) {
+                used.insert(n);
+            }
+            last = None;
+        }
+    });
+    used
 }
 
 fn write_err(e: impl std::fmt::Display) -> SaveError {
@@ -311,6 +924,8 @@ struct PageRead {
     xobjects: Dictionary,
     fonts: Dictionary,
     contents: Vec<ObjectId>,
+    /// `q` the page's own content leaves open.
+    unclosed: usize,
     origin: (f32, f32),
     base: Quarter,
 }
@@ -334,6 +949,7 @@ fn read_page(doc: &Document, id: ObjectId) -> Result<PageRead, SaveError> {
     let (x0, y0, _, _) = page_box(doc, id);
     Ok(PageRead {
         contents: doc.get_page_contents(id),
+        unclosed: page_content_strict(doc, id).map_or(0, |c| unclosed_q(&c)),
         base: page_rotate(doc, id),
         origin: (x0, y0),
         dict,
@@ -369,7 +985,13 @@ fn write_page(
     if e.items.is_empty() {
         return Ok(r.dict);
     }
-    let mut c: Vec<u8> = b"Q\nq\n".to_vec();
+    // Close what the page's own content left open and our leading "q",
+    // then start again from the page's initial state.
+    let mut c: Vec<u8> = b"\n".to_vec();
+    for _ in 0..=r.unclosed {
+        c.extend(b"Q\n");
+    }
+    c.extend(b"q\n");
     if r.origin != (0.0, 0.0) {
         c.extend(format!("1 0 0 1 {} {} cm\n", num(r.origin.0), num(r.origin.1)).bytes());
     }
@@ -604,11 +1226,11 @@ mod tests {
 
     const LOCKS: [Lock; 4] = [Lock::Rc4Bits40, Lock::Rc4, Lock::Aes128, Lock::Aes256];
 
-    fn locked(mut doc: Document, lock: Lock, permissions: Permissions) -> Vec<u8> {
+    fn lock_state(doc: &Document, lock: Lock, permissions: Permissions) -> EncryptionState {
         let key = [7u8; 32];
         let v = match lock {
             Lock::Rc4Bits40 => EncryptionVersion::V1 {
-                document: &doc,
+                document: doc,
                 owner_password: "pemilik",
                 user_password: PW,
                 permissions,
@@ -616,7 +1238,7 @@ mod tests {
             Lock::Aes128 => {
                 let cf: Arc<dyn CryptFilter> = Arc::new(Aes128CryptFilter);
                 EncryptionVersion::V4 {
-                    document: &doc,
+                    document: doc,
                     encrypt_metadata: true,
                     crypt_filters: BTreeMap::from([(b"StdCF".to_vec(), cf)]),
                     stream_filter: b"StdCF".to_vec(),
@@ -627,7 +1249,7 @@ mod tests {
                 }
             }
             Lock::Rc4 => EncryptionVersion::V2 {
-                document: &doc,
+                document: doc,
                 owner_password: "pemilik",
                 user_password: PW,
                 key_length: 128,
@@ -647,7 +1269,11 @@ mod tests {
                 }
             }
         };
-        let state = EncryptionState::try_from(v).unwrap();
+        EncryptionState::try_from(v).unwrap()
+    }
+
+    fn locked(mut doc: Document, lock: Lock, permissions: Permissions) -> Vec<u8> {
+        let state = lock_state(&doc, lock, permissions);
         doc.encrypt(&state).unwrap();
         bytes_of(&mut doc)
     }
@@ -865,6 +1491,7 @@ mod tests {
             }
             assert!(Document::load_mem_with_options(&out, LoadOptions::with_password("salah")).is_err());
             let doc = load(&out, Some(PW));
+            assert!(doc.encryption_state.is_some(), "{lock:?} lock lost");
             assert_eq!(vale_images(&doc, 1).len(), 1, "{lock:?}");
             assert!(content(&doc, 1).contains("VALE-PAGE-ONE"), "{lock:?}");
         }
@@ -882,6 +1509,7 @@ mod tests {
             assert!(!contains(&out, b" Do\n"), "{lock:?} new content written in plain text");
             assert_eq!(open(out.clone(), None).err(), Some(OpenError::NeedsPassword), "{lock:?}");
             let doc = load(&out, Some(PW));
+            assert!(doc.encryption_state.is_some(), "{lock:?} lock lost");
             assert_eq!(doc.get_pages().len(), 1, "{lock:?}");
             assert!(!any_stream_has(&doc, b"VALE-PAGE-TWO"), "{lock:?}");
             assert!(content(&doc, 1).contains("VALE-PAGE-ONE"), "{lock:?}");
@@ -1006,6 +1634,273 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn strings_have(o: &Object, needle: &[u8]) -> bool {
+        match o {
+            Object::String(s, _) => contains(s, needle),
+            Object::Array(a) => a.iter().any(|x| strings_have(x, needle)),
+            Object::Dictionary(d) => d.iter().any(|(_, v)| strings_have(v, needle)),
+            Object::Stream(s) => s.dict.iter().any(|(_, v)| strings_have(v, needle)),
+            _ => false,
+        }
+    }
+
+    /// The text is anywhere in the document: a stream or a string.
+    fn doc_has(doc: &Document, needle: &[u8]) -> bool {
+        any_stream_has(doc, needle) || doc.objects.values().any(|o| strings_have(o, needle))
+    }
+
+    fn delete_second(o: &Opened) -> Document {
+        let mut pages = pages_of(o);
+        pages[1].deleted = true;
+        let out = save(o, &pages, &[]).unwrap();
+        load(&out, o.password.as_deref())
+    }
+
+    fn widget(doc: &mut Document, page: ObjectId, extra: Dictionary) -> ObjectId {
+        let mut d = dictionary! {"Type"=>"Annot","Subtype"=>"Widget","P"=>page,
+            "Rect"=>vec![0.into(),0.into(),100.into(),20.into()]};
+        for (k, v) in extra.iter() {
+            d.set(k.clone(), v.clone());
+        }
+        doc.add_object(d)
+    }
+
+    #[test]
+    fn deleted_page_form_fields_are_gone() {
+        let mut doc = two_pages();
+        let (p1, p2) = (page_id(&doc, 1), page_id(&doc, 2));
+        let ap = doc.add_object(Stream::new(
+            dictionary! {"Type"=>"XObject","Subtype"=>"Form",
+                "BBox"=>vec![0.into(),0.into(),100.into(),20.into()]},
+            b"BT /F1 9 Tf (VALE-FIELD-TWO) Tj ET".to_vec(),
+        ));
+        let lone = widget(
+            &mut doc,
+            p2,
+            dictionary! {"FT"=>"Tx","T"=>Object::string_literal("lone"),
+                "V"=>Object::string_literal("VALE-FIELD-TWO"),"AP"=>dictionary!{"N"=>ap}},
+        );
+        let parent = doc.add_object(dictionary! {"FT"=>"Tx","T"=>Object::string_literal("parent"),
+            "V"=>Object::string_literal("VALE-PARENT-TWO")});
+        let kid = widget(&mut doc, p2, dictionary! {"Parent"=>parent});
+        doc.get_dictionary_mut(parent).unwrap().set("Kids", vec![Object::Reference(kid)]);
+        let one = widget(
+            &mut doc,
+            p1,
+            dictionary! {"FT"=>"Tx","T"=>Object::string_literal("one"),
+                "V"=>Object::string_literal("VALE-FIELD-ONE")},
+        );
+        doc.get_dictionary_mut(p1).unwrap().set("Annots", vec![Object::Reference(one)]);
+        doc.get_dictionary_mut(p2)
+            .unwrap()
+            .set("Annots", vec![Object::Reference(lone), Object::Reference(kid)]);
+        let fields = vec![Object::Reference(lone), Object::Reference(parent), Object::Reference(one)];
+        let form = doc.add_object(dictionary! {"Fields"=>fields,"CO"=>vec![Object::Reference(lone)]});
+        doc.catalog_mut().unwrap().set("AcroForm", form);
+        let src = bytes_of(&mut doc);
+        assert!(contains(&src, b"VALE-FIELD-TWO") && contains(&src, b"VALE-PARENT-TWO"));
+
+        let o = open(src, None).unwrap();
+        let out = delete_second(&o);
+        assert!(!doc_has(&out, b"VALE-FIELD-TWO"));
+        assert!(!doc_has(&out, b"VALE-PARENT-TWO"));
+        assert!(doc_has(&out, b"VALE-FIELD-ONE"));
+        let form = out.catalog().unwrap().get(b"AcroForm").unwrap();
+        let form = out.dereference(form).unwrap().1.as_dict().unwrap();
+        let fields = out.dereference(form.get(b"Fields").unwrap()).unwrap().1.as_array().unwrap();
+        assert_eq!(fields.len(), 1);
+    }
+
+    /// Two pages drawing `/Im1` and `/Im2`; the image dictionary sits on the
+    /// page tree (`on_tree`) or in one indirect dictionary both pages use.
+    fn shared_images(on_tree: bool) -> Document {
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let image = |doc: &mut Document, mark: &[u8]| {
+            doc.add_object(Stream::new(
+                dictionary! {"Type"=>"XObject","Subtype"=>"Image","Width"=>mark.len() as i64,
+                    "Height"=>1,"ColorSpace"=>"DeviceGray","BitsPerComponent"=>8},
+                mark.to_vec(),
+            ))
+        };
+        let im1 = image(&mut doc, b"VALE-IMG-ONE");
+        let im2 = image(&mut doc, b"VALE-IMG-TWO");
+        let res = dictionary! {"XObject"=>dictionary!{"Im1"=>im1,"Im2"=>im2}};
+        let shared = doc.add_object(res.clone());
+        let mut kids = vec![];
+        for draw in ["q 100 0 0 10 0 0 cm /Im1 Do Q", "q 100 0 0 10 0 0 cm /Im#32 Do Q"] {
+            let c = doc.add_object(Stream::new(Dictionary::new(), draw.as_bytes().to_vec()));
+            let mut d = dictionary! {"Type"=>"Page","Parent"=>pages_id,"Contents"=>c};
+            if !on_tree {
+                d.set("Resources", shared);
+            }
+            kids.push(Object::Reference(doc.add_object(d)));
+        }
+        let mut tree = dictionary! {"Type"=>"Pages","Kids"=>kids,"Count"=>2,
+            "MediaBox"=>vec![0.into(),0.into(),612.into(),792.into()]};
+        if on_tree {
+            tree.set("Resources", res);
+        }
+        doc.objects.insert(pages_id, Object::Dictionary(tree));
+        let cat = doc.add_object(dictionary! {"Type"=>"Catalog","Pages"=>pages_id});
+        doc.trailer.set("Root", cat);
+        doc
+    }
+
+    #[test]
+    fn image_only_the_deleted_page_drew_is_gone() {
+        for on_tree in [true, false] {
+            let src = bytes_of(&mut shared_images(on_tree));
+            assert!(contains(&src, b"VALE-IMG-TWO"));
+            let o = open(src, None).unwrap();
+            let mut pages = pages_of(&o);
+            pages[1].deleted = true;
+            let out = save(&o, &pages, &[sig(0)]).unwrap();
+            assert!(!contains(&out, b"VALE-IMG-TWO"), "on_tree {on_tree}");
+            let doc = load(&out, None);
+            assert!(any_stream_has(&doc, b"VALE-IMG-ONE"), "on_tree {on_tree}");
+            let xobjects = resource(&doc, 1, b"XObject");
+            assert!(xobjects.has(b"Im1") && !xobjects.has(b"Im2"), "on_tree {on_tree}");
+            assert_eq!(vale_images(&doc, 1).len(), 1);
+        }
+    }
+
+    #[test]
+    fn check_output_requires_the_lock() {
+        let plain = bytes_of(&mut two_pages());
+        assert_eq!(check_output(&plain, None, 2, true), Err(SaveError::CannotKeepLock));
+        assert_eq!(check_output(&plain, None, 2, false), Ok(()));
+        assert!(matches!(check_output(&plain, None, 1, false), Err(SaveError::Write(_))));
+    }
+
+    #[test]
+    fn unbalanced_q_in_page_is_closed_first() {
+        let spec = Spec { marker: "x) Tj ET q 2 0 0 2 0 0 cm BT (y", ..Spec::default() };
+        let o = open(bytes_of(&mut build(&[spec], None)), None).unwrap();
+        let doc = load(&save(&o, &pages_of(&o), &[sig(0)]).unwrap(), None);
+        let ids = doc.get_page_contents(page_id(&doc, 1));
+        let stream = |id: &ObjectId| doc.get_object(*id).unwrap().as_stream().unwrap().content.clone();
+        assert_eq!(ids.len(), 3);
+        assert_eq!(stream(&ids[0]), b"q\n");
+        assert!(stream(&ids[2]).starts_with(b"\nQ\nQ\nq\n"));
+        assert!(!stream(&ids[2]).starts_with(b"\nQ\nQ\nQ"));
+    }
+
+    #[test]
+    fn content_scanner_skips_strings_comments_and_images() {
+        let c = b"q (Q) Tj % Q\nBI /W 1 /H 1 ID \x00 Q Q\x00 EI q Q q <51> Tj";
+        assert_eq!(unclosed_q(c), 2);
+        let used = drawn_xobjects(b"/Im#31 Do (/X Do) Tj /Y Do /Z 5 Do");
+        assert_eq!(used, BTreeSet::from([b"Im1".to_vec(), b"Y".to_vec()]));
+    }
+
+    #[test]
+    fn incremental_unless_a_page_is_deleted() {
+        let o = open(bytes_of(&mut two_pages()), None).unwrap();
+        let mut pages = pages_of(&o);
+        assert!(save_is_incremental(&o, &pages));
+        pages[1].extra = Quarter::R90;
+        assert!(save_is_incremental(&o, &pages));
+        pages[1].deleted = true;
+        assert!(!save_is_incremental(&o, &pages));
+        let o = open(locked(two_pages(), Lock::Aes256, Permissions::all()), Some(PW)).unwrap();
+        assert!(save_is_incremental(&o, &pages_of(&o)));
+    }
+
+    #[test]
+    fn links_to_deleted_page_are_removed() {
+        let mut doc = two_pages();
+        let (p1, p2) = (page_id(&doc, 1), page_id(&doc, 2));
+        let fit = |p: ObjectId| vec![Object::Reference(p), Object::Name(b"Fit".to_vec())];
+        let root = doc.new_object_id();
+        let (o1, o2, child) = (doc.new_object_id(), doc.new_object_id(), doc.new_object_id());
+        let title = |t: &str| Object::string_literal(t);
+        doc.set_object(o1, dictionary! {"Title"=>title("VALE-OUT-ONE"),"Parent"=>root,
+            "Dest"=>fit(p1),"Next"=>o2});
+        doc.set_object(o2, dictionary! {"Title"=>title("VALE-OUT-TWO"),"Parent"=>root,
+            "Dest"=>fit(p2),"Prev"=>o1,"First"=>child,"Last"=>child,"Count"=>1});
+        doc.set_object(child, dictionary! {"Title"=>title("VALE-OUT-CHILD"),"Parent"=>o2,
+            "A"=>dictionary!{"S"=>"GoTo","D"=>fit(p1)}});
+        doc.set_object(root, dictionary! {"Type"=>"Outlines","First"=>o1,"Last"=>o2,"Count"=>3});
+        let names = vec![title("n1"), fit(p1).into(), title("n2"), fit(p2).into()];
+        let link = |doc: &mut Document, how: Dictionary| {
+            let mut d = dictionary! {"Type"=>"Annot","Subtype"=>"Link",
+                "Rect"=>vec![0.into(),0.into(),10.into(),10.into()]};
+            for (k, v) in how.iter() {
+                d.set(k.clone(), v.clone());
+            }
+            Object::Reference(doc.add_object(d))
+        };
+        let to_two = link(&mut doc, dictionary! {"Dest"=>"Two"});
+        let to_n2 = link(&mut doc, dictionary! {"A"=>dictionary!{"S"=>"GoTo","D"=>title("n2")}});
+        let to_n1 = link(&mut doc, dictionary! {"A"=>dictionary!{"S"=>"GoTo","D"=>title("n1")}});
+        doc.get_dictionary_mut(p1).unwrap().set("Annots", vec![to_two, to_n2, to_n1]);
+        let catalog = doc.catalog_mut().unwrap();
+        catalog.set("Outlines", root);
+        catalog.set("Dests", dictionary! {"One"=>fit(p1),"Two"=>fit(p2)});
+        catalog.set("Names", dictionary! {"Dests"=>dictionary!{"Names"=>names}});
+        catalog.set("OpenAction", dictionary! {"S"=>"GoTo","D"=>fit(p2)});
+
+        let o = open(bytes_of(&mut doc), None).unwrap();
+        let out = delete_second(&o);
+        assert!(!doc_has(&out, b"VALE-OUT-TWO"));
+        let catalog = out.catalog().unwrap();
+        assert!(catalog.get(b"OpenAction").is_err());
+        let dests = out.dereference(catalog.get(b"Dests").unwrap()).unwrap().1.as_dict().unwrap();
+        assert!(dests.has(b"One") && !dests.has(b"Two"));
+        let names = out.dereference(catalog.get(b"Names").unwrap()).unwrap().1.as_dict().unwrap();
+        let tree = out.dereference(names.get(b"Dests").unwrap()).unwrap().1.as_dict().unwrap();
+        assert_eq!(tree.get(b"Names").unwrap().as_array().unwrap().len(), 2);
+        let p1 = out.get_dictionary(page_id(&out, 1)).unwrap();
+        assert_eq!(p1.get(b"Annots").unwrap().as_array().unwrap().len(), 1);
+        // outline: item one, then the child of the removed item moved up
+        let root_id = catalog.get(b"Outlines").unwrap().as_reference().unwrap();
+        let root = out.get_dictionary(root_id).unwrap();
+        let first = out.get_dictionary(root.get(b"First").unwrap().as_reference().unwrap()).unwrap();
+        assert_eq!(first.get(b"Title").unwrap().as_str().unwrap(), b"VALE-OUT-ONE");
+        let second_id = first.get(b"Next").unwrap().as_reference().unwrap();
+        let second = out.get_dictionary(second_id).unwrap();
+        assert_eq!(second.get(b"Title").unwrap().as_str().unwrap(), b"VALE-OUT-CHILD");
+        assert!(second.get(b"Next").is_err());
+        assert_eq!(root.get(b"Last").unwrap().as_reference().unwrap(), second_id);
+        assert_eq!(root.get(b"Count").unwrap().as_i64().unwrap(), 2);
+    }
+
+    #[test]
+    fn encrypted_xref_stream_source_saves_both_ways() {
+        for lock in [Lock::Aes256, Lock::Rc4] {
+            let mut doc = two_pages();
+            let state = lock_state(&doc, lock, Permissions::all());
+            doc.encrypt(&state).unwrap();
+            let mut src = Vec::new();
+            doc.save_modern(&mut src).unwrap();
+            let o = open(src.clone(), Some(PW)).unwrap();
+            assert!(o.encrypted && o.geoms.len() == 2, "{lock:?}");
+            let out = save(&o, &pages_of(&o), &[sig(1)]).unwrap();
+            assert!(out.starts_with(&src), "{lock:?}");
+            let doc = load(&out, Some(PW));
+            assert!(doc.encryption_state.is_some(), "{lock:?}");
+            assert_eq!(vale_images(&doc, 2).len(), 1, "{lock:?}");
+            assert!(content(&doc, 2).contains("VALE-PAGE-TWO"), "{lock:?}");
+            let doc = delete_second(&o);
+            assert!(doc.encryption_state.is_some(), "{lock:?}");
+            assert_eq!(doc.get_pages().len(), 1, "{lock:?}");
+            assert!(!doc_has(&doc, b"VALE-PAGE-TWO"), "{lock:?}");
+            assert!(content(&doc, 1).contains("VALE-PAGE-ONE"), "{lock:?}");
+        }
+    }
+
+    #[test]
+    fn certificate_lock_is_broken_not_a_password() {
+        let mut doc = two_pages();
+        let enc = doc.add_object(dictionary! {"Filter"=>"Adobe.PubSec","SubFilter"=>"adbe.pkcs7.s5",
+            "V"=>4,"Length"=>128,"Recipients"=>vec![Object::string_literal("x")]});
+        doc.trailer.set("Encrypt", enc);
+        let src = bytes_of(&mut doc);
+        assert_eq!(open(src.clone(), None).err(), Some(OpenError::Broken));
+        assert_eq!(open(src, Some(PW)).err(), Some(OpenError::Broken));
     }
 
     #[test]
