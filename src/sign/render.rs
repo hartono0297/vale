@@ -501,12 +501,44 @@ fn scale_image(full: &Pixels, width_px: u32) -> Option<Pixels> {
 #[unsafe(link_section = ".CRT$XCU")]
 static PDF_DEVICE_FIRST: extern "C" fn() = {
     extern "C" fn init() {
-        if let Ok(r) = Renderer::start_pdf(tests::pdf_bytes(1, None), None, || {}) {
-            r.request(Job::Page { page: 0, width_px: 64, r#gen: 0 });
-            let start = std::time::Instant::now();
-            while r.take().is_empty() && start.elapsed() < std::time::Duration::from_secs(10) {
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
+        // Runs on every launch of the test exe, `--list` and filtered runs
+        // included. The whole warm-up lives on its own thread so a stuck open
+        // or render (driver hang, no WinRT) cannot hang the exe before `main`:
+        // after the timeout that thread is left detached. What the worker
+        // holds (`Shared`, the `|| {}` notify) is plain data; every COM and
+        // WinRT object lives inside `work` and is gone before its apartment ends.
+        let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
+        let spawned = std::thread::Builder::new()
+            .name("pdf-device-first".into())
+            .spawn(move || {
+                let outcome = match Renderer::start_pdf(tests::pdf_bytes(1, None), None, || {}) {
+                    Ok(r) => {
+                        r.request(Job::Page { page: 0, width_px: 64, r#gen: 0 });
+                        let start = std::time::Instant::now();
+                        while r.take().is_empty() {
+                            if start.elapsed() > std::time::Duration::from_secs(10) {
+                                break;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(5));
+                        }
+                        Ok(())
+                    }
+                    Err(_) => Err("the PDF did not open".to_string()),
+                };
+                let _ = tx.send(outcome);
+            });
+        let note = match spawned {
+            Err(e) => Some(format!("could not start the thread: {e}")),
+            Ok(_) => match rx.recv_timeout(std::time::Duration::from_secs(15)) {
+                Ok(Ok(())) => None,
+                Ok(Err(e)) => Some(e),
+                Err(_) => Some("timed out".to_string()),
+            },
+        };
+        if let Some(note) = note {
+            eprintln!(
+                "vale tests: PDF device warm-up failed: {note}; the exit may crash on AMD drivers"
+            );
         }
     }
     init
