@@ -112,6 +112,9 @@ pub enum Hit {
     /// The bar's "Buang" and "Batal".
     Discard,
     Keep,
+    /// Turn the picture a quarter to the left or right.
+    RotateLeft,
+    RotateRight,
 }
 
 /// Where everything sits in the client area (physical px).
@@ -199,6 +202,11 @@ pub fn layout(cw: f32, ch: f32, ui: f32, labels: &Labels, confirm: bool) -> Layo
     items.push((Hit::Undo, place(x, BTN * ui, BTN * ui)));
     x += (BTN + GAP) * ui;
     items.push((Hit::Redo, place(x, BTN * ui, BTN * ui)));
+    x += BTN * ui;
+    sep(&mut x);
+    items.push((Hit::RotateLeft, place(x, BTN * ui, BTN * ui)));
+    x += (BTN + GAP) * ui;
+    items.push((Hit::RotateRight, place(x, BTN * ui, BTN * ui)));
     let left_end = x + BTN * ui;
     // Right group, from the edge in: Tutup, Simpan, Salin.
     let mut right = cw - MARGIN * ui;
@@ -274,6 +282,8 @@ pub fn tip(hit: Hit) -> Option<String> {
         Hit::Stroke(_) => tr(Key::EditStroke).to_owned(),
         Hit::Undo => format!("{} (Ctrl+Z)", tr(Key::EditUndo)),
         Hit::Redo => format!("{} (Ctrl+Y)", tr(Key::EditRedo)),
+        Hit::RotateLeft => format!("{} (Ctrl+Shift+R)", tr(Key::EditRotateLeft)),
+        Hit::RotateRight => format!("{} (Ctrl+R)", tr(Key::EditRotateRight)),
         Hit::Copy => format!("{} (Ctrl+C)", tr(Key::EditCopy)),
         Hit::Save => format!("{} (Ctrl+S)", tr(Key::EditSave)),
         Hit::Close => format!("{} (Esc)", tr(Key::EditClose)),
@@ -720,6 +730,8 @@ fn do_hit(hwnd: HWND, hit: Hit) {
         Hit::Redo => {
             with(hwnd, |e| e.session.redo());
         }
+        // Wired in a later task.
+        Hit::RotateLeft | Hit::RotateRight => {}
         Hit::Copy => do_copy(hwnd),
         Hit::Save => do_save(hwnd),
         Hit::Close => request_close(hwnd),
@@ -2113,6 +2125,17 @@ fn draw(e: &mut Editor) -> windows::core::Result<()> {
                                 ui,
                             );
                         }
+                        Hit::RotateLeft | Hit::RotateRight => {
+                            if hot {
+                                fill_round(rt, brush, *r, 9.0 * ui, p.hover, 1.0);
+                            }
+                            let g = if matches!(hit, Hit::RotateLeft) {
+                                Glyph::RotateLeft
+                            } else {
+                                Glyph::RotateRight
+                            };
+                            glyph(rt, brush, gfx, g, *r, p.text, a, ui);
+                        }
                         Hit::Copy | Hit::Save | Hit::Close | Hit::Discard | Hit::Keep => {
                             let (label, primary, danger) = match hit {
                                 Hit::Copy => (tr(Key::EditCopy), false, false),
@@ -2378,7 +2401,13 @@ mod tests {
                 tools.as_slice(),
                 "Select first, then T R L A P M B"
             );
-            assert_eq!(l.seps.len(), 3);
+            assert_eq!(l.seps.len(), 4);
+            let at = order.iter().position(|h| *h == Hit::Redo).expect("redo");
+            assert_eq!(
+                &order[at + 1..at + 3],
+                [Hit::RotateLeft, Hit::RotateRight],
+                "the rotate buttons follow Redo"
+            );
             // The two groups apart at the least width.
             let copy = l.rect_of(Hit::Copy).expect("copy");
             assert!(copy.x >= l.left_end, "{ui}");
@@ -2461,6 +2490,19 @@ mod tests {
         let (cw, ch) = client_size((2000, 1000), 1.0, 1.0, min);
         assert_eq!(cw, 2048.0);
         assert_eq!(ch, 1000.0 + 48.0 + 96.0);
+    }
+
+    #[test]
+    fn rotate_tips_name_their_shortcuts() {
+        crate::i18n::set_lang(crate::i18n::Lang::En);
+        assert_eq!(
+            tip(Hit::RotateLeft).as_deref(),
+            Some("Rotate left (Ctrl+Shift+R)")
+        );
+        assert_eq!(
+            tip(Hit::RotateRight).as_deref(),
+            Some("Rotate right (Ctrl+R)")
+        );
     }
 
     #[test]
