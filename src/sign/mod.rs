@@ -5,6 +5,7 @@ pub mod geom;
 pub mod image_out;
 pub mod ink;
 pub mod names;
+pub mod office;
 pub mod raster;
 pub mod render;
 pub mod session;
