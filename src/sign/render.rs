@@ -493,6 +493,9 @@ fn scale_image(full: &Pixels, width_px: u32) -> Option<Pixels> {
 /// other order (a Direct2D WIC target first, a PDF page afterwards, from any
 /// module) makes the AMD user-mode driver (amdxx64.dll) fail fast with
 /// 0xC0000409 while the process exits, after every test has passed.
+/// The app needs no such step: `app::end_process` ends it with `TerminateProcess`,
+/// skipping the DLL teardown where the driver fails; a test process has no such
+/// exit path, so this mirrors that protection by avoiding the bad order.
 #[cfg(test)]
 #[used]
 #[unsafe(link_section = ".CRT$XCU")]
