@@ -8948,6 +8948,26 @@ impl ShelfAction {
     }
 }
 
+/// A step after the shelf card menu closes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AfterMenu {
+    /// Let go of the panel (`Event::MenuOpen(false)`).
+    Release,
+    /// Do what was picked.
+    Act,
+}
+
+/// The steps after the pick, in order. The preview opens first, so the panel
+/// is released onto it (as before signing existed). Sign releases first and
+/// then collapses the panel like a click on the card (`Event::ShelfSign`).
+fn after_shelf_menu(chosen: Option<ShelfAction>) -> &'static [AfterMenu] {
+    match chosen {
+        Some(ShelfAction::Preview) => &[AfterMenu::Act, AfterMenu::Release],
+        Some(ShelfAction::Sign) => &[AfterMenu::Release, AfterMenu::Act],
+        None => &[AfterMenu::Release],
+    }
+}
+
 /// The items of the menu of `card` (whose file is `path`), in order: sign
 /// first, then the preview of an image. A card that is gone has none.
 fn shelf_menu_items(card: &crate::shelf::ShelfCard, path: &std::path::Path) -> Vec<ShelfAction> {
@@ -9750,18 +9770,23 @@ fn open_shelf_card_menu(hwnd: HWND, i: usize) {
     with_app(|app| app.apply_now(Event::MenuOpen(true)));
     let chosen = tray::card_menu(hwnd, &labels).and_then(|n| items.get(n).copied());
     MENU_OPEN.set(false);
-    // The pick first, so the panel is released onto what it opened. Sign
-    // collapses the panel like a click on the card (`Event::ShelfSign`); the
-    // signing window then opens from `WM_APP_SIGN`, outside the app borrow.
+    // In `after_shelf_menu`'s order: the preview opens before the panel is
+    // released onto it; Sign releases the panel, then collapses it like a
+    // click on the card, and the signing window opens from `WM_APP_SIGN`,
+    // outside the app borrow.
     with_app(|app| {
-        app.apply_now(Event::MenuOpen(false));
-        let Some(i) = app.shelf_index_of(&path) else {
-            return;
-        };
-        match chosen {
-            Some(ShelfAction::Preview) => app.shelf_preview_open(i),
-            Some(ShelfAction::Sign) => app.apply_now(Event::ShelfSign(i)),
-            None => {}
+        for step in after_shelf_menu(chosen) {
+            match step {
+                AfterMenu::Release => app.apply_now(Event::MenuOpen(false)),
+                AfterMenu::Act => {
+                    let Some(i) = app.shelf_index_of(&path) else { continue };
+                    match chosen {
+                        Some(ShelfAction::Preview) => app.shelf_preview_open(i),
+                        Some(ShelfAction::Sign) => app.apply_now(Event::ShelfSign(i)),
+                        None => {}
+                    }
+                }
+            }
         }
     });
 }
@@ -13652,6 +13677,14 @@ mod tests {
             None
         );
         assert_eq!(shelf_target(View::Idle, Some(&Hit::ShelfCard(5)), &cards, &paths), None);
+    }
+
+    #[test]
+    fn the_preview_opens_before_the_panel_is_released() {
+        use AfterMenu::{Act, Release};
+        assert_eq!(after_shelf_menu(Some(ShelfAction::Preview)), [Act, Release]);
+        assert_eq!(after_shelf_menu(Some(ShelfAction::Sign)), [Release, Act]);
+        assert_eq!(after_shelf_menu(None), [Release]);
     }
 
     #[test]
