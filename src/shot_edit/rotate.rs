@@ -26,15 +26,6 @@ pub fn rotate_rect(r: FRect, turn: Turn, size: (f32, f32)) -> FRect {
     FRect::between(a, b)
 }
 
-/// The picture size after `turns` quarter turns: swapped when odd.
-pub fn turned_size(size: (u32, u32), turns: u8) -> (u32, u32) {
-    if turns % 2 == 1 {
-        (size.1, size.0)
-    } else {
-        size
-    }
-}
-
 /// The pixels turned a quarter; the new size is (h, w).
 pub fn rotate_shot(shot: &Shot, turn: Turn) -> Shot {
     let (w, h) = (shot.w as usize, shot.h as usize);
@@ -57,13 +48,15 @@ pub fn rotate_shot(shot: &Shot, turn: Turn) -> Shot {
     }
 }
 
-/// `turns % 4` right turns (0 is a clone).
+/// `turns % 4` right turns (0 is a copy). One or three turns cost one pass
+/// (three is a single left turn), two cost two; no extra copy is made.
 pub fn turned(shot: &Shot, turns: u8) -> Shot {
-    let mut out = shot.clone();
-    for _ in 0..turns % 4 {
-        out = rotate_shot(&out, Turn::Right);
+    match turns % 4 {
+        0 => shot.clone(),
+        1 => rotate_shot(shot, Turn::Right),
+        2 => rotate_shot(&rotate_shot(shot, Turn::Right), Turn::Right),
+        _ => rotate_shot(shot, Turn::Left),
     }
-    out
 }
 
 impl Annotation {
@@ -200,8 +193,14 @@ mod tests {
         let s = sample();
         assert_eq!(turned(&s, 4).bgra, s.bgra);
         assert_eq!(turned(&rotate_shot(&s, Turn::Right), 3), s);
-        assert_eq!(turned_size((3, 2), 1), (2, 3));
-        assert_eq!(turned_size((3, 2), 2), (3, 2));
+        // Three right turns are one left turn, one pass.
+        assert_eq!(turned(&s, 3), rotate_shot(&s, Turn::Left));
+        assert_eq!(turned(&s, 1), rotate_shot(&s, Turn::Right));
+        assert_eq!(
+            turned(&s, 2),
+            rotate_shot(&rotate_shot(&s, Turn::Right), Turn::Right)
+        );
+        assert_eq!(turned(&s, 7), turned(&s, 3));
     }
 
     #[test]
@@ -227,6 +226,23 @@ mod tests {
         assert_eq!((text.as_str(), size, color), ("ab", 22.0, 0xE5484D));
         let new_c = Pt::new(pos.x + tw / 2.0, pos.y + th / 2.0);
         assert!(near(new_c, rotate_pt(old_c, Turn::Right, (200.0, 100.0))));
+    }
+
+    #[test]
+    fn text_right_then_left_is_where_it_was() {
+        let start = Pt::new(10.0, 14.0);
+        let mut t = Annotation::Text {
+            pos: start,
+            text: "ab".into(),
+            size: 22.0,
+            color: 0xE5484D,
+        };
+        t.rotate(Turn::Right, (200.0, 100.0));
+        t.rotate(Turn::Left, (100.0, 200.0));
+        let Annotation::Text { pos, .. } = t else {
+            panic!("still text");
+        };
+        assert!(near(pos, start), "{pos:?}");
     }
 
     #[test]
@@ -273,10 +289,9 @@ mod tests {
                     Annotation::Arrow { a: a1, b: b1, .. },
                     Annotation::Arrow { a: a2, b: b2, .. },
                 )
-                | (
-                    Annotation::Line { a: a1, b: b1, .. },
-                    Annotation::Line { a: a2, b: b2, .. },
-                ) => near(*a1, *a2) && near(*b1, *b2),
+                | (Annotation::Line { a: a1, b: b1, .. }, Annotation::Line { a: a2, b: b2, .. }) => {
+                    near(*a1, *a2) && near(*b1, *b2)
+                }
                 (Annotation::Pen { pts: x, .. }, Annotation::Pen { pts: y, .. })
                 | (Annotation::Marker { pts: x, .. }, Annotation::Marker { pts: y, .. }) => {
                     x.len() == y.len() && x.iter().zip(y).all(|(a, b)| near(*a, *b))

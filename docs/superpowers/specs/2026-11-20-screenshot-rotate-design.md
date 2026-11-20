@@ -122,8 +122,8 @@ already rotated).
 - **Editor window:** keeps the original `Arc<Shot>` and the current turned
   `Arc<Shot>`; after rotate/undo/redo, if the count changed: rebuild the
   turned picture, drop the D2D picture and the pixelate cache, re-fit the
-  window (the same `open_scale`/`client_size` rules as at open, kept centred
-  on where the window is now and inside the monitor's work area), recompute
+  window (the same `open_scale`/`client_size` rules as at open, kept at its top-left corner
+  where it is now and inside the monitor's work area), recompute
   the view, `note_change` for auto-copy. Workers already holding the old
   `Arc` finish with it; the revision check keeps "clean" honest.
 - **Toolbar:** `Hit::RotateLeft`, `Hit::RotateRight`, a fourth separator,

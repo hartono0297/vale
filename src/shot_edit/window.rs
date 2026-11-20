@@ -41,12 +41,12 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_DBLCLKS, CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetWindowRect,
-    IDC_ARROW, IDC_CROSS, IDC_IBEAM, IsWindow, IsZoomed, LoadCursorW, MINMAXINFO, PostQuitMessage, RegisterClassExW,
-    SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SetCursor, SetForegroundWindow, SetWindowPos,
-    ShowWindow, WINDOW_EX_STYLE, WM_APP, WM_CAPTURECHANGED, WM_CLOSE, WM_COMMAND, WM_CTLCOLOREDIT,
-    WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDBLCLK,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_SETCURSOR, WM_SIZE, WNDCLASSEXW,
-    WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW,
+    IDC_ARROW, IDC_CROSS, IDC_IBEAM, IsWindow, IsZoomed, LoadCursorW, MINMAXINFO, PostQuitMessage,
+    RegisterClassExW, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SetCursor, SetForegroundWindow,
+    SetWindowPos, ShowWindow, WINDOW_EX_STYLE, WM_APP, WM_CAPTURECHANGED, WM_CLOSE, WM_COMMAND,
+    WM_CTLCOLOREDIT, WM_DESTROY, WM_DPICHANGED, WM_ENTERSIZEMOVE, WM_ERASEBKGND, WM_EXITSIZEMOVE,
+    WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+    WM_PAINT, WM_SETCURSOR, WM_SIZE, WNDCLASSEXW, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer, WM_TIMER};
 use windows::core::{Error, HSTRING, w};
@@ -57,6 +57,7 @@ use super::export::{self, CopyInbox, CopyReady, Inbox, Prepared, Put, SaveResult
 use super::gfx::{Align, Gfx, Target, bitmap, color, rect_f};
 use super::icons::{Glyph, fill, fill_round, glyph, line};
 use super::paint::{Pix, draw_annotations, draw_selection};
+use super::rotate::{Turn, turned};
 use super::text::{
     self, TextClick, TextEdit, WM_APP_TEXT, colorref, edit_text, text_click_action,
     text_msg_is_current,
@@ -64,7 +65,6 @@ use super::text::{
 use super::{
     Annotation, COLORS, FRect, Handle, Pt, STROKES, Session, Tool, View, initial_scale, text_size,
 };
-use super::rotate::{Turn, turned};
 use crate::capture::Shot;
 use crate::i18n::{Key, tr};
 use crate::theme::{self, WindowPalette};
@@ -347,6 +347,8 @@ struct Editor {
     /// A turn changed the shape while the window was maximized: the restore
     /// that follows re-fits the normal window to the turned picture.
     refit_on_restore: bool,
+    /// Inside the modal move/size loop (title-bar drag, edge drag).
+    moving: bool,
     session: Session,
     gfx: Gfx,
     target: Option<Target>,
@@ -493,19 +495,8 @@ fn try_open(
         (work.right - work.left) as f32,
         (work.bottom - work.top) as f32,
     );
-    let scale = open_scale(img, work_size, ui);
-    let (cw, ch) = client_size(img, scale, ui, min_client_w(ui, &labels));
     let style = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN;
-    let mut rc = RECT {
-        left: 0,
-        top: 0,
-        right: cw as i32,
-        bottom: ch as i32,
-    };
-    unsafe {
-        let _ = AdjustWindowRectExForDpi(&mut rc, style, false, WINDOW_EX_STYLE(0), dpi);
-    }
-    let (ow, oh) = (rc.right - rc.left, rc.bottom - rc.top);
+    let (scale, (ow, oh)) = outer_size(img, work_size, ui, dpi, &labels);
     let x = work.left + ((work.right - work.left) - ow).max(0) / 2;
     let y = work.top + ((work.bottom - work.top) - oh).max(0) / 2;
     let hwnd = unsafe {
@@ -544,6 +535,7 @@ fn try_open(
         original,
         shown_turns: 0,
         refit_on_restore: false,
+        moving: false,
         session: Session::with_doc(doc),
         gfx,
         target: None,
@@ -594,14 +586,15 @@ fn try_open(
         return Err(Error::empty());
     }
     apply_frame(hwnd, &p);
+    // Turned while still hidden (no flash of the unturned shape), and before
+    // the first copy, so that copy is already turned.
+    if let Some(t) = turn {
+        rotate_by(hwnd, t);
+    }
     unsafe {
         let _ = ShowWindow(hwnd, SW_SHOW);
         let _ = SetForegroundWindow(hwnd);
         let _ = SetFocus(Some(hwnd));
-    }
-    // Before the first copy, so that copy is already turned.
-    if let Some(t) = turn {
-        rotate_by(hwnd, t);
     }
     // The pick itself is copied: a worker renders it (the window never
     // waits); the clipboard is written when it rings back.
@@ -732,15 +725,41 @@ fn say(e: &mut Editor, text: impl Into<String>, tone: Tone) {
     e.footer = Some((text.into(), tone));
 }
 
-/// Where a `size` window centred on `center` goes: moved (never shrunk)
-/// inside `work`; a window larger than `work` is pinned to its top-left.
-pub fn refit_rect(center: (i32, i32), size: (i32, i32), work: RECT) -> RECT {
-    let left = (center.0 - size.0 / 2)
-        .min(work.right - size.0)
-        .max(work.left);
-    let top = (center.1 - size.1 / 2)
-        .min(work.bottom - size.1)
-        .max(work.top);
+/// The open scale and the outer window size (frame included) for a picture of
+/// `img` on a work area of `work_size`.
+fn outer_size(
+    img: (u32, u32),
+    work_size: (f32, f32),
+    ui: f32,
+    dpi: u32,
+    labels: &Labels,
+) -> (f32, (i32, i32)) {
+    let scale = open_scale(img, work_size, ui);
+    let (cw, ch) = client_size(img, scale, ui, min_client_w(ui, labels));
+    let mut rc = RECT {
+        left: 0,
+        top: 0,
+        right: cw as i32,
+        bottom: ch as i32,
+    };
+    unsafe {
+        let _ = AdjustWindowRectExForDpi(
+            &mut rc,
+            WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+            false,
+            WINDOW_EX_STYLE(0),
+            dpi,
+        );
+    }
+    (scale, (rc.right - rc.left, rc.bottom - rc.top))
+}
+
+/// Where a `size` window whose top-left corner is `top_left` goes: moved
+/// (never shrunk) inside `work`; a window larger than `work` is pinned to its
+/// top-left.
+pub fn refit_rect(top_left: (i32, i32), size: (i32, i32), work: RECT) -> RECT {
+    let left = top_left.0.min(work.right - size.0).max(work.left);
+    let top = top_left.1.min(work.bottom - size.1).max(work.top);
     RECT {
         left,
         top,
@@ -767,7 +786,14 @@ fn sync_picture(hwnd: HWND) {
         if turns == e.shown_turns {
             return false;
         }
-        e.base = Arc::new(turned(&e.original, turns));
+        // The step from what is shown: one or three quarter turns cost one
+        // pass over the pixels; no turns at all is the original itself.
+        let delta = (turns + 4 - e.shown_turns) % 4;
+        e.base = if turns == 0 {
+            e.original.clone()
+        } else {
+            Arc::new(turned(&e.base, delta))
+        };
         e.picture = None;
         e.pix.clear();
         e.shown_turns = turns;
@@ -793,12 +819,12 @@ fn sync_picture(hwnd: HWND) {
     invalidate(hwnd);
 }
 
-/// The open-time size rules for the turned picture, kept centred where the
-/// window is now and inside its monitor's work area. `WM_SIZE` follows.
+/// The open-time size rules for the turned picture, its top-left corner kept
+/// where the window is now and inside its monitor's work area. `WM_SIZE` follows.
 fn refit_window(hwnd: HWND) {
-    let Some((img, ui, dpi, min_w)) = with(hwnd, |e| {
+    let Some((img, ui, dpi, labels)) = with(hwnd, |e| {
         let ui = e.dpi as f32 / 96.0;
-        ((e.base.w, e.base.h), ui, e.dpi, min_client_w(ui, &e.labels))
+        ((e.base.w, e.base.h), ui, e.dpi, e.labels)
     }) else {
         return;
     };
@@ -816,26 +842,8 @@ fn refit_window(hwnd: HWND) {
         (work.right - work.left) as f32,
         (work.bottom - work.top) as f32,
     );
-    let scale = open_scale(img, work_size, ui);
-    let (cw, ch) = client_size(img, scale, ui, min_w);
-    let mut rc = RECT {
-        left: 0,
-        top: 0,
-        right: cw as i32,
-        bottom: ch as i32,
-    };
-    unsafe {
-        let _ = AdjustWindowRectExForDpi(
-            &mut rc,
-            WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
-            false,
-            WINDOW_EX_STYLE(0),
-            dpi,
-        );
-    }
-    let size = (rc.right - rc.left, rc.bottom - rc.top);
-    let centre = ((now.left + now.right) / 2, (now.top + now.bottom) / 2);
-    let at = refit_rect(centre, size, work);
+    let (scale, size) = outer_size(img, work_size, ui, dpi, &labels);
+    let at = refit_rect((now.left, now.top), size, work);
     // Set first: the WM_SIZE this triggers lays out with the new scale.
     with(hwnd, |e| e.scale = scale);
     unsafe {
@@ -1721,7 +1729,12 @@ fn on_up(hwnd: HWND, lparam: LPARAM) {
     invalidate(hwnd);
 }
 
-fn on_key(hwnd: HWND, vk: u16) {
+/// `WM_KEYDOWN` lParam bit 30: the key was already down (auto-repeat).
+fn is_key_repeat(lparam: isize) -> bool {
+    lparam & (1 << 30) != 0
+}
+
+fn on_key(hwnd: HWND, vk: u16, repeat: bool) {
     let ctrl = key_down(VK_CONTROL.0);
     let shift = key_down(VK_SHIFT.0);
     // Typing goes to the EDIT; mid-drag, an edit or undo would land under the
@@ -1745,7 +1758,16 @@ fn on_key(hwnd: HWND, vk: u16) {
         match vk {
             0x5A => do_hit(hwnd, if shift { Hit::Redo } else { Hit::Undo }),
             0x59 => do_hit(hwnd, Hit::Redo),
-            0x52 => do_hit(hwnd, if shift { Hit::RotateLeft } else { Hit::RotateRight }),
+            // A held key turns once, not at the repeat rate.
+            0x52 if repeat => {}
+            0x52 => do_hit(
+                hwnd,
+                if shift {
+                    Hit::RotateLeft
+                } else {
+                    Hit::RotateRight
+                },
+            ),
             0x43 => do_hit(hwnd, Hit::Copy),
             0x53 => do_hit(hwnd, Hit::Save),
             _ => {}
@@ -1811,7 +1833,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                     t.resize(w, h);
                 }
                 recompute_view(e);
-                restored && std::mem::take(&mut e.refit_on_restore)
+                restored && !e.moving && std::mem::take(&mut e.refit_on_restore)
             });
             // Back from maximized after a turn: the old normal size was for
             // the other shape.
@@ -1819,6 +1841,23 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 refit_window(hwnd);
             }
             invalidate(hwnd);
+            LRESULT(0)
+        }
+        WM_ENTERSIZEMOVE => {
+            with(hwnd, |e| e.moving = true);
+            LRESULT(0)
+        }
+        WM_EXITSIZEMOVE => {
+            // A drag that restored a maximized window: re-fit once it ends,
+            // not under the pointer mid-drag.
+            let refit = with(hwnd, |e| {
+                e.moving = false;
+                std::mem::take(&mut e.refit_on_restore)
+            });
+            if refit == Some(true) && !unsafe { IsZoomed(hwnd) }.as_bool() {
+                refit_window(hwnd);
+                invalidate(hwnd);
+            }
             LRESULT(0)
         }
         WM_GETMINMAXINFO => {
@@ -1944,7 +1983,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             }
         }
         WM_KEYDOWN => {
-            on_key(hwnd, (wparam.0 & 0xFFFF) as u16);
+            on_key(hwnd, (wparam.0 & 0xFFFF) as u16, is_key_repeat(lparam.0));
             note_change(hwnd);
             LRESULT(0)
         }
@@ -2706,16 +2745,15 @@ mod tests {
     }
 
     #[test]
-    fn refit_keeps_the_centre_when_it_fits() {
+    fn refit_keeps_the_top_left_when_it_fits() {
         let r = refit_rect((500, 400), (300, 200), rc(0, 0, 1920, 1040));
-        assert_eq!(rc_t(r), (350, 300, 650, 500));
+        assert_eq!(rc_t(r), (500, 400, 800, 600));
     }
 
     #[test]
     fn refit_moves_inside_the_work_area() {
         let r = refit_rect((1900, 1000), (400, 300), rc(0, 0, 1920, 1040));
-        assert_eq!((r.right, r.bottom), (1920, 1040));
-        assert_eq!((r.right - r.left, r.bottom - r.top), (400, 300));
+        assert_eq!(rc_t(r), (1520, 740, 1920, 1040));
     }
 
     #[test]
@@ -2729,7 +2767,13 @@ mod tests {
         let work = rc(-1920, 0, 0, 1080);
         let r = refit_rect((-50, 1070), (600, 400), work);
         assert_eq!(rc_t(r), (-600, 680, 0, 1080));
-        let r = refit_rect((-1900, 10), (600, 400), work);
+        let r = refit_rect((-2000, -10), (600, 400), work);
         assert_eq!((r.left, r.top), (-1920, 0));
+    }
+
+    #[test]
+    fn a_key_repeat_is_bit_30() {
+        assert!(!is_key_repeat(0x0001_0001));
+        assert!(is_key_repeat(0x4001_0001));
     }
 }

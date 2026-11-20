@@ -497,11 +497,7 @@ mod tests {
                 bgra.extend_from_slice(&[(x * 4) as u8, 255 - (x * 4) as u8, 90, 255]);
             }
         }
-        let base = Shot {
-            w: 64,
-            h: 40,
-            bgra,
-        };
+        let base = Shot { w: 64, h: 40, bgra };
         let doc = vec![
             Annotation::Rect {
                 r: FRect::new(8.0, 6.0, 20.0, 12.0),

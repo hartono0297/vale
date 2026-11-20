@@ -542,9 +542,7 @@ fn finish_inline(kind: FinishKind) {
     let (kind, kept) = match kept {
         Some(k) => (kind, Some(k)),
         // Nothing to keep (an empty crop): the same as a cancel.
-        None if kind.keeps_picture() => {
-            (FinishKind::Cancel, None)
-        }
+        None if kind.keeps_picture() => (FinishKind::Cancel, None),
         None => (kind, None),
     };
     let mut editor = None;
