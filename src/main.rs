@@ -56,6 +56,7 @@ mod shelf_thumb;
 mod shelf_thumbs;
 mod shortcuts;
 mod shot_edit;
+mod sign;
 mod sources;
 mod state;
 mod system;

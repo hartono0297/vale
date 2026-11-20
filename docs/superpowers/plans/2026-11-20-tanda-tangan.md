@@ -425,3 +425,6 @@ Load `antislop:antislop`, `antislop:antislop-ui` and `antislop:antislop-human` b
 ## Size log
 
 (Task 1 and Task 10 append here.)
+
+- Task 1 baseline (main at 9271d1c, `cargo build --release --locked`): vale.exe = 5,009,920 bytes. Budget: at most 1,363,148 bytes more (6,373,068 total).
+- Task 1: `miniz_oxide` bumped to 0.9 (matches lopdf's flate2); the whole suite passes unchanged (4747 passed), so 0.9 is kept.

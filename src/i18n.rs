@@ -558,6 +558,56 @@ keys! {
     ShelfPreview => "Pratinjau gambar", "Preview image";
     ShelfPreviewFailed => "Tidak bisa menampilkan gambar", "Can't show this image";
     ShelfPreviewLoading => "Memuat\u{2026}", "Loading\u{2026}";
+    // Signing documents (Tanda tangan).
+    SignMenu => "Tanda tangani", "Sign";
+    SignPageOf => "Halaman {n} dari {total}", "Page {n} of {total}";
+    SignToolSignature => "Tanda tangan", "Signature";
+    SignToolInitials => "Paraf", "Initials";
+    SignToolDate => "Tanggal", "Date";
+    SignToolText => "Teks", "Text";
+    SignToolCheck => "Centang", "Check";
+    SignRotate => "Putar", "Rotate";
+    SignDeletePage => "Hapus halaman", "Delete page";
+    SignSmaller => "Lebih kecil", "Smaller";
+    SignBigger => "Lebih besar", "Bigger";
+    SignAddDate => "+ Tanggal", "+ Date";
+    SignRemove => "Hapus", "Remove";
+    SignAllPages => "Pasang di semua halaman", "Put on every page";
+    SignSaveAs => "Disimpan sebagai {name}, di folder yang sama", "Saved as {name}, in the same folder";
+    SignSaveAsFallback => "Disimpan sebagai {name}, di Dokumen\\Vale\\Ditandatangani", "Saved as {name}, in Documents\\Vale\\Ditandatangani";
+    SignSave => "Simpan", "Save";
+    SignCancel => "Batal", "Cancel";
+    SignFormatImage => "Gambar", "Image";
+    SignFormatPdf => "PDF", "PDF";
+    SignMakerDraw => "Gambar", "Draw";
+    SignMakerType => "Ketik", "Type";
+    SignMakerPhoto => "Dari foto", "From photo";
+    SignMakerRedo => "Ulangi", "Start over";
+    SignMakerInk => "Tinta", "Ink";
+    SignMakerKeep => "Simpan di PC ini", "Keep on this PC";
+    SignMakerKeepHint => "Terkunci ke akun Windows ini. Orang lain di PC yang sama tidak bisa membukanya.", "Locked to this Windows account. Other people on the same PC cannot open it.";
+    SignMakerNew => "+ Baru", "+ New";
+    SignMakerUse => "Pakai", "Use";
+    SignMakerTypeHint => "Ketik nama", "Type your name";
+    SignMakerPhotoPick => "Pilih foto tanda tangan di kertas", "Pick a photo of a signature on paper";
+    SignPassword => "Dokumen ini dikunci. Masukkan kata sandinya.", "This document is locked. Enter its password.";
+    SignPasswordWrong => "Kata sandinya salah.", "Wrong password.";
+    SignOpen => "Buka", "Open";
+    SignNoChanges => "Pembuat dokumen ini tidak mengizinkan perubahan.", "The author of this document does not allow changes.";
+    SignBreaksSignature => "Tanda tangan digital yang sudah ada di dokumen ini jadi tidak berlaku.", "The digital signature already in this document will no longer be valid.";
+    SignSaveAnyway => "Simpan tetap", "Save anyway";
+    SignCannotKeepLock => "Kunci dokumen ini tidak bisa dipertahankan, jadi tidak disimpan.", "This document's lock cannot be kept, so it was not saved.";
+    SignCannotOpen => "Dokumen ini tidak bisa dibuka.", "This document cannot be opened.";
+    SignConverting => "Mengubah ke PDF\u{2026}", "Converting to PDF\u{2026}";
+    SignNoOffice => "Tidak ada Office di PC ini. Simpan dulu sebagai PDF dari aplikasinya, lalu coba lagi.", "No office app on this PC. Save it as PDF from its app first, then try again.";
+    SignOfficeFailed => "Gagal mengubah ke PDF. Simpan dulu sebagai PDF dari aplikasinya.", "Could not convert to PDF. Save it as PDF from its app first.";
+    SignOfficeLocked => "Dokumen Office ini dikunci kata sandi. Simpan dulu sebagai PDF dari aplikasinya.", "This Office document is password-locked. Save it as PDF from its app first.";
+    SignSaving => "Menyimpan\u{2026}", "Saving\u{2026}";
+    SignSaveFailed => "Gagal menyimpan. File aslinya tidak berubah.", "Could not save. The original file is unchanged.";
+    SignLastPage => "Halaman terakhir tidak bisa dihapus.", "The last page cannot be deleted.";
+    SignDone => "Ditandatangani", "Signed";
+    SignNoticeBody => "{name} · klik untuk buka", "{name} · click to open";
+    SignTooBig => "File ini terlalu besar untuk dibuka (lebih dari 200 MB).", "This file is too big to open (over 200 MB).";
     PhoneStarting => "Mencari jaringan\u{2026}", "Finding the network\u{2026}";
     PhoneStep1 => "Scan pakai kamera HP", "Scan with the phone's camera";
     PhoneStep1Sub => "Atau salin link-nya ke laptop", "Or copy the link to a laptop";
@@ -5546,6 +5596,62 @@ mod copy_preview_tests {
             Key::PhoneNetPublic,
             Key::PhoneConnected,
             Key::PhonePublicHint,
+        ] {
+            assert_ne!(text(Lang::Id, key), text(Lang::En, key), "{key:?}");
+        }
+    }
+
+    #[test]
+    fn the_signing_strings_differ_between_languages() {
+        for key in [
+            Key::SignMenu,
+            Key::SignPageOf,
+            Key::SignToolSignature,
+            Key::SignToolInitials,
+            Key::SignToolDate,
+            Key::SignToolText,
+            Key::SignToolCheck,
+            Key::SignRotate,
+            Key::SignDeletePage,
+            Key::SignSmaller,
+            Key::SignBigger,
+            Key::SignAddDate,
+            Key::SignRemove,
+            Key::SignAllPages,
+            Key::SignSaveAs,
+            Key::SignSaveAsFallback,
+            Key::SignSave,
+            Key::SignCancel,
+            Key::SignFormatImage,
+            Key::SignMakerDraw,
+            Key::SignMakerType,
+            Key::SignMakerPhoto,
+            Key::SignMakerRedo,
+            Key::SignMakerInk,
+            Key::SignMakerKeep,
+            Key::SignMakerKeepHint,
+            Key::SignMakerNew,
+            Key::SignMakerUse,
+            Key::SignMakerTypeHint,
+            Key::SignMakerPhotoPick,
+            Key::SignPassword,
+            Key::SignPasswordWrong,
+            Key::SignOpen,
+            Key::SignNoChanges,
+            Key::SignBreaksSignature,
+            Key::SignSaveAnyway,
+            Key::SignCannotKeepLock,
+            Key::SignCannotOpen,
+            Key::SignConverting,
+            Key::SignNoOffice,
+            Key::SignOfficeFailed,
+            Key::SignOfficeLocked,
+            Key::SignSaving,
+            Key::SignSaveFailed,
+            Key::SignLastPage,
+            Key::SignDone,
+            Key::SignNoticeBody,
+            Key::SignTooBig,
         ] {
             assert_ne!(text(Lang::Id, key), text(Lang::En, key), "{key:?}");
         }
