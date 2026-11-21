@@ -812,10 +812,12 @@
        The copy notice is 340 x 56 and the greeting 230 x 38; refresh() keeps
        either at the idle footprint when it would touch a header pill. */
     notchApi = {
-      showCopy: function (text) {
+      showCopy: function (text, title) {
         if (open) return;
         var preview = $('#notch-clip-preview');
         if (preview) preview.textContent = text;
+        var head = $('.clip-title');
+        if (head) head.textContent = title || 'Copied';
         clearTimeout(copyTimer);
         copyTimer = setTimeout(function () {
           copyTimer = 0;
@@ -1852,41 +1854,253 @@
   /* ---------- the playground ----------
      Eight cards: sign, draw, captions, phone, typing, susun, copy, mascots.
      The controls are .js-only (the text and pictures show without script).
-     The dance and peek cards are gone, so initDance and initPeek find no card
-     and return. Reduced motion: the dots and the paws stand still, the Susun
-     windows jump at once. */
+     Reduced motion: every action lands in its end state at once (no
+     animation is started), and the stories show as still poses. */
   function playCard(name) { return $('.play-card[data-card="' + name + '"]'); }
 
-  function initDance() {
-    var card = playCard('dance');
-    var btn = card && $('[data-act="dance"]', card);
-    var pic = card && $('.play-pic', card);
-    if (!btn || !pic) return;
-    var timer = 0;
-    function note() {
-      if (doc.hidden || !pic.animate) return;
-      var n = doc.createElement('span');
-      n.className = 'note';
-      n.setAttribute('aria-hidden', 'true');
-      n.textContent = Math.random() < 0.5 ? '♪' : '♫';
-      pic.appendChild(n);
-      var an = n.animate([
-        { transform: 'translate(-50%,0)', opacity: 1 },
-        { transform: 'translate(' + ((Math.random() - 0.5) * 200).toFixed(0) + 'px,110px) rotate(' + ((Math.random() - 0.5) * 60).toFixed(0) + 'deg)', opacity: 0 }
-      ], { duration: 1600, easing: 'ease-out' });
-      an.onfinish = function () { if (n.parentNode) n.parentNode.removeChild(n); };
+  var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+  /* Sign: with script the picture starts unsigned; a press places the
+     signature, today's date and the check, and the notch says Signed. */
+  function initSignCard() {
+    var card = playCard('sign');
+    var btn = card && $('[data-act="sign"]', card);
+    var date = card && $('.sg-date', card);
+    if (!btn || !date) return;
+    var d = new Date();
+    date.textContent = d.getDate() + ' ' + MONTHS[d.getMonth()] + ' ' + d.getFullYear();
+    var rest = btn.textContent;
+    var signed = false;
+    btn.addEventListener('click', function () {
+      signed = !signed;
+      card.classList.toggle('is-signed', signed);
+      btn.textContent = signed ? 'Signed' : rest;
+      if (signed && notchApi) notchApi.showCopy('sample (signed).pdf', 'Signed');
+    });
+  }
+
+  /* Captions: three scripted lines, grey while spoken (about 1.2 s each),
+     white when done. The live text announces only finished lines. */
+  function initCaptionsCard() {
+    var card = playCard('captions');
+    var btn = card && $('[data-act="captions"]', card);
+    var cap = card && $('.cap', card);
+    var live = card && $('[data-live]', card);
+    if (!btn || !cap) return;
+    var LINES = [
+      ['Others', 'So the draft goes out on Friday.'],
+      ['Me', 'Friday works, I\'ll send it in the morning.'],
+      ['Others', 'Good, I\'ll tell the team.']
+    ];
+    var STEP = 1200;
+    var playing = false;
+    function line(i, spoken) {
+      var p = doc.createElement('p');
+      p.className = 'cl' + (spoken ? ' is-live' : '');
+      var b = doc.createElement('b');
+      b.textContent = LINES[i][0];
+      p.appendChild(b);
+      p.appendChild(doc.createTextNode(' ' + LINES[i][1]));
+      return p;
     }
-    function sync() {
-      clearInterval(timer);
-      timer = 0;
-      if (card.classList.contains('is-on') && !reduce.matches) timer = setInterval(note, 500);
+    function say(text) { if (live) live.textContent = text; }
+    function said(i) { return LINES[i][0] + ': ' + LINES[i][1]; }
+    function finish() {
+      playing = false;
+      btn.removeAttribute('aria-disabled');
+      btn.textContent = 'Play again';
     }
     btn.addEventListener('click', function () {
-      var on = card.classList.toggle('is-on');
-      btn.textContent = on ? 'Pause' : 'Play a beat';
-      sync();
+      if (playing) return;
+      playing = true;
+      btn.setAttribute('aria-disabled', 'true');
+      cap.textContent = '';
+      say('');
+      if (reduce.matches) {
+        LINES.forEach(function (l, i) { cap.appendChild(line(i, false)); });
+        say(LINES.map(function (l, i) { return said(i); }).join(' '));
+        finish();
+        return;
+      }
+      btn.textContent = 'Playing';
+      LINES.forEach(function (l, i) {
+        setTimeout(function () { cap.appendChild(line(i, true)); }, i * STEP);
+        setTimeout(function () {
+          cap.children[i].classList.remove('is-live');
+          say(said(i));
+          if (i === LINES.length - 1) finish();
+        }, (i + 1) * STEP);
+      });
     });
-    if (reduce.addEventListener) reduce.addEventListener('change', sync);
+  }
+
+  /* Phone: Wi-Fi or Tailscale, one pressed at a time. */
+  function initPhoneCard() {
+    var card = playCard('phone');
+    var btns = card ? $$('[data-net]', card) : [];
+    var line = card && $('.net-line', card);
+    if (btns.length !== 2 || !line) return;
+    var TEXT = {
+      wifi: 'On the same Wi-Fi as your PC.',
+      tailscale: 'Through your own Tailscale network, from anywhere.'
+    };
+    btns.forEach(function (b) {
+      b.addEventListener('click', function () {
+        btns.forEach(function (x) { x.setAttribute('aria-pressed', x === b ? 'true' : 'false'); });
+        line.textContent = TEXT[b.getAttribute('data-net')];
+      });
+    });
+  }
+
+  /* Mascots: three mini notches. The pointer over one shrinks it to that
+     mascot's eyes (touch: a tap toggles). "Play a story" acts out one short
+     story per notch, one after another. The coats come from the same custom
+     properties as the hero, and the hero's pick is outlined in CSS. */
+  function initMascotCard() {
+    var card = playCard('mascots');
+    var slots = card ? $$('.ms', card) : [];
+    var btn = card && $('[data-act="story"]', card);
+    if (slots.length !== 3 || !btn) return;
+    var SVGNS = 'http://www.w3.org/2000/svg';
+    var items = slots.map(function (slot) {
+      return { slot: slot, mn: $('.mn', slot), eyes: $$('.pe i', slot), on: false, box: null, shown: '' };
+    });
+    var fx = {
+      on: function () { return items.some(function (it) { return it.on; }); },
+      read: function () { items.forEach(function (it) { if (it.on) it.box = it.mn.getBoundingClientRect(); }); },
+      write: function () {
+        items.forEach(function (it) {
+          if (!it.on) {
+            if (it.shown) { it.shown = ''; it.eyes.forEach(function (e) { e.style.transform = ''; }); }
+            return;
+          }
+          var dx = S.mx < 0 ? 0 : clamp((S.mx - (it.box.left + it.box.width / 2)) / 40, -2.5, 2.5);
+          var dy = S.my < 0 ? 0 : clamp((S.my - it.box.bottom) / 60, 0, 2.5);
+          var v = 'translate(' + dx.toFixed(2) + 'px,' + dy.toFixed(2) + 'px)';
+          if (v === it.shown) return;
+          it.shown = v;
+          it.eyes.forEach(function (e) { e.style.transform = v; });
+        });
+      }
+    };
+    loop.add(fx);
+    function setEyes(it, on) {
+      it.on = on;
+      it.slot.classList.toggle('is-eyes', on);
+      if (!on) it.slot.classList.remove('is-blink');
+      loop.kick(fx);
+    }
+    items.forEach(function (it) {
+      it.slot.addEventListener('pointerenter', function (e) { if (e.pointerType !== 'touch') setEyes(it, true); });
+      it.slot.addEventListener('pointerleave', function (e) { if (e.pointerType !== 'touch') setEyes(it, false); });
+      it.slot.addEventListener('pointerup', function (e) { if (e.pointerType === 'touch') setEyes(it, !it.on); });
+      it.slot.addEventListener('pointermove', function () { if (it.on) loop.kick(fx); }, { passive: true });
+    });
+    (function blink() {
+      setTimeout(function () {
+        if (!doc.hidden && !reduce.matches) {
+          var open = items.filter(function (it) { return it.on; });
+          open.forEach(function (it) { it.slot.classList.add('is-blink'); });
+          setTimeout(function () { open.forEach(function (it) { it.slot.classList.remove('is-blink'); }); }, 130);
+        }
+        blink();
+      }, rnd(2200, 4700));
+    })();
+
+    /* ----- stories ----- */
+    var STORY_MS = 3000;
+    function actor(sym, size, flip) {
+      var svg = doc.createElementNS(SVGNS, 'svg');
+      svg.setAttribute('class', 'st-actor');
+      svg.setAttribute('viewBox', '0 0 256 256');
+      svg.setAttribute('width', size);
+      svg.setAttribute('height', size);
+      svg.setAttribute('aria-hidden', 'true');
+      svg.setAttribute('focusable', 'false');
+      var g = doc.createElementNS(SVGNS, 'g');
+      if (flip) g.setAttribute('transform', 'rotate(180 128 128)');
+      var use = doc.createElementNS(SVGNS, 'use');
+      use.setAttribute('href', '#' + sym);
+      g.appendChild(use);
+      svg.appendChild(g);
+      return svg;
+    }
+    function put(el, x, y) { el.style.left = Math.round(x) + 'px'; el.style.top = Math.round(y) + 'px'; }
+    /* A box inside the slot, from the slot's padding edge. */
+    function rel(slot, el) {
+      var a = slot.getBoundingClientRect();
+      var b = el.getBoundingClientRect();
+      var l = b.left - a.left - slot.clientLeft;
+      var t = b.top - a.top - slot.clientTop;
+      return { l: l, t: t, r: l + b.width, b: t + b.height, w: b.width, h: b.height };
+    }
+    /* Each story adds its actor and returns the nodes to remove. Motion is
+       Web Animations and is skipped under reduced motion (a still pose). */
+    var STORIES = {
+      cat: function (it, motion) {
+        var n = rel(it.slot, it.mn);
+        var c = rel(it.slot, $('.clk', it.slot));
+        var a = actor('cat-sleep', 22, false);
+        put(a, c.r - 15, n.t + (n.h - 22) / 2);
+        var z = doc.createElement('span');
+        z.className = 'st-z';
+        z.setAttribute('aria-hidden', 'true');
+        z.textContent = 'z';
+        put(z, c.r + 2, n.t + 1);
+        it.slot.appendChild(a);
+        it.slot.appendChild(z);
+        if (motion && a.animate) {
+          a.animate([{ transform: 'translateY(-14px)', opacity: 0 }, { transform: 'none', opacity: 1 }], { duration: 320, easing: 'ease-out' });
+          z.animate([{ transform: 'translate(0,2px) scale(.7)', opacity: 0 }, { opacity: 1, offset: 0.3 }, { transform: 'translate(5px,-10px) scale(1.1)', opacity: 0 }], { duration: 1500, iterations: Infinity, easing: 'ease-out' });
+        }
+        return [a, z];
+      },
+      falk: function (it, motion) {
+        var n = rel(it.slot, it.mn);
+        var a = actor('falk-idle', 34, true);
+        put(a, n.r - 22, n.b - 6);
+        a.style.transformOrigin = '50% 0';
+        it.slot.appendChild(a);
+        if (motion && a.animate) a.animate([{ transform: 'rotate(-9deg)' }, { transform: 'rotate(9deg)' }], { duration: 750, iterations: Infinity, direction: 'alternate', easing: 'ease-in-out' });
+        return [a];
+      },
+      octo: function (it, motion) {
+        var n = rel(it.slot, it.mn);
+        var size = Math.min(52, it.slot.clientWidth - 6);
+        var a = actor('octo-happy', size, false);
+        put(a, n.l + n.w / 2 - size / 2, n.t + n.h - size * 0.55);
+        a.style.transformOrigin = '50% 40%';
+        it.slot.appendChild(a);
+        if (motion && a.animate) a.animate([{ transform: 'scale(.55)', opacity: 0 }, { transform: 'scale(1)', opacity: 1, offset: 0.15 }, { transform: 'scale(.93)', offset: 0.55 }, { transform: 'scale(1)' }], { duration: 900, iterations: Infinity, easing: 'ease-in-out' });
+        return [a];
+      }
+    };
+    var nodes = [];
+    var running = false;
+    function startStory(i) {
+      var it = items[i];
+      it.slot.classList.add('is-story');
+      nodes = STORIES[it.slot.getAttribute('data-m')](it, !reduce.matches);
+    }
+    function endStory(i) {
+      items[i].slot.classList.remove('is-story');
+      nodes.forEach(function (n) { if (n.parentNode) n.parentNode.removeChild(n); });
+      nodes = [];
+    }
+    btn.addEventListener('click', function () {
+      if (running) return;
+      running = true;
+      btn.setAttribute('aria-disabled', 'true');
+      items.forEach(function (it) { setEyes(it, false); });
+      items.forEach(function (it, i) {
+        setTimeout(function () { if (i) endStory(i - 1); startStory(i); }, i * STORY_MS);
+      });
+      setTimeout(function () {
+        endStory(items.length - 1);
+        running = false;
+        btn.removeAttribute('aria-disabled');
+      }, items.length * STORY_MS);
+    });
   }
 
   function initTyping() {
@@ -1917,50 +2131,6 @@
         term.textContent = '';
       }, 7000);
     });
-  }
-
-  function initPeek() {
-    var card = playCard('peek');
-    var pic = card && $('.play-pic', card);
-    var mn = card && $('.mn-peek', card);
-    var eyeEls = card ? $$('.pe i', card) : [];
-    if (!pic || !mn || eyeEls.length < 2) return;
-    var eyesOn = false;
-    var box = null;
-    var shown = '';
-    function set(on) {
-      eyesOn = on;
-      card.classList.toggle('is-eyes', on);
-      loop.kick(fx);
-    }
-    var fx = {
-      on: function () { return eyesOn; },
-      read: function () { box = mn.getBoundingClientRect(); },
-      write: function () {
-        if (!eyesOn) { if (shown) { shown = ''; eyeEls.forEach(function (e) { e.style.transform = ''; }); } return; }
-        var dx = S.mx < 0 ? 0 : clamp((S.mx - (box.left + box.width / 2)) / 40, -2.5, 2.5);
-        var dy = S.my < 0 ? 0 : clamp((S.my - box.bottom) / 60, 0, 2.5);
-        var v = 'translate(' + dx.toFixed(2) + 'px,' + dy.toFixed(2) + 'px)';
-        if (v === shown) return;
-        shown = v;
-        eyeEls.forEach(function (e) { e.style.transform = v; });
-      }
-    };
-    loop.add(fx);
-    /* Mouse and pen: while the pointer is inside the picture. Touch: a tap toggles. */
-    pic.addEventListener('pointerenter', function (e) { if (e.pointerType !== 'touch') set(true); });
-    pic.addEventListener('pointerleave', function (e) { if (e.pointerType !== 'touch') set(false); });
-    pic.addEventListener('pointerup', function (e) { if (e.pointerType === 'touch') set(!eyesOn); });
-    pic.addEventListener('pointermove', function () { if (eyesOn) loop.kick(fx); }, { passive: true });
-    (function blink() {
-      setTimeout(function () {
-        if (eyesOn && !doc.hidden) {
-          card.classList.add('is-blink');
-          setTimeout(function () { card.classList.remove('is-blink'); }, 130);
-        }
-        blink();
-      }, rnd(2200, 4700));
-    })();
   }
 
   function initSusunCard() {
@@ -2023,6 +2193,7 @@
     var Y0 = 0.22;
     var X1 = 0.88;
     var Y1 = 0.76;
+    var turns = 0;
     var tool = 'pen';
     var strokes = [];
     var current = null;
@@ -2102,13 +2273,51 @@
       b.addEventListener('click', function () {
         var t = b.getAttribute('data-t');
         if (t === 'clear') { strokes = []; current = null; redraw(); return; }
-        if (t === 'copy') { if (notchApi) notchApi.showCopy('Screenshot 640 x 360'); return; }
+        if (t === 'copy') { if (notchApi) notchApi.showCopy('Screenshot ' + (turns % 2 ? '360 x 640' : '640 x 360')); return; }
         tool = t;
         toolBtns.forEach(function (x) {
           if (x.getAttribute('data-t') === 'pen' || x.getAttribute('data-t') === 'box') x.setAttribute('aria-pressed', x === b ? 'true' : 'false');
           x.classList.toggle('on', x === b);
         });
       });
+    });
+
+    /* Turn: a quarter, strokes and selection together. The strokes and the
+       selection are fractions of the picture, so a clockwise quarter maps
+       (x, y) to (1 - y, x) and the other way (y, 1 - x); the selection's
+       width and height label swap. */
+    function mapPt(p, dir) { return dir > 0 ? [1 - p[1], p[0]] : [p[1], 1 - p[0]]; }
+    function turn(dir) {
+      if (current) end();
+      strokes.forEach(function (s) { s.pts = s.pts.map(function (p) { return mapPt(p, dir); }); });
+      var a = mapPt([X0, Y0], dir);
+      var b = mapPt([X1, Y1], dir);
+      X0 = Math.min(a[0], b[0]);
+      X1 = Math.max(a[0], b[0]);
+      Y0 = Math.min(a[1], b[1]);
+      Y1 = Math.max(a[1], b[1]);
+      turns += dir;
+      sel.style.left = (X0 * 100) + '%';
+      sel.style.top = (Y0 * 100) + '%';
+      sel.style.width = ((X1 - X0) * 100) + '%';
+      sel.style.height = ((Y1 - Y0) * 100) + '%';
+      if (turns % 2) sel.setAttribute('data-dim', '360 x 640'); else sel.removeAttribute('data-dim');
+      redraw();
+      if (!reduce.matches && sel.animate) {
+        var spin = [{ transform: 'rotate(' + (-90 * dir) + 'deg)', opacity: 0.4 }, { transform: 'none', opacity: 1 }];
+        sel.animate(spin, { duration: 260, easing: 'ease-out' });
+        cv.animate(spin, { duration: 260, easing: 'ease-out' });
+      }
+    }
+    var turnBtn = $('[data-tool="turn"]', card);
+    if (turnBtn) {
+      turnBtn.setAttribute('aria-keyshortcuts', 'Control+R');
+      turnBtn.addEventListener('click', function () { turn(1); });
+    }
+    card.addEventListener('keydown', function (e) {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || (e.key !== 'r' && e.key !== 'R')) return;
+      e.preventDefault();
+      turn(e.shiftKey ? -1 : 1);
     });
   }
 
@@ -2316,9 +2525,11 @@
     safe(initHeader);
     safe(initToTop);
     safe(initStory);
-    safe(initDance);
+    safe(initSignCard);
+    safe(initCaptionsCard);
+    safe(initPhoneCard);
+    safe(initMascotCard);
     safe(initTyping);
-    safe(initPeek);
     safe(initSusunCard);
     safe(initDraw);
     safe(initWalk);

@@ -819,10 +819,10 @@ html[data-theme="light"] .screen { box-shadow: 0 30px 80px -30px rgba(40, 24, 16
 .mn-peek .pi { display: flex; align-items: center; justify-content: space-between; width: 100%; }
 .mn-peek .pe { display: none; gap: 10px; margin: 0 auto; }
 .mn-peek .pe i { display: block; width: 7px; height: 12px; border-radius: 4px; background: #E2683C; transition: transform .08s; }
-.play-card.is-eyes .mn-peek { --w: 58px; --h: 22px; padding: 0 12px; border-radius: 0 0 12px 12px; }
-.play-card.is-eyes .mn-peek .pi { display: none; }
-.play-card.is-eyes .mn-peek .pe { display: flex; }
-.play-card.is-blink .pe i { transform: scaleY(.15) !important; }
+.ms.is-eyes .mn-peek { --w: 58px; --h: 22px; padding: 0 12px; border-radius: 0 0 12px 12px; }
+.ms.is-eyes .mn-peek .pi { display: none; }
+.ms.is-eyes .mn-peek .pe { display: flex; }
+.ms.is-blink .pe i { transform: scaleY(.15) !important; }
 /* sign: a sample page (cream paper, the signature in pen blue, 5.57 on it)
    and the shelf's context menu with Sign chosen. The .sg-mark parts are what
    Sign places; without script they show, so the picture reads signed. */
@@ -833,6 +833,14 @@ html[data-theme="light"] .screen { box-shadow: 0 30px 80px -30px rgba(40, 24, 16
 .sg-sig { position: absolute; left: 14px; bottom: 34px; width: min(72%, 130px); height: auto; overflow: visible; }
 .sg-line { position: absolute; left: 16px; right: 16px; bottom: 40px; height: 1px; background: #5C524A; }
 .sg-date { position: absolute; left: 16px; bottom: 20px; font: 10px var(--mono); color: #3A302A; }
+/* With script the page starts unsigned and Sign fades the three marks in. */
+.js .sg-mark { opacity: 0; }
+.js .play-card.is-signed .sg-mark { opacity: 1; }
+@media (prefers-reduced-motion: no-preference) {
+  .js .sg-mark { transition: opacity .4s ease-out; }
+  .js .sg-date { transition-delay: .15s; }
+  .js .sg-check { transition-delay: .3s; }
+}
 /* The menu opens over the page's right edge; its shadow is the one thing here that sits above another surface. */
 .sg-menu { position: absolute; left: calc(max(7%, 50% - 190px) + min(46%, 230px) - 24px); top: 46px; display: flex; flex-direction: column; width: min(40%, 168px); padding: 4px; border: 1px solid #3A302A; border-radius: 10px; background: #17120F; box-shadow: 0 8px 24px rgba(0, 0, 0, .45); font-size: 12px; }
 .sg-menu span { padding: 6px 10px; border-radius: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -860,8 +868,14 @@ html[data-theme="light"] .screen { box-shadow: 0 30px 80px -30px rgba(40, 24, 16
    choice reads by shape, not by colour. Without script html has no
    data-mascot, which means the cat. */
 .trio { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; height: 100%; padding: 14px; }
-.ms { position: relative; min-height: 0; border-radius: 12px; background: #1A1414; border: 1px solid rgba(244, 237, 228, .08); }
+.ms { position: relative; container-type: inline-size; min-height: 0; border-radius: 12px; background: #1A1414; border: 1px solid rgba(244, 237, 228, .08); }
 .ms .mn { --w: 96px; --h: 28px; padding: 0 10px; }
+@container (max-width: 112px) { .ms .mn { gap: 4px; padding: 0 6px; } .ms .clk { font-size: 10px; } }
+/* A story: the mascot leaves the notch's icon slot and acts it out. The actor
+   is made by site.js, sits in the slot and is gone when the story ends. */
+.ms.is-story .pi > svg { visibility: hidden; }
+.st-actor { position: absolute; z-index: 3; overflow: visible; pointer-events: none; }
+.st-z { position: absolute; z-index: 4; font: 700 11px var(--font); color: #F4EDE4; pointer-events: none; }
 .ms-big { position: absolute; left: 50%; bottom: 10px; width: 76px; height: 76px; translate: -50% 0; overflow: visible; }
 html:not([data-mascot="falk"], [data-mascot="octo"]) .ms[data-m="cat"],
 html[data-mascot="falk"] .ms[data-m="falk"], html[data-mascot="octo"] .ms[data-m="octo"] { outline: 2px solid #F4EDE4; outline-offset: 2px; }
@@ -884,6 +898,7 @@ html[data-mascot="falk"] .ms[data-m="falk"], html[data-mascot="octo"] .ms[data-m
 .frozen { position: absolute; inset: 0; background: rgba(10, 8, 8, .45); }
 .sel { position: absolute; left: 12%; top: 22%; width: 76%; height: 54%; border: 1.5px dashed rgba(244, 237, 228, .7); background: radial-gradient(90% 90% at 20% 110%, #5A2638 0, transparent 60%), #1A1414; }
 .js .sel { touch-action: none; }
+.sel[data-dim="360 x 640"]::before { content: "360 x 640"; }
 .sel::before { content: "640 x 360"; position: absolute; left: 0; top: -20px; padding: 2px 6px; border-radius: 4px; background: #17120F; color: #F4EDE4; font: 10px var(--mono); }
 .draw-cv { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .tools { position: absolute; left: 50%; bottom: 8px; translate: -50% 0; z-index: 2; display: flex; gap: 4px; padding: 4px; border: 1px solid var(--scr-edge); border-radius: 12px; background: #17120F; }
