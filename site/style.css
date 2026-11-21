@@ -60,6 +60,16 @@
   --eye: #17120F;
   --rim: transparent;
   --pa: 0;
+
+  /* The cockatiel and the octopus. The cat's own variables above always hold the
+     cat's coat; these hold the other two mascots' (Lutino and Coral by default;
+     --oc-spot is the body mixed 18 % toward black, set by site.js). */
+  --fk-body: #F1E4A2;
+  --fk-face: #F6D04A;
+  --fk-crest: #F6D04A;
+  --fk-cheek: #EC6B3A;
+  --oc-body: #E87C8E;
+  --oc-spot: #BF6574;
   /* The go-to-top tail: its tip colour (set with the coat) and its outline. */
   --tip: #F4EDE4;
   --tail-edge: #A89A8B;
@@ -392,6 +402,12 @@ html:not(.js) #notch { display: none; }
 .nf-idle { justify-content: space-between; }
 .nf-idle .clock { font-family: var(--mono); font-weight: 400; font-size: 13px; font-variant-numeric: tabular-nums; }
 .nc { flex: none; overflow: visible; }
+/* One <use> per mascot in every notch svg; html[data-mascot] picks which one shows
+   (no attribute, no script: the cat). */
+.nc .u-falk, .nc .u-octo { display: none; }
+html[data-mascot="falk"] .nc .u-cat, html[data-mascot="falk"] .nc .u-octo,
+html[data-mascot="octo"] .nc .u-cat, html[data-mascot="octo"] .nc .u-falk { display: none; }
+html[data-mascot="falk"] .nc .u-falk, html[data-mascot="octo"] .nc .u-octo { display: inline; }
 .nf-clip { padding: 0 16px; gap: 12px; }
 .clip-text { display: flex; flex-direction: column; min-width: 0; }
 .clip-title { font-weight: 600; font-size: 14px; white-space: nowrap; }
@@ -534,6 +550,13 @@ html[data-theme="light"] .horizon { background: radial-gradient(closest-side, #F
 .coat-chip[data-coat="calico"] i { background: conic-gradient(#F4EDE4 0 50%, #E2683C 0 75%, #2B2420 0); }
 .coat-chip[data-coat="white"] i { background: #F6F1EA; }
 .coat-chip[data-coat="black"] i { background: #1E1B22; border-color: #75675B; }
+.coat-chip[data-coat="lutino"] i { background: conic-gradient(#F6D04A 0 50%, #EC6B3A 0 75%, #F1E4A2 0); }
+.coat-chip[data-coat="grey"] i { background: conic-gradient(#F2D35A 0 50%, #EC6B3A 0 75%, #9A959C 0); }
+.coat-chip[data-coat="whiteface"] i { background: conic-gradient(#F4EFE6 0 50%, #9A959C 0); }
+.coat-chip[data-coat="coral"] i { background: #E87C8E; }
+.coat-chip[data-coat="red"] i { background: #D9505F; }
+.coat-chip[data-coat="purple"] i { background: #A98BD6; }
+.coat-chip[data-coat="sea"] i { background: #5FA8C9; }
 
 /* ---------- marquee ----------
    The 15 page names, moved sideways by scroll (site.js). Static without

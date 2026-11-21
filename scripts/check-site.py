@@ -44,6 +44,8 @@ TEXT_SUFFIXES = {".html", ".css", ".js", ".md", ".svg", ".json", ".xml", ".webma
 EM_DASH = "—"
 DOCK_TABS = ["tab-" + n for n in ("calendar", "pomodoro", "record", "reminders", "notes", "music", "mixer", "clipboard",
                                   "notifications", "shelf", "system", "devices", "cli", "arrange", "shortcuts")]
+MASCOT_SYMBOLS = ["falk-idle", "falk-happy", "falk-sleep", "octo-idle", "octo-happy", "octo-sleep"]
+MASCOT_USES = ["u-cat", "u-falk", "u-octo"]
 STORY_PAGES = [t[len("tab-"):] for t in DOCK_TABS]  # the story's data-page ids are the dock's page ids
 PLAY_CARDS = 6
 problems = []
@@ -70,6 +72,8 @@ class Page(HTMLParser):
         self.preloads = []  # (href, line) of every <link rel=preload as=font>
         self.story_pages = []  # data-page of every li inside ol.story-list, in order
         self.play_cards = 0  # .play-card elements inside #playground
+        self.nc_uses = []  # (line, [class of every <use>]) of every svg.nc inside #notch
+        self.coat_labels = []  # aria-label of every div.coats
         self.details = []  # id of the nearest section around every <details> (None when there is none)
 
     def handle_starttag(self, tag, attrs):
@@ -93,6 +97,13 @@ class Page(HTMLParser):
             self.story_pages.append(a["data-page"])
         if "play-card" in classes and any(at.get("id") == "playground" for _, at, _ in self.stack):
             self.play_cards += 1
+        if tag == "svg" and "nc" in classes and any(at.get("id") == "notch" for _, at, _ in self.stack):
+            self.nc_uses.append((line, []))
+        if tag == "use" and self.nc_uses and any(
+                t == "svg" and "nc" in (at.get("class") or "").split() for t, at, _ in self.stack):
+            self.nc_uses[-1][1].append(" ".join(classes))
+        if tag == "div" and "coats" in classes:
+            self.coat_labels.append(a.get("aria-label"))
         if tag == "details":
             self.details.append(next((at.get("id") for t, at, _ in reversed(self.stack) if t == "section" and at.get("id")), None))
         if tag == "a" and "to-top" in classes:
@@ -404,6 +415,21 @@ def main():
         for section in ("google-calendar", "privacy"):
             if section not in page.details:
                 problem("index.html", f"#{section} has no <details>")
+
+    # The mascot sprite: the cat, the cockatiel and the octopus, three moods each; every
+    # notch svg.nc holds one <use> per mascot; the coat group is named "Coat".
+    if "index.html" in pages:
+        page = pages["index.html"]
+        for sym in MASCOT_SYMBOLS:
+            if sym not in page.ids:
+                problem("index.html", f"the sprite has no symbol #{sym}")
+        if not page.nc_uses:
+            problem("index.html", "no svg.nc inside #notch")
+        for line, uses in page.nc_uses:
+            if uses != MASCOT_USES:
+                problem("index.html", f"line {line}: svg.nc has <use> classes {uses}, expected {MASCOT_USES}")
+        if page.coat_labels != ["Coat"]:
+            problem("index.html", f"div.coats aria-labels are {page.coat_labels}, expected ['Coat']")
 
     # No em dash in any text file under site/.
     for path in sorted(SITE.rglob("*")):

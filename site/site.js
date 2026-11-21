@@ -25,7 +25,7 @@
   var S = { dirty: true, sy: 0, max: 0, p: 0, vw: 0, vh: 0, px: 0.5, py: 0.5, mx: -1, my: -1, moving: false, scrollAt: 0 };
   var loop = null;
   var notchApi = null;
-  var coatApi = null;
+  var mascotApi = null;
 
   /* ---------- the one animation loop ----------
      Tasks have read(t, dt) and write(t, dt), and optionally on() and busy.
@@ -250,41 +250,150 @@
     });
   }
 
-  /* ---------- the cat's coat ----------
-     The coat lives in seven custom properties on <html> (--tip is the colour
-     of the go-to-top tail's tip); the hero cat, the notch cats, the picture
-     cats, the walking cat and the tail all read them. DECIDED
-     for the site: Black has the #75675B rim and amber eyes (the app's own rim
-     is #8E7CB8). The brand logo and the header brand stay terracotta. */
-  var COATS = {
-    terracotta: { coat: '#E2683C', l: '#E2683C', r: '#E2683C', eye: '#17120F', rim: 'transparent', pa: '0', tip: '#F4EDE4' },
-    calico: { coat: '#F4EDE4', l: '#E2683C', r: '#2B2420', eye: '#17120F', rim: 'transparent', pa: '1', tip: '#E2683C' },
-    white: { coat: '#F6F1EA', l: '#F6F1EA', r: '#F6F1EA', eye: '#17120F', rim: 'transparent', pa: '0', tip: '#E3D8CA' },
-    black: { coat: '#1E1B22', l: '#1E1B22', r: '#1E1B22', eye: '#F2B33D', rim: '#75675B', pa: '0', tip: '#4B4650' }
+  /* ---------- the mascot and its coat ----------
+     Three mascots: the cat, the cockatiel (falk) and the octopus (octo). The
+     choice is data-mascot on <html> (CSS shows the matching <use> in the notch).
+     Each mascot keeps its own coat in custom properties on <html>: the cat's
+     seven (--coat --earl --earr --eye --rim --pa, and --tip for the go-to-top
+     tail's tip) ALWAYS hold the cat's coat, even while another mascot is picked,
+     because the walking cat, the tail, the story cat and the wish stay cat-only;
+     --fk-body --fk-face --fk-crest --fk-cheek hold the cockatiel's and --oc-body
+     --oc-spot the octopus's. DECIDED for the site: Black has the #75675B rim and
+     amber eyes (the app's own rim is #8E7CB8). The brand logo and the header brand
+     stay terracotta. tint is the notch tint for that coat. Storage is only a
+     convenience: blocked or missing storage means Cat and each mascot's default. */
+  var MASCOTS = {
+    cat: {
+      label: 'Cat', def: 'terracotta',
+      coats: {
+        terracotta: { label: 'Terracotta', coat: '#E2683C', l: '#E2683C', r: '#E2683C', eye: '#17120F', rim: 'transparent', pa: '0', tip: '#F4EDE4', tint: '#E2683C' },
+        calico: { label: 'Calico', coat: '#F4EDE4', l: '#E2683C', r: '#2B2420', eye: '#17120F', rim: 'transparent', pa: '1', tip: '#E2683C', tint: '#E2683C' },
+        white: { label: 'White', coat: '#F6F1EA', l: '#F6F1EA', r: '#F6F1EA', eye: '#17120F', rim: 'transparent', pa: '0', tip: '#E3D8CA', tint: '#F6F1EA' },
+        black: { label: 'Black', coat: '#1E1B22', l: '#1E1B22', r: '#1E1B22', eye: '#F2B33D', rim: '#75675B', pa: '0', tip: '#4B4650', tint: '#8E7CB8' }
+      }
+    },
+    falk: {
+      label: 'Cockatiel', def: 'lutino',
+      coats: {
+        lutino: { label: 'Lutino', body: '#F1E4A2', face: '#F6D04A', crest: '#F6D04A', cheek: '#EC6B3A', tint: '#F6D04A' },
+        grey: { label: 'Grey', body: '#9A959C', face: '#F2D35A', crest: '#E9CF62', cheek: '#EC6B3A', tint: '#9A959C' },
+        whiteface: { label: 'White face', body: '#9A959C', face: '#F4EFE6', crest: '#E4DED6', cheek: 'transparent', tint: '#9A959C' }
+      }
+    },
+    octo: {
+      label: 'Octopus', def: 'coral',
+      coats: {
+        coral: { label: 'Coral', body: '#E87C8E', tint: '#E87C8E' },
+        red: { label: 'Red', body: '#D9505F', tint: '#D9505F' },
+        purple: { label: 'Purple', body: '#A98BD6', tint: '#A98BD6' },
+        sea: { label: 'Sea blue', body: '#5FA8C9', tint: '#5FA8C9' }
+      }
+    }
   };
 
-  function initCoats() {
-    var chips = $$('.coat-chip');
-    if (!chips.length) return null;
-    function setCoat(name, pop) {
-      var k = COATS[name];
-      if (!k) return;
-      var st = root.style;
-      st.setProperty('--coat', k.coat);
-      st.setProperty('--earl', k.l);
-      st.setProperty('--earr', k.r);
-      st.setProperty('--eye', k.eye);
-      st.setProperty('--rim', k.rim);
-      st.setProperty('--pa', k.pa);
-      st.setProperty('--tip', k.tip);
-      chips.forEach(function (c) { c.setAttribute('aria-pressed', c.getAttribute('data-coat') === name ? 'true' : 'false'); });
-      if (pop && coatApi && coatApi.pop) coatApi.pop();
+  /* A hex colour mixed toward black by t (the octopus's spots are 18 %). */
+  function darken(hex, t) {
+    var out = '#';
+    for (var i = 1; i < 7; i += 2) {
+      var v = Math.round(parseInt(hex.slice(i, i + 2), 16) * (1 - t));
+      out += (v < 16 ? '0' : '') + v.toString(16);
     }
-    chips.forEach(function (c) {
-      c.addEventListener('click', function () { setCoat(c.getAttribute('data-coat'), true); });
-    });
-    coatApi = { set: setCoat, pop: null };
-    return coatApi;
+    return out;
+  }
+
+  function readPref(key) {
+    try { return localStorage.getItem(key); } catch (e) { return null; }
+  }
+
+  function initMascot() {
+    var group = $('.coats');
+    if (!group) return null;
+    var listeners = [];
+    var mascot = 'cat';
+    var coats = { cat: MASCOTS.cat.def, falk: MASCOTS.falk.def, octo: MASCOTS.octo.def };
+    var m;
+    for (m in MASCOTS) {
+      var saved = readPref('vale-coat-' + m);
+      if (saved && MASCOTS[m].coats[saved]) coats[m] = saved;
+    }
+    var savedMascot = readPref('vale-mascot');
+    if (savedMascot && MASCOTS[savedMascot]) mascot = savedMascot;
+
+    function paint(name) {
+      var k = MASCOTS[name].coats[coats[name]];
+      var st = root.style;
+      if (name === 'cat') {
+        st.setProperty('--coat', k.coat);
+        st.setProperty('--earl', k.l);
+        st.setProperty('--earr', k.r);
+        st.setProperty('--eye', k.eye);
+        st.setProperty('--rim', k.rim);
+        st.setProperty('--pa', k.pa);
+        st.setProperty('--tip', k.tip);
+      } else if (name === 'falk') {
+        st.setProperty('--fk-body', k.body);
+        st.setProperty('--fk-face', k.face);
+        st.setProperty('--fk-crest', k.crest);
+        st.setProperty('--fk-cheek', k.cheek);
+      } else {
+        st.setProperty('--oc-body', k.body);
+        st.setProperty('--oc-spot', darken(k.body, 0.18));
+      }
+    }
+
+    var chips = [];
+    function buildChips() {
+      group.textContent = '';
+      chips = [];
+      var def = MASCOTS[mascot];
+      Object.keys(def.coats).forEach(function (key) {
+        var b = doc.createElement('button');
+        b.className = 'coat-chip';
+        b.type = 'button';
+        b.setAttribute('data-coat', key);
+        b.setAttribute('aria-label', def.coats[key].label);
+        b.setAttribute('aria-pressed', key === coats[mascot] ? 'true' : 'false');
+        b.appendChild(doc.createElement('i'));
+        b.addEventListener('click', function () { api.setCoat(key, true); });
+        group.appendChild(b);
+        chips.push(b);
+      });
+    }
+
+    function fire() { listeners.forEach(function (fn) { fn(mascot, coats[mascot]); }); }
+    function pop() { if (api.pop) api.pop(); }
+
+    var api = {
+      pop: null,
+      get: function () { return mascot; },
+      coat: function () { return coats[mascot]; },
+      set: function (name, doPop) {
+        if (!MASCOTS[name] || name === mascot) return;
+        mascot = name;
+        root.setAttribute('data-mascot', mascot);
+        store('vale-mascot', mascot);
+        buildChips();
+        if (doPop) pop();
+        fire();
+      },
+      setCoat: function (key, doPop) {
+        if (!MASCOTS[mascot].coats[key]) return;
+        coats[mascot] = key;
+        paint(mascot);
+        store('vale-coat-' + mascot, key);
+        chips.forEach(function (c) { c.setAttribute('aria-pressed', c.getAttribute('data-coat') === key ? 'true' : 'false'); });
+        if (doPop) pop();
+        fire();
+      },
+      on: function (fn) { listeners.push(fn); }
+    };
+
+    for (m in MASCOTS) paint(m);
+    root.setAttribute('data-mascot', mascot);
+    buildChips();
+    mascotApi = api;
+    window.mascotApi = api; /* also the hook for checking from the console */
+    return api;
   }
 
   /* ---------- progress, the sky and the stars ----------
@@ -933,7 +1042,7 @@
     function pop() {
       animate(cat, [{ transform: 'none' }, { transform: 'scale(.82,1.12)', offset: 0.3 }, { transform: 'none' }], { duration: 450, easing: 'cubic-bezier(.3,1.7,.5,1)' });
     }
-    if (coatApi) coatApi.pop = pop;
+    if (mascotApi) mascotApi.pop = pop;
 
     /* ----- blink and ear twitch ----- */
     var purring = false;
@@ -2052,7 +2161,7 @@
   safe(initMenu);
   safe(initCopy);
   safe(initCmdFade);
-  safe(initCoats);
+  safe(initMascot);
   safe(initMiniClocks);
   if (loop) {
     safe(initSky);
