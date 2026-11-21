@@ -133,7 +133,10 @@ named_enum! {
 }
 
 named_enum! {
-    /// The falk's coat.
+    /// The falk's coat. `Grey` is shown as "Kuning" / "Yellow": it was a
+    /// grey bird and is yellow all over now, but the name is the value
+    /// stored in every `config.json` (`falk_color`), and renaming it would
+    /// reset those users to Lutino.
     FalkColor { Lutino, Grey, WhiteFace }
 }
 

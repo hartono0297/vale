@@ -102,7 +102,9 @@ pub struct FalkInk {
 pub fn falk_ink(c: FalkColor) -> FalkInk {
     match c {
         FalkColor::Lutino => FalkInk { body: 0xF1E4A2, face: 0xF6D04A, crest: 0xF6D04A, cheek: Some(0xEC6B3A) },
-        FalkColor::Grey => FalkInk { body: 0x9A959C, face: 0xF2D35A, crest: 0xE9CF62, cheek: Some(0xEC6B3A) },
+        // Kuning: the head egg (`body`) is the face's yellow, so no band shows
+        // under the mask.
+        FalkColor::Grey => FalkInk { body: 0xF2D35A, face: 0xF2D35A, crest: 0xE9CF62, cheek: Some(0xEC6B3A) },
         FalkColor::WhiteFace => FalkInk { body: 0x9A959C, face: 0xF4EFE6, crest: 0xE4DED6, cheek: None },
     }
 }
@@ -653,8 +655,17 @@ mod tests {
     #[test]
     fn falk_coats_are_the_specs() {
         assert_eq!(falk_ink(FalkColor::Lutino), FalkInk { body: 0xF1E4A2, face: 0xF6D04A, crest: 0xF6D04A, cheek: Some(0xEC6B3A) });
-        assert_eq!(falk_ink(FalkColor::Grey), FalkInk { body: 0x9A959C, face: 0xF2D35A, crest: 0xE9CF62, cheek: Some(0xEC6B3A) });
+        // Kuning (stored as `Grey`): yellow all over.
+        assert_eq!(falk_ink(FalkColor::Grey), FalkInk { body: 0xF2D35A, face: 0xF2D35A, crest: 0xE9CF62, cheek: Some(0xEC6B3A) });
         assert_eq!(falk_ink(FalkColor::WhiteFace), FalkInk { body: 0x9A959C, face: 0xF4EFE6, crest: 0xE4DED6, cheek: None });
+    }
+
+    #[test]
+    fn the_kuning_head_has_no_band_under_the_mask() {
+        // The head egg is drawn in `body` and the mask in `face`; where they
+        // differed, a band showed under the cheeks (the "beard").
+        let k = falk_ink(FalkColor::Grey);
+        assert_eq!(k.body, k.face);
     }
 
     #[test]

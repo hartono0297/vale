@@ -62,7 +62,8 @@ pub fn tint(look: CatLook, robot_on: bool, accent: u32) -> u32 {
         },
         Mascot::Falk => match look.falk {
             FalkColor::Lutino => 0xF6D04A,
-            FalkColor::Grey | FalkColor::WhiteFace => 0x9A959C,
+            FalkColor::Grey => 0xF2D35A,
+            FalkColor::WhiteFace => 0x9A959C,
         },
         Mascot::Octopus => octopus_rgb(look.octopus),
     }
@@ -242,7 +243,7 @@ mod tests {
             ..CatLook::default()
         };
         assert_eq!(on(falk(FalkColor::Lutino)), 0xF6D04A);
-        assert_eq!(on(falk(FalkColor::Grey)), 0x9A959C);
+        assert_eq!(on(falk(FalkColor::Grey)), 0xF2D35A); // Kuning
         assert_eq!(on(falk(FalkColor::WhiteFace)), 0x9A959C);
         for o in OctopusColor::ALL {
             let l = CatLook {
