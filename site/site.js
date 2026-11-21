@@ -307,7 +307,6 @@
 
   function initMascot() {
     var group = $('.coats');
-    if (!group) return null;
     var listeners = [];
     var mascot = 'cat';
     var coats = { cat: MASCOTS.cat.def, falk: MASCOTS.falk.def, octo: MASCOTS.octo.def };
@@ -340,6 +339,10 @@
         st.setProperty('--oc-spot', darken(k.body, 0.18));
       }
     }
+    /* Pages without the chips (privacy, terms, 404) only wear the stored cat
+       coat: the go-to-top tail and the 404 notch cat are cat-only, so no
+       data-mascot is set there. */
+    if (!group) { paint('cat'); return null; }
 
     var chips = [];
     function buildChips() {
