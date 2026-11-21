@@ -11,10 +11,17 @@ use miniz_oxide::deflate::compress_to_vec_zlib;
 
 use crate::sign::geom::{self, PageGeom};
 use crate::sign::session::Page;
+use crate::sign::style::{Tint, UNDERLINE_POS, UNDERLINE_THICK};
+use crate::sign::text_draw;
 use crate::sign::{winansi, Item, ItemKind, Mark, Quarter};
 
-/// Ink blue `#1F3A8A` as PDF colour components.
-const INK: &str = "0.12 0.23 0.54";
+/// A tint as PDF colour components.
+fn rgb(t: Tint) -> String {
+    let v = t.rgb();
+    [(v >> 16) & 255, (v >> 8) & 255, v & 255]
+        .map(|c| num(c as f32 / 255.0))
+        .join(" ")
+}
 
 /// Larger files are refused before parsing.
 pub const MAX_BYTES: usize = 200 * 1024 * 1024;
@@ -1004,7 +1011,7 @@ fn write_err(e: impl std::fmt::Display) -> SaveError {
 /// Objects written once and used by every page.
 #[derive(Default)]
 struct Shared {
-    font: Option<ObjectId>,
+    fonts: Vec<(&'static str, ObjectId)>,
     open_q: Option<ObjectId>,
     images: Vec<(*const Mark, ObjectId)>,
 }
@@ -1088,7 +1095,7 @@ fn write_page(
         c.extend(format!("1 0 0 1 {} {} cm\n", num(r.origin.0), num(r.origin.1)).bytes());
     }
     let mut named: Vec<(ObjectId, String)> = Vec::new();
-    let mut font_name: Option<String> = None;
+    let mut font_names: Vec<(&'static str, String)> = Vec::new();
     for it in &e.items {
         let m = geom::item_matrix(it);
         c.extend(format!("q {} cm\n", m.map(num).join(" ")).bytes());
@@ -1106,37 +1113,47 @@ fn write_page(
                 };
                 c.extend(format!("/{name} Do\n").bytes());
             }
-            ItemKind::Date(s, _) | ItemKind::Text(s, _) => {
-                let name = match &font_name {
-                    Some(n) => n.clone(),
+            ItemKind::Date(s, st) | ItemKind::Text(s, st) => {
+                let base = st.pdf_base_font();
+                let name = match font_names.iter().find(|(b, _)| *b == base) {
+                    Some((_, n)) => n.clone(),
                     None => {
-                        let font = match sh.font {
-                            Some(f) => f,
+                        let font = match sh.fonts.iter().find(|(b, _)| *b == base) {
+                            Some(&(_, f)) => f,
                             None => {
                                 let f = add(dst, dictionary! {"Type"=>"Font","Subtype"=>"Type1",
-                                    "BaseFont"=>"Helvetica","Encoding"=>"WinAnsiEncoding"})?;
-                                sh.font = Some(f);
+                                    "BaseFont"=>base,"Encoding"=>"WinAnsiEncoding"})?;
+                                sh.fonts.push((base, f));
                                 f
                             }
                         };
                         let n = free_name(&r.fonts, "ValeF", true);
                         r.fonts.set(n.as_bytes().to_vec(), Object::Reference(font));
-                        font_name = Some(n.clone());
+                        font_names.push((base, n.clone()));
                         n
                     }
                 };
                 // Font size h * 0.8 in points; the unit box is w by h, so
-                // the text matrix undoes the horizontal stretch. Ink blue,
-                // like text drawn on images.
+                // the text matrix undoes the horizontal stretch.
                 let sx = 0.8 * it.h / it.w;
                 let text: Vec<u8> = s.chars().map(|ch| winansi::code(ch).unwrap_or(b'?')).collect();
-                c.extend(format!("BT /{name} 1 Tf {INK} rg {} 0 0 0.8 0 0.2 Tm ", num(sx)).bytes());
+                c.extend(
+                    format!("BT /{name} 1 Tf {} rg {} 0 0 0.8 0 0.2 Tm ", rgb(st.tint), num(sx))
+                        .bytes(),
+                );
                 c.extend(winansi::pdf_string(&text));
                 c.extend(b" Tj ET\n");
+                if st.underline {
+                    let w = text_draw::advance_em(s, st) * sx;
+                    let y = 0.2 + 0.8 * (UNDERLINE_POS - UNDERLINE_THICK / 2.0);
+                    c.extend(
+                        format!("0 {} {} {} re f\n", num(y), num(w), num(0.8 * UNDERLINE_THICK)).bytes(),
+                    );
+                }
             }
-            ItemKind::Check(_) => {
+            ItemKind::Check(tint) => {
                 let tick = "0.12 w 1 J 1 j 0.18 0.52 m 0.42 0.26 l 0.84 0.8 l S";
-                c.extend(format!("{INK} RG {tick}\n").bytes());
+                c.extend(format!("{} RG {tick}\n", rgb(*tint)).bytes());
             }
         }
         c.extend(b"Q\n");
@@ -1157,7 +1174,7 @@ fn write_page(
     if !named.is_empty() {
         r.resources.set("XObject", r.xobjects);
     }
-    if font_name.is_some() {
+    if !font_names.is_empty() {
         r.resources.set("Font", r.fonts);
     }
     r.dict.set("Resources", r.resources);
@@ -1224,6 +1241,7 @@ fn num(v: f32) -> String {
 mod tests {
     use super::*;
     use crate::sign::geom::item_matrix;
+    use crate::sign::style::{TextStyle, Tint};
     use crate::sign::{ItemKind, Mark, Quarter};
     use lopdf::encryption::crypt_filters::{Aes128CryptFilter, Aes256CryptFilter, CryptFilter};
     use lopdf::{
@@ -1529,7 +1547,138 @@ mod tests {
         assert_eq!(ours.get(b"Encoding").unwrap().as_name().unwrap(), b"WinAnsiEncoding");
         let c = content(&doc, 1);
         assert!(c.contains("(20 November 2026) Tj"));
-        assert!(c.contains("/ValeF 1 Tf 0.12 0.23 0.54 rg"));
+        assert!(c.contains("/ValeF 1 Tf 0.1098 0.1098 0.1098 rg"));
+    }
+
+    fn styled(s: &str, st: TextStyle, page: usize) -> Item {
+        item(ItemKind::Text(s.into(), st), page, Quarter::R0)
+    }
+
+    fn font_objects(doc: &Document, base: &[u8]) -> Vec<ObjectId> {
+        doc.objects
+            .iter()
+            .filter(|(_, o)| {
+                o.as_dict().is_ok_and(|d| {
+                    d.get(b"Type").and_then(|t| t.as_name()).is_ok_and(|n| n == b"Font")
+                        && d.get(b"BaseFont").and_then(|t| t.as_name()).is_ok_and(|n| n == base)
+                })
+            })
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
+    #[test]
+    fn each_style_gets_its_base_font() {
+        use crate::sign::style::Family;
+        let o = open(bytes_of(&mut two_pages()), None).unwrap();
+        let styles = [
+            (TextStyle { bold: true, ..Default::default() }, "Helvetica-Bold"),
+            (TextStyle { family: Family::Serif, italic: true, ..Default::default() }, "Times-Italic"),
+            (
+                TextStyle { family: Family::Mono, bold: true, italic: true, ..Default::default() },
+                "Courier-BoldOblique",
+            ),
+        ];
+        let items: Vec<Item> = styles.iter().map(|(st, _)| styled("Ab", *st, 0)).collect();
+        let doc = load(&save(&o, &pages_of(&o), &items).unwrap(), None);
+        let fonts = resource(&doc, 1, b"Font");
+        let ours: Vec<Dictionary> = fonts
+            .iter()
+            .filter(|(k, _)| k.starts_with(b"ValeF"))
+            .map(|(_, v)| doc.dereference(v).unwrap().1.as_dict().unwrap().clone())
+            .collect();
+        assert_eq!(ours.len(), 3);
+        for (_, want) in &styles {
+            let d = ours
+                .iter()
+                .find(|d| d.get(b"BaseFont").unwrap().as_name().unwrap() == want.as_bytes())
+                .unwrap_or_else(|| panic!("{want} missing"));
+            assert_eq!(d.get(b"Encoding").unwrap().as_name().unwrap(), b"WinAnsiEncoding");
+            assert_eq!(d.get(b"Subtype").unwrap().as_name().unwrap(), b"Type1");
+            assert!(!d.has(b"FontDescriptor") && !d.has(b"FontFile") && !d.has(b"FontFile2"));
+        }
+    }
+
+    #[test]
+    fn fonts_shared_across_pages() {
+        use crate::sign::style::Family;
+        let specs: Vec<Spec> = (0..3).map(|_| Spec::default()).collect();
+        let mut src = build(&specs, None);
+        // the pages' shared resources already name a font like ours
+        let page = src.get_dictionary(page_id(&src, 1)).unwrap().clone();
+        let res_id = page.get(b"Resources").unwrap().as_reference().unwrap();
+        let existing = src.add_object(dictionary! {"Type"=>"Font","Subtype"=>"Type1","BaseFont"=>"Courier"});
+        let res = src.get_object_mut(res_id).unwrap().as_dict_mut().unwrap();
+        res.get_mut(b"Font").unwrap().as_dict_mut().unwrap().set("ValeF", existing);
+        let o = open(bytes_of(&mut src), None).unwrap();
+        let st = TextStyle { family: Family::Serif, ..Default::default() };
+        let items: Vec<Item> = (0..3).map(|p| styled("x", st, p)).collect();
+        let doc = load(&save(&o, &pages_of(&o), &items).unwrap(), None);
+        assert_eq!(font_objects(&doc, b"Times-Roman").len(), 1);
+        for n in 1..=3 {
+            let fonts = resource(&doc, n, b"Font");
+            let times = font_objects(&doc, b"Times-Roman")[0];
+            let names: Vec<&Vec<u8>> = fonts
+                .iter()
+                .filter(|(_, v)| v.as_reference().ok() == Some(times))
+                .map(|(k, _)| k)
+                .collect();
+            assert_eq!(names.len(), 1, "page {n}");
+            assert_ne!(names[0].as_slice(), b"ValeF");
+            assert!(fonts.has(b"ValeF"), "the page's own font is kept");
+            assert!(content(&doc, n).contains(&format!("/{} 1 Tf", String::from_utf8_lossy(names[0]))));
+        }
+    }
+
+    fn rgb_ops(t: Tint) -> String {
+        let v = t.rgb();
+        [(v >> 16) & 255, (v >> 8) & 255, v & 255].map(|c| num(c as f32 / 255.0)).join(" ")
+    }
+
+    #[test]
+    fn text_colour_follows_tint() {
+        let o = open(bytes_of(&mut two_pages()), None).unwrap();
+        let red = TextStyle { tint: Tint::Red, ..Default::default() };
+        let check = item(ItemKind::Check(Tint::Blue), 0, Quarter::R0);
+        let doc = load(&save(&o, &pages_of(&o), &[styled("x", red, 0), check]).unwrap(), None);
+        let c = content(&doc, 1);
+        assert!(c.contains(&format!("{} rg", rgb_ops(Tint::Red))), "{c}");
+        assert!(c.contains(&format!("{} RG", rgb_ops(Tint::Blue))), "{c}");
+        assert!(!c.contains("0.12 0.23 0.54"));
+    }
+
+    #[test]
+    fn underline_follows_text_not_box() {
+        let o = open(bytes_of(&mut two_pages()), None).unwrap();
+        let st = TextStyle { underline: true, ..Default::default() };
+        let mut it = styled("AB", st, 0);
+        it.w = 5.0 * crate::sign::text_draw::advance_em("AB", &st) * 0.8 * it.h;
+        let doc = load(&save(&o, &pages_of(&o), &[it.clone()]).unwrap(), None);
+        let c = content(&doc, 1);
+        assert_eq!(c.matches(" re f").count(), 1, "{c}");
+        let line = c.lines().find(|l| l.ends_with(" re f")).unwrap();
+        let v: Vec<f32> = line.split(' ').take(4).map(|t| t.parse().unwrap()).collect();
+        let want_w = crate::sign::text_draw::advance_em("AB", &st) * 0.8 * it.h / it.w;
+        assert!((v[2] - want_w).abs() < 1e-3, "width {} want {want_w}", v[2]);
+        assert!(v[2] < 0.5);
+        // centre -0.1 em, thickness 0.05 em, em = 0.8 of the box, baseline 0.2
+        assert!((v[1] - (0.2 + 0.8 * -0.125)).abs() < 1e-3 && (v[3] - 0.04).abs() < 1e-3);
+        let plain = styled("AB", TextStyle::default(), 0);
+        let doc = load(&save(&o, &pages_of(&o), &[plain]).unwrap(), None);
+        assert!(!content(&doc, 1).contains(" re f"));
+    }
+
+    #[test]
+    fn encrypted_keeps_styles() {
+        use crate::sign::style::Family;
+        let src = locked(two_pages(), Lock::Aes256, Permissions::all());
+        let o = open(src.clone(), Some(PW)).unwrap();
+        let st = TextStyle { family: Family::Serif, bold: true, ..Default::default() };
+        let out = save(&o, &pages_of(&o), &[styled("x", st, 0)]).unwrap();
+        assert!(out.starts_with(&src));
+        let doc = load(&out, Some(PW));
+        assert!(doc.encryption_state.is_some());
+        assert_eq!(font_objects(&doc, b"Times-Bold").len(), 1);
     }
 
     #[test]
@@ -1538,7 +1687,7 @@ mod tests {
         let check = item(ItemKind::Check(Default::default()), 0, Quarter::R0);
         let doc = load(&save(&o, &pages_of(&o), &[check]).unwrap(), None);
         let c = content(&doc, 1);
-        assert!(c.contains("0.12 0.23 0.54 RG") && c.contains("0.12 w") && c.contains(" S"));
+        assert!(c.contains("0.1098 0.1098 0.1098 RG") && c.contains("0.12 w") && c.contains(" S"));
     }
 
     #[test]
