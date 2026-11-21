@@ -458,12 +458,17 @@ fn near_polyline(pts: &[Pt], p: Pt, reach: f32) -> bool {
 }
 
 /// One undo step's state: the annotations and the picture's quarter turns,
-/// so the two always go back together.
+/// so the two always go back together, with the caller's anchor.
 #[derive(Clone, Debug, PartialEq)]
 struct Snap {
     doc: Vec<Annotation>,
     turns: u8,
+    anchor: Option<Anchor>,
 }
+
+/// An opaque rectangle (x, y, w, h) the caller keeps with each undo state
+/// (the inline capture: the selection a turned picture was cut from).
+pub type Anchor = (i32, i32, i32, i32);
 
 /// The document and the editor's state around it: tool, colour, selection,
 /// undo and redo (whole-document snapshots, taken around each action).
@@ -477,6 +482,8 @@ pub struct Session {
     pub stroke: usize,
     /// Quarter turns of the picture (0..=3, clockwise).
     turns: u8,
+    /// Restored with `doc` and `turns`; never a step by itself.
+    anchor: Option<Anchor>,
     undo: Vec<Snap>,
     redo: Vec<Snap>,
     /// The state as it was when the running action began.
@@ -497,6 +504,7 @@ impl Default for Session {
             color: COLORS[0],
             stroke: 1,
             turns: 0,
+            anchor: None,
             undo: Vec::new(),
             redo: Vec::new(),
             pending: None,
@@ -535,7 +543,19 @@ impl Session {
         Snap {
             doc: self.doc.clone(),
             turns: self.turns,
+            anchor: self.anchor,
         }
+    }
+
+    /// The caller's anchor of the current state (see `Anchor`).
+    pub fn anchor(&self) -> Option<Anchor> {
+        self.anchor
+    }
+
+    /// Sets the anchor of the current state. Not a step: undo and redo
+    /// bring back the anchor each state had when it was left.
+    pub fn set_anchor(&mut self, anchor: Option<Anchor>) {
+        self.anchor = anchor;
     }
 
     /// Quarter turns of the picture, 0..=3.
@@ -731,6 +751,7 @@ impl Session {
     fn restore(&mut self, snap: Snap) {
         self.doc = snap.doc;
         self.turns = snap.turns;
+        self.anchor = snap.anchor;
     }
 
     fn touch(&mut self) {
@@ -1027,6 +1048,31 @@ mod tests {
         assert!(s.redo() && s.redo());
         assert_eq!(s.turns(), 1);
         assert_eq!(s.doc.len(), turned_len);
+    }
+
+    #[test]
+    fn undo_and_redo_bring_the_anchor_back_with_turns_and_doc() {
+        let a = (110, 60, 100, 40);
+        let b = (300, 200, 50, 80);
+        let mut s = Session::with_doc(vec![rect(10.0, 5.0, 20.0, 10.0)]);
+        assert_eq!(s.anchor(), None);
+        s.set_anchor(Some(a));
+        s.rotate(Turn::Right, (100, 40));
+        let turned = s.doc.clone();
+        assert!(s.undo());
+        assert_eq!((s.turns(), s.anchor()), (0, Some(a)));
+        // Anchored elsewhere at 0 turns: no step, the redo stays.
+        s.set_anchor(Some(b));
+        assert!(s.can_redo());
+        assert!(s.redo());
+        assert_eq!((s.turns(), s.anchor()), (1, Some(a)));
+        assert_eq!(s.doc, turned);
+        // Turned back to 0 at `a`, then anchored elsewhere: undo returns
+        // the turned state with `a`.
+        s.rotate(Turn::Left, (40, 100));
+        s.set_anchor(Some(b));
+        assert!(s.undo());
+        assert_eq!((s.turns(), s.anchor(), s.doc.clone()), (1, Some(a), turned));
     }
 
     #[test]

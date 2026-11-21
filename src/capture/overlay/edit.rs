@@ -95,8 +95,9 @@ pub(super) enum Drag {
 
 /// The selection's crop turned in place, as the card shows it.
 struct Lifted {
-    /// The quarter turns it was made for.
+    /// The quarter turns and the selection it was made for.
     turns: u8,
+    sel: Rect,
     shot: Arc<Shot>,
     /// Made on the current render target; dropped with it.
     bitmap: Option<ID2D1Bitmap>,
@@ -364,9 +365,20 @@ pub(super) fn doc_in_crop(doc: &[Annotation], sel: Rect, origin: (i32, i32)) -> 
 /// The lifted crop follows `session.turns()` (after a turn, an undo or a
 /// redo): made again for new turns, gone at 0, and the panels move around
 /// the card. The mosaics go too: they were cut from the other picture.
+///
+/// A turned state's annotations are in the px of the crop it was lifted
+/// from, so an undo or redo into one brings back that selection (the
+/// session's anchor) even if the selection moved at 0 turns meanwhile. At 0
+/// turns the annotations are in frame px and the anchor does not matter.
 fn sync_turns(e: &mut Edit, env: &Env) {
     let turns = e.session.turns();
-    if e.lifted.as_ref().map_or(0, |l| l.turns) == turns {
+    if turns != 0
+        && let Some((x, y, w, h)) = e.session.anchor()
+    {
+        e.sel = Rect::new(x, y, w, h);
+    }
+    let want = (turns != 0).then_some((turns, e.sel));
+    if e.lifted.as_ref().map(|l| (l.turns, l.sel)) == want {
         return;
     }
     e.pix.clear();
@@ -378,6 +390,7 @@ fn sync_turns(e: &mut Edit, env: &Env) {
         .flatten()
         .map(|c| Lifted {
             turns,
+            sel: e.sel,
             shot: Arc::new(turned(&c, turns)),
             bitmap: None,
         });
@@ -389,6 +402,10 @@ fn sync_turns(e: &mut Edit, env: &Env) {
 fn turn_in_place(e: &mut Edit, env: &Env, turn: Turn) {
     let origin = (env.frame.x, env.frame.y);
     let (pre, post, size) = turn_shifts(e.sel, origin, e.session.turns(), turn);
+    // Before the step: both of its states carry the selection (it cannot
+    // change while turned, so the whole turned stretch shares it).
+    let r = e.sel;
+    e.session.set_anchor(Some((r.x, r.y, r.w, r.h)));
     e.session.rotate_shifted(turn, size, pre, post);
     sync_turns(e, env);
 }
@@ -398,7 +415,7 @@ pub(super) fn lifted_shot(e: &Edit) -> Option<Shot> {
     let turns = e.session.turns();
     e.lifted
         .as_ref()
-        .filter(|l| turns != 0 && l.turns == turns)
+        .filter(|l| turns != 0 && l.turns == turns && l.sel == e.sel)
         .map(|l| (*l.shot).clone())
 }
 
