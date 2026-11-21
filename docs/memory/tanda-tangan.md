@@ -15,5 +15,5 @@ Merged into `main` at 4211b36 (2026-11-21). Spec `docs/superpowers/specs/2026-11
 - **Demo:** `--demo-sign` (debug builds only) opens the window on a generated PDF; it ends with `TerminateProcess` ([[sign-amd-pdf-teardown]]).
 - **Size:** release 6,028,800 B, +1,018,880 over the 5,009,920 baseline; the owner raised the cap to 1.3 MB for the module ([[exe-size]]).
 - **Not in it:** PKI or certified signature (TTE via a PSrE needs online identity checks and breaks the local-only promise; the UI never says "certified" or "legally valid"), form filling, editing existing text, reorder, merge, OCR, a notch drop zone, Explorer context menu. No warning for a PDF that already carries a certifying signature (only delete / rotate are named).
-- **Accepted by ruling:** text ink is always blue; quitting Vale discards unsaved signing work (like the screenshot editor).
+- **Accepted by ruling:** text, dates and checks can be black, blue or red, default black ([[sign-text-format]]); quitting Vale discards unsaved signing work (like the screenshot editor).
 - **Hand checks still open for the owner:** a Sign pick from the shelf menu opens the window in the real app; WPS and LibreOffice conversion (not installed here); an exit check on an AMD GPU after signing a PDF; Excel and PowerPoint password-protected files (only Word was tested live).
