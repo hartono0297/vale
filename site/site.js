@@ -395,10 +395,54 @@
     return api;
   }
 
+  /* Notch colour maths, ported from src/ui/notch_colour.rs. relLum and
+     contrastOf are WCAG 2.x. notchBottom blends the surface #17120F toward the
+     coat's tint by the largest t <= 0.45 (steps of 0.01) where the cream text
+     #F4EDE4 holds 5:1 and the caption colour #A89A8B holds 4.5:1 on the result
+     (no accent cap: the site's notch has no accent glyph on it). faceFill is
+     the colour Face fills the notch with (the app's peek_face fill): the cat's
+     coat, the cockatiel's face colour, the octopus's body; faceInk is #17120F
+     where it holds 4.5:1 on that fill, else cream. */
+  var N_SURFACE = '#17120F';
+  var N_CREAM = '#F4EDE4';
+  var N_CAPTION = '#A89A8B';
+  function hexRgb(h) { return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)]; }
+  function rgbHex(c) {
+    return '#' + c.map(function (v) { return (v < 16 ? '0' : '') + v.toString(16); }).join('').toUpperCase();
+  }
+  function relLum(h) {
+    var c = hexRgb(h).map(function (v) {
+      v /= 255;
+      return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+    });
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  }
+  function contrastOf(a, b) {
+    var x = relLum(a), y = relLum(b);
+    return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+  }
+  function mixHex(a, b, t) {
+    var x = hexRgb(a), y = hexRgb(b);
+    return rgbHex(x.map(function (v, i) { return Math.round(v + (y[i] - v) * t); }));
+  }
+  function notchBottom(tint) {
+    for (var n = 45; n >= 1; n--) {
+      var b = mixHex(N_SURFACE, tint, n / 100);
+      if (contrastOf(N_CREAM, b) >= 5 && contrastOf(N_CAPTION, b) >= 4.5) return b;
+    }
+    return N_SURFACE;
+  }
+  function faceFill(mascot, k) {
+    return mascot === 'cat' ? k.coat : mascot === 'falk' ? k.face : k.body;
+  }
+  function faceInk(fill) { return contrastOf(N_SURFACE, fill) >= 4.5 ? N_SURFACE : N_CREAM; }
+
   /* The hero picks. Mascot buttons switch the mascot through mascotApi (and
      follow it); Notch colour buttons store vale-notch-style and set
      data-notch-style on <html> (Plain without storage or with an unknown
-     value), the hook the notch's colour styles paint from. */
+     value). The notch paints from --n-bottom (Gradient), --n-face and --n-ink
+     (Face), written on <html> whenever the mascot, its coat or the style
+     changes. */
   var NOTCH_STYLES = ['plain', 'gradient', 'face'];
   function initPicks() {
     var mascotBtns = $$('.pick[data-mascot]');
@@ -406,12 +450,23 @@
     function press(btns, attr, value) {
       btns.forEach(function (b) { b.setAttribute('aria-pressed', b.getAttribute(attr) === value ? 'true' : 'false'); });
     }
+    function paintNotch() {
+      if (!mascotApi) return;
+      var name = mascotApi.get();
+      var k = MASCOTS[name].coats[mascotApi.coat()];
+      var fill = faceFill(name, k);
+      var st = root.style;
+      st.setProperty('--n-bottom', notchBottom(k.tint));
+      st.setProperty('--n-face', fill);
+      st.setProperty('--n-ink', faceInk(fill));
+    }
     if (mascotApi) {
       press(mascotBtns, 'data-mascot', mascotApi.get());
       mascotBtns.forEach(function (b) {
         b.addEventListener('click', function () { mascotApi.set(b.getAttribute('data-mascot'), true); });
       });
-      mascotApi.on(function (name) { press(mascotBtns, 'data-mascot', name); });
+      mascotApi.on(function (name) { press(mascotBtns, 'data-mascot', name); paintNotch(); });
+      paintNotch();
     }
     var style = readPref('vale-notch-style');
     if (NOTCH_STYLES.indexOf(style) < 0) style = 'plain';

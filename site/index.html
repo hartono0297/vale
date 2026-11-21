@@ -60,6 +60,8 @@
   <button class="notch-face" type="button" tabindex="-1" aria-expanded="false" aria-controls="notch-panel" aria-label="Vale island demo. Open the panel">
     <span class="nf nf-idle" aria-hidden="true">
       <svg class="nc" viewBox="0 0 256 256" width="24" height="24" focusable="false"><use class="u-cat" href="#cat-idle"/><use class="u-falk" href="#falk-idle"/><use class="u-octo" href="#octo-idle"/></svg>
+      <svg class="face-marks" viewBox="0 0 60 40" width="32" height="21" focusable="false"><g class="fm-cat"><rect x="14" y="8" width="9" height="16" rx="4.5"/><rect x="37" y="8" width="9" height="16" rx="4.5"/></g><g class="fm-falk"><rect x="14" y="6" width="8" height="15" rx="4"/><rect x="38" y="6" width="8" height="15" rx="4"/><circle class="fm-cheek" cx="6" cy="27" r="4.2"/><circle class="fm-cheek" cx="54" cy="27" r="4.2"/><path class="fm-beak" d="M26.5 26Q30 23.5 33.5 26Q33.2 31.5 30 33.4Q26.8 31.5 26.5 26Z"/></g><g class="fm-octo"><rect x="14" y="8" width="8" height="15" rx="4"/><rect x="38" y="8" width="8" height="15" rx="4"/><circle class="fm-spot" cx="9" cy="10" r="2.6"/><circle class="fm-spot" cx="51" cy="6" r="1.9"/><circle class="fm-spot" cx="54" cy="16" r="1.5"/></g></svg>
+      <i class="face-patch fp-a"></i><i class="face-patch fp-b"></i>
       <span class="clock" id="notch-clock"></span>
     </span>
     <span class="nf nf-clip" aria-hidden="true">
@@ -170,16 +172,18 @@
       <p class="bubble" id="cat-bubble" role="status" aria-live="polite"></p>
     </div>
     <div class="picks js-only">
+      <div class="pick-set"><span class="pick-label" aria-hidden="true">Mascot</span>
       <div class="pick-group" role="group" aria-label="Mascot">
         <button class="pick" type="button" data-mascot="cat" aria-pressed="true">Cat</button>
         <button class="pick" type="button" data-mascot="falk" aria-pressed="false">Cockatiel</button>
         <button class="pick" type="button" data-mascot="octo" aria-pressed="false">Octopus</button>
-      </div>
+      </div></div>
+      <div class="pick-set"><span class="pick-label" aria-hidden="true">Notch colour</span>
       <div class="pick-group" role="group" aria-label="Notch colour">
         <button class="pick" type="button" data-notch-style="plain" aria-pressed="true">Plain</button>
         <button class="pick" type="button" data-notch-style="gradient" aria-pressed="false">Gradient</button>
         <button class="pick" type="button" data-notch-style="face" aria-pressed="false">Face</button>
-      </div>
+      </div></div>
     </div>
     <div class="coats js-only" role="group" aria-label="Coat">
       <button class="coat-chip" type="button" data-coat="terracotta" aria-pressed="true" aria-label="Terracotta"><i></i></button>

@@ -408,6 +408,40 @@ html:not(.js) #notch { display: none; }
 html[data-mascot="falk"] .nc .u-cat, html[data-mascot="falk"] .nc .u-octo,
 html[data-mascot="octo"] .nc .u-cat, html[data-mascot="octo"] .nc .u-falk { display: none; }
 html[data-mascot="falk"] .nc .u-falk, html[data-mascot="octo"] .nc .u-octo { display: inline; }
+/* Notch colour (the hero picks set html[data-notch-style]; site.js writes
+   --n-bottom, --n-face and --n-ink from the mascot's coat, ported from the
+   app's notch_colour.rs). Gradient: the surface down to 28 %, then the coat's
+   tint, in the idle, clipboard and greet states. Face: idle only, the notch
+   takes the face colour and shows the face marks and the clock as one centred
+   group; clipboard and greet stay Gradient, as in the app. The open panel keeps
+   the plain surface in every mode. Same in both themes, like the notch itself. */
+.face-marks, .face-patch { display: none; }
+.face-marks { flex: none; overflow: visible; fill: var(--n-ink, #17120F); }
+.face-marks g { display: none; }
+.face-marks .fm-cat { display: inline; }
+html[data-mascot="falk"] .face-marks .fm-cat, html[data-mascot="octo"] .face-marks .fm-cat { display: none; }
+html[data-mascot="falk"] .face-marks .fm-falk, html[data-mascot="octo"] .face-marks .fm-octo { display: inline; }
+.face-marks .fm-cheek { fill: var(--fk-cheek); }
+.face-marks .fm-beak { fill: #D9978F; }
+.face-marks .fm-spot { fill: var(--oc-spot); }
+html:is([data-notch-style="gradient"], [data-notch-style="face"]) .notch:not(.is-open) {
+  background: linear-gradient(to bottom, var(--notch-bg) 0 28%, var(--n-bottom, var(--notch-bg)) 100%);
+}
+html[data-notch-style="face"] .notch[data-state="idle"]:not(.is-open) { background: var(--n-face, var(--notch-bg)); }
+html[data-notch-style="face"] .notch[data-state="idle"]:not(.is-open) .nf-idle { justify-content: center; gap: 10px; }
+html[data-notch-style="face"] .notch[data-state="idle"]:not(.is-open) .nc { display: none; }
+html[data-notch-style="face"] .notch[data-state="idle"]:not(.is-open) .face-marks { display: block; }
+html[data-notch-style="face"] .notch[data-state="idle"]:not(.is-open) .clock { color: var(--n-ink); }
+/* Calico patches, clipped by the notch like the app's face. */
+html[data-notch-style="face"]:not([data-mascot="falk"], [data-mascot="octo"]) .notch[data-state="idle"]:not(.is-open) .face-patch { display: block; opacity: var(--pa, 0); }
+.face-patch { position: absolute; border-radius: 50%; pointer-events: none; }
+.fp-a { left: -8px; top: -10px; width: 26px; height: 26px; background: #E2683C; }
+.fp-b { right: -8px; bottom: -10px; width: 22px; height: 22px; background: #2B2420; }
+@media (max-width: 23.49em) {
+  html[data-notch-style="face"] .notch[data-state="idle"]:not(.is-open) .nf-idle { gap: 8px; }
+  .face-marks { width: 28px; height: 19px; }
+  .fp-b { display: none !important; }
+}
 .nf-clip { padding: 0 16px; gap: 12px; }
 .clip-text { display: flex; flex-direction: column; min-width: 0; }
 .clip-title { font-weight: 600; font-size: 14px; white-space: nowrap; }
@@ -563,7 +597,12 @@ html[data-mascot="octo"] .cat { --eye-dy: -12px; }
    lightness, not hue. One row from 40em; stacked and centred below. A group
    that still does not fit wraps inside its rounded box. */
 .picks { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px 12px; max-width: 100%; margin: 8px 0 4px; }
-.pick-group { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px; max-width: 100%; padding: 3px; border: 1px solid var(--line); border-radius: 26px; }
+.pick-group { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; max-width: 100%; padding: 3px; border: 1px solid var(--control); border-radius: 26px; }
+/* Short visible labels so "Plain / Gradient / Face" reads as the notch's colour
+   (decided in Task 4: without them the second group names nothing). Sentence
+   case, no tracking; --text-2 on the page colour is 6.78:1 dark and 7.03:1 light. */
+.pick-set { display: flex; flex-direction: column; align-items: center; gap: 4px; max-width: 100%; }
+.pick-label { font-size: .8125rem; color: var(--text-2); }
 .pick { min-height: 44px; padding: 0 14px; border: 0; border-radius: 999px; background: transparent; color: var(--text); font: inherit; font-size: .9375rem; font-weight: 500; cursor: pointer; }
 .pick:hover { background: color-mix(in srgb, transparent, var(--text) 10%); }
 .pick[aria-pressed="true"] { background: var(--text); color: var(--bg); }
