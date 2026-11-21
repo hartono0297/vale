@@ -106,7 +106,7 @@ Mascot scope (decided, "Opsi 2"):
   with the greet state. The wish (five quick presses) and its head
   constellation run only for the cat; with another mascot five presses are
   five pokes.
-- Choice is stored like the theme (`vale-mascot`, `vale-notch-colour`, coat
+- Choice is stored like the theme (`vale-mascot`, `vale-notch-style`, coat
   per mascot) in try/catch; no storage means Cat, Plain, Terracotta.
 - Headline stays "Your Windows, / with a notch." The line under it becomes
   "Music and lyrics, your clipboard, meeting recordings and a small mascot,
