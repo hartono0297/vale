@@ -147,10 +147,14 @@ Mascot scope (decided, "Opsi 2"):
 
 ### Playground (eight cards)
 
-Today's six are dance, typing, peek, susun, draw and copy. Order on the page
-(builder's call, settled here): Sign (spans the whole grid row), Draw, Captions,
-Phone, Mascots, Typing, Susun, Copy. Grid as today (1, 2, 3 columns), Sign
-always the full row with picture and text side by side from 40em.
+Today's six are dance, typing, peek, susun, draw and copy. Order on the page:
+Sign (full row), Draw, Captions, Phone, Typing, Susun, Copy, Mascots (full
+row). **No empty grid cell at any width** (owner, 2026-11-21: "jangan ada
+yang kosong, penuhin"): the grid has only 1, 2 or 3 columns, never 4, so the
+six small cards fill 3+3, 2+2+2 or one column, and the two wide cards always
+span the whole row. Wide cards put picture and text side by side from 40em
+(Sign picture left, Mascots picture right, the three mascots' mini notches
+side by side).
 The Record demo page and the "Signed" notch notice take their content from
 `README.md` and `docs/guide.md` (Record: the record button, Mic, PC audio and
 Live captions switches, recordings grouped by day with Transcribe / View;
@@ -165,7 +169,7 @@ as real data.
 | Draw right on the screen | kept, extended | Today's draw card plus a *Turn* button (and Ctrl+R while the card has focus) that turns the selection a quarter turn with the strokes. |
 | Captions for a call that has none | new | *Play a sample* runs a short scripted caption card: grey line turning white, "Me" and "Others". Text is invented sample dialogue, clearly a demo. |
 | Files from your phone, no cable | new | A QR picture and the *Wi-Fi / Tailscale* switch (a real toggle that changes the caption under it). The QR is decorative, not scannable. |
-| Three mascots, ten short stories | replaces dance and peek | Picks follow the hero choice; *Play a story* runs one short story around the mini notch per mascot; hovering the picture shrinks the mini notch to the mascot's eyes (today's peek). The dance moves into the story set as the music nod. |
+| Three mascots, ten short stories | replaces dance and peek, full row at the end | Shows all three mascots side by side on mini notches; picks follow the hero choice; *Play a story* runs one short story around the mini notch per mascot; hovering the picture shrinks the mini notch to the mascot's eyes (today's peek). The dance moves into the story set as the music nod. |
 | It types while Claude works | kept | Today's typing card, with the chosen mascot. |
 | Susun puts windows in place | kept | Unchanged. |
 | Every copy, a preview | kept, extended | Copy as today; the line also says you can drag an image out of the history into a chat. |
