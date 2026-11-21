@@ -317,6 +317,16 @@ def main():
     if not pages:
         problem("site", "no html files found")
 
+    # A control character in the text is a typo (a pasted "	" in a path shows as a gap).
+    for path in sorted(SITE.rglob("*")):
+        if path.suffix not in (".html", ".css", ".js", ".json", ".txt", ".svg", ".xml", ".webmanifest"):
+            continue
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            body = line.lstrip("	")
+            if any(ord(c) < 32 for c in body):
+                bad = next(c for c in body if ord(c) < 32)
+                problem(f"{path.relative_to(SITE).as_posix()}:{n}", f"control character U+{ord(bad):04X}")
+
     for name, page in pages.items():
         seen = set()
         for i in page.ids:
