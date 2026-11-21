@@ -12,7 +12,7 @@
 
 use super::Rect;
 use crate::i18n::{Key, tr};
-use crate::shot_edit::Tool;
+use crate::shot_edit::{Pt, Tool};
 use crate::shot_edit::rotate::Turn;
 
 // ---- the buttons ----
@@ -25,7 +25,7 @@ pub enum Btn {
     Stroke(usize),
     Undo,
     Redo,
-    /// Open the editor with the selection turned right.
+    /// Turn the selection right, in place.
     Rotate,
     Copy,
     Save,
@@ -70,7 +70,7 @@ pub fn tip(btn: Btn) -> Option<String> {
         Btn::Stroke(_) => tr(Key::EditStroke).to_owned(),
         Btn::Undo => format!("{} (Ctrl+Z)", tr(Key::EditUndo)),
         Btn::Redo => format!("{} (Ctrl+Y)", tr(Key::EditRedo)),
-        Btn::Rotate => format!("{} (Ctrl+R)", tr(Key::InlineRotate)),
+        Btn::Rotate => format!("{} (Ctrl+R)", tr(Key::EditRotateRight)),
         Btn::Copy => format!("{} (Ctrl+C)", tr(Key::EditCopy)),
         Btn::Save => format!("{} (Ctrl+S)", tr(Key::EditSave)),
         Btn::OpenEditor => tr(Key::InlineOpenEditor).to_owned(),
@@ -264,6 +264,79 @@ pub fn clamp_into(r: Rect, bounds: Rect) -> Rect {
     let x = r.x.min(bounds.right() - r.w).max(bounds.x);
     let y = r.y.min(bounds.bottom() - r.h).max(bounds.y);
     Rect::new(x, y, r.w, r.h)
+}
+
+/// The selection's size after `turns` right turns.
+fn turned_size(w: i32, h: i32, turns: u8) -> (i32, i32) {
+    if turns % 2 == 1 { (h, w) } else { (w, h) }
+}
+
+/// The card the turned selection is shown on while it is turned in place:
+/// the turned size, shrunk to fit `monitor` less a `48 * ui` px margin each
+/// side, centred on the selection and kept inside that margin (on the whole
+/// monitor when the card does not fit in it), so the size label above and
+/// the bar below always have room. Returns the card and the scale shown (1
+/// when it fits).
+pub fn turned_card(sel: Rect, turns: u8, monitor: Rect, ui: f32) -> (Rect, f32) {
+    let (tw, th) = turned_size(sel.w, sel.h, turns);
+    let m = (48.0 * ui).round();
+    // Floored: a monitor narrower than its margins would give 0 or less.
+    let s = 1.0f32
+        .min((monitor.w as f32 - 2.0 * m) / tw as f32)
+        .min((monitor.h as f32 - 2.0 * m) / th as f32)
+        .max(0.05);
+    let w = (tw as f32 * s).round().max(1.0) as i32;
+    let h = (th as f32 * s).round().max(1.0) as i32;
+    let (cx, cy) = sel.center();
+    let m = m as i32;
+    let inset = Rect::new(
+        monitor.x + m,
+        monitor.y + m,
+        monitor.w - 2 * m,
+        monitor.h - 2 * m,
+    );
+    let area = if w <= inset.w && h <= inset.h {
+        inset
+    } else {
+        monitor
+    };
+    let card = clamp_into(Rect::new(cx - w / 2, cy - h / 2, w, h), area);
+    (card, s)
+}
+
+/// A screen point as a point of the turned crop (pixels of `size`), through
+/// the card it is shown on; clamped to the crop.
+pub fn card_local(p: (i32, i32), card: Rect, scale: f32, size: (u32, u32)) -> Pt {
+    let x = ((p.0 - card.x) as f32 / scale).clamp(0.0, size.0 as f32);
+    let y = ((p.1 - card.y) as f32 / scale).clamp(0.0, size.1 as f32);
+    Pt::new(x, y)
+}
+
+/// What a turn of the picture in place shifts the annotations by, as
+/// `(pre, post, size)`. Annotations are in frame px at 0 turns and in crop
+/// px otherwise, so the first turn lifts them into crop px (`pre`), the one
+/// back to 0 puts them in frame px again (`post`), and `size` is the crop as
+/// shown before the turn. `origin` is the frame's top-left on the screen.
+pub fn turn_shifts(
+    sel: Rect,
+    origin: (i32, i32),
+    turns_before: u8,
+    turn: Turn,
+) -> ((f32, f32), (f32, f32), (u32, u32)) {
+    let off = ((sel.x - origin.0) as f32, (sel.y - origin.1) as f32);
+    let after = match turn {
+        Turn::Right => (turns_before + 1) % 4,
+        Turn::Left => (turns_before + 3) % 4,
+    };
+    let (w, h) = turned_size(sel.w, sel.h, turns_before);
+    let size = (w as u32, h as u32);
+    if turns_before == 0 {
+        ((-off.0, -off.1), (0.0, 0.0), size)
+    } else if after == 0 {
+        ((0.0, 0.0), off, size)
+    } else {
+        ((0.0, 0.0), (0.0, 0.0), size)
+    }
 }
 
 /// Where a panel of `size` goes around `sel` on `monitor` (the one holding
@@ -575,6 +648,21 @@ pub fn select_press(
     }
 }
 
+/// `select_press` while the selection is turned in place and shown on
+/// `card`: only an annotation on the card is taken; the selection cannot be
+/// moved, resized or drawn again, and a press elsewhere does nothing.
+pub fn card_press(card: Rect, pt: (i32, i32), ann_handle: bool, ann_hit: bool) -> SelectPress {
+    if !card.contains(pt) {
+        SelectPress::Nothing
+    } else if ann_handle {
+        SelectPress::AnnotationHandle
+    } else if ann_hit {
+        SelectPress::Annotation
+    } else {
+        SelectPress::Nothing
+    }
+}
+
 /// The pointer shapes the overlay uses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cursor {
@@ -612,7 +700,26 @@ pub fn cursor_over(sel: Rect, pt: (i32, i32), tol: i32, tool: Tool) -> Cursor {
     }
 }
 
+/// `cursor_over` while the selection is turned in place: no size or move
+/// cursor (the selection is fixed), the tool's own shape on the card.
+pub fn cursor_on_card(card: Rect, pt: (i32, i32), tool: Tool) -> Cursor {
+    if !card.contains(pt) {
+        return Cursor::Arrow;
+    }
+    match tool {
+        Tool::Select => Cursor::Arrow,
+        Tool::Text => Cursor::IBeam,
+        _ => Cursor::Cross,
+    }
+}
+
 // ---- keys ----
+
+/// Whether there is anything to lose: an annotation, or the picture turned
+/// in place (`turns`). Esc asks first when there is.
+pub fn has_changes(has_annotations: bool, turns: u8) -> bool {
+    has_annotations || turns % 4 != 0
+}
 
 /// What the overlay knows when a key arrives.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -621,7 +728,7 @@ pub struct KeyCtx {
     pub editing_text: bool,
     /// The "Buang perubahan?" bar is up.
     pub confirm: bool,
-    /// Something is drawn.
+    /// Something is drawn, or the picture is turned (`has_changes`).
     pub has_annotations: bool,
     /// A drag is running.
     pub dragging: bool,
@@ -649,7 +756,7 @@ pub enum InlineKey {
     Keep,
     Undo,
     Redo,
-    /// Ctrl+R / Ctrl+Shift+R: open the editor turned right / left.
+    /// Ctrl+R / Ctrl+Shift+R: turn the selection right / left in place.
     Rotate(Turn),
     /// Delete the selected annotation.
     Delete,
@@ -764,18 +871,13 @@ pub enum FinishKind {
     /// The confirm bar's "Buang".
     Discard,
     OpenEditor,
-    /// Rotate: the editor opens with the picture already turned.
-    OpenEditorTurned(Turn),
 }
 
 impl FinishKind {
     /// Whether the frozen picture is kept for the finish (to save it or hand
     /// it to the editor) instead of being dropped with the overlay.
     pub fn keeps_picture(self) -> bool {
-        matches!(
-            self,
-            FinishKind::Save | FinishKind::OpenEditor | FinishKind::OpenEditorTurned(_)
-        )
+        matches!(self, FinishKind::Save | FinishKind::OpenEditor)
     }
 }
 
@@ -787,11 +889,9 @@ pub fn finish_copies(kind: FinishKind, auto_copy: bool) -> bool {
     match kind {
         FinishKind::Copy => true,
         FinishKind::Save => auto_copy,
-        FinishKind::Cancel
-        | FinishKind::Close
-        | FinishKind::Discard
-        | FinishKind::OpenEditor
-        | FinishKind::OpenEditorTurned(_) => false,
+        FinishKind::Cancel | FinishKind::Close | FinishKind::Discard | FinishKind::OpenEditor => {
+            false
+        }
     }
 }
 
@@ -824,6 +924,8 @@ pub fn after_copy(copied: bool) -> CopyOutcome {
 pub enum Layer {
     Frame,
     Dim,
+    /// The turned picture, lifted onto the dim (only while turned).
+    Card,
     Annotations,
     Border,
     Label,
@@ -837,9 +939,10 @@ pub enum Layer {
     Notice,
 }
 
-pub const PAINT_ORDER: [Layer; 13] = [
+pub const PAINT_ORDER: [Layer; 14] = [
     Layer::Frame,
     Layer::Dim,
+    Layer::Card,
     Layer::Annotations,
     Layer::Border,
     Layer::Label,
@@ -858,6 +961,133 @@ mod tests {
     use super::*;
 
     const MON: Rect = Rect::new(0, 0, 1920, 1080);
+
+    #[test]
+    fn card_fits_and_is_centred() {
+        // Centred on the selection, then kept 48 px off the monitor's edge.
+        let (c, s) = turned_card(Rect::new(100, 100, 400, 200), 1, MON, 1.0);
+        assert_eq!(c, Rect::new(200, 48, 200, 400));
+        assert_eq!(s, 1.0);
+    }
+
+    /// `MON` less the card's 48 px margin.
+    const INSET: Rect = Rect::new(48, 48, 1920 - 96, 1080 - 96);
+
+    #[test]
+    fn a_card_taller_than_the_monitor_shrinks() {
+        let (c, s) = turned_card(Rect::new(0, 500, 1800, 300), 1, MON, 1.0);
+        assert!((s - 984.0 / 1800.0).abs() < 1e-6);
+        assert_eq!(c.h, 984);
+        assert!(inside(c, INSET));
+    }
+
+    #[test]
+    fn card_stays_on_a_negative_monitor() {
+        let mon = Rect::new(-1920, 0, 1920, 1080);
+        let (c, _) = turned_card(Rect::new(-300, 900, 600, 100), 1, mon, 1.0);
+        assert!(inside(c, Rect::new(-1872, 48, 1824, 984)));
+    }
+
+    #[test]
+    fn a_shrunk_card_leaves_room_for_the_label_above_and_the_bar_below() {
+        let ui = 1.0;
+        let gap = (PANEL_GAP * ui).round() as i32;
+        let labels = BarLabels {
+            copy: 30.0,
+            save: 45.0,
+            editor: 95.0,
+            close: 35.0,
+            ask: 120.0,
+            discard: 40.0,
+            keep: 35.0,
+        };
+        let bar = bar_layout(ui, &labels, false).rect;
+        let strip = strip_layout(ui, MON.h - 32).rect;
+        // Wide selections near the bottom, the top and the middle: their
+        // turns are taller than the monitor and shrink.
+        for sel in [
+            Rect::new(0, 760, 1900, 300),
+            Rect::new(0, 0, 1900, 300),
+            Rect::new(10, 400, 1700, 250),
+        ] {
+            let (card, s) = turned_card(sel, 1, MON, ui);
+            assert!(s < 1.0, "{sel:?}");
+            // As `relayout` and the label layer place them.
+            let strip_at = place_side(card, (strip.w, strip.h), MON, Side::Right, gap);
+            let bar_at = place_side(card, (bar.w, bar.h), MON, Side::Below, gap);
+            let bar_at = separate(bar_at, strip_at, MON, gap);
+            let label = label_rect(card, (90, 22), MON, 6);
+            assert!(bar_at.y >= card.bottom(), "bar below {sel:?}: {bar_at:?}");
+            assert!(label.bottom() <= card.y, "label above {sel:?}: {label:?}");
+            assert!(!overlaps(bar_at, label), "{sel:?}");
+            assert!(!overlaps(bar_at, card), "{sel:?}");
+        }
+    }
+
+    #[test]
+    fn even_turns_keep_the_selection_size() {
+        let (c, s) = turned_card(Rect::new(100, 100, 400, 200), 2, MON, 1.0);
+        assert_eq!((c.w, c.h), (400, 200));
+        assert_eq!(s, 1.0);
+    }
+
+    #[test]
+    fn card_local_maps_back_to_turned_crop_px() {
+        let card = Rect::new(200, 0, 200, 400);
+        assert_eq!(card_local((300, 100), card, 0.5, (400, 800)), Pt::new(200.0, 200.0));
+        assert_eq!(card_local((0, -50), card, 0.5, (400, 800)), Pt::new(0.0, 0.0));
+        assert_eq!(card_local((900, 900), card, 0.5, (400, 800)), Pt::new(400.0, 800.0));
+    }
+
+    #[test]
+    fn turn_shifts_from_zero_lifts_into_crop_px() {
+        let sel = Rect::new(110, 60, 100, 40);
+        let (pre, post, size) = turn_shifts(sel, (10, 10), 0, Turn::Right);
+        assert_eq!((pre, post, size), ((-100.0, -50.0), (0.0, 0.0), (100, 40)));
+    }
+
+    #[test]
+    fn turn_shifts_back_to_zero_puts_into_frame_px() {
+        let sel = Rect::new(110, 60, 100, 40);
+        let (pre, post, size) = turn_shifts(sel, (10, 10), 1, Turn::Left);
+        assert_eq!((pre, post, size), ((0.0, 0.0), (100.0, 50.0), (40, 100)));
+    }
+
+    #[test]
+    fn turn_shifts_between_turns_do_not_move() {
+        let sel = Rect::new(110, 60, 100, 40);
+        let (pre, post, size) = turn_shifts(sel, (10, 10), 1, Turn::Right);
+        assert_eq!((pre, post, size), ((0.0, 0.0), (0.0, 0.0), (40, 100)));
+        let (pre, post, size) = turn_shifts(sel, (10, 10), 2, Turn::Left);
+        assert_eq!((pre, post, size), ((0.0, 0.0), (0.0, 0.0), (100, 40)));
+    }
+
+    #[test]
+    fn turn_from_zero_and_back_restores_frame_px() {
+        use crate::shot_edit::{Annotation, FRect, Session, Style};
+        let sel = Rect::new(110, 60, 100, 40);
+        let origin = (10, 10);
+        let ann = Annotation::Rect {
+            r: FRect::new(120.0, 70.0, 20.0, 10.0),
+            style: Style {
+                color: 0xE5484D,
+                width: 4.0,
+            },
+        };
+        let mut s = Session::with_doc(vec![ann.clone()]);
+        let (pre, post, size) = turn_shifts(sel, origin, 0, Turn::Right);
+        s.rotate_shifted(Turn::Right, size, pre, post);
+        let (pre, post, size) = turn_shifts(sel, origin, s.turns(), Turn::Left);
+        s.rotate_shifted(Turn::Left, size, pre, post);
+        assert_eq!(s.turns(), 0);
+        let (Annotation::Rect { r: a, .. }, Annotation::Rect { r: b, .. }) = (&ann, &s.doc[0])
+        else {
+            panic!("not a rect");
+        };
+        for (p, q) in [(a.x, b.x), (a.y, b.y), (a.w, b.w), (a.h, b.h)] {
+            assert!((p - q).abs() < 1e-3, "{p} vs {q}");
+        }
+    }
 
     fn overlaps(a: Rect, b: Rect) -> bool {
         !a.intersect(&b).is_empty()
@@ -1666,13 +1896,8 @@ mod tests {
     }
 
     #[test]
-    fn open_editor_turned_keeps_the_picture_like_open_editor() {
-        for kind in [
-            FinishKind::Save,
-            FinishKind::OpenEditor,
-            FinishKind::OpenEditorTurned(Turn::Left),
-            FinishKind::OpenEditorTurned(Turn::Right),
-        ] {
+    fn save_and_open_editor_keep_the_picture() {
+        for kind in [FinishKind::Save, FinishKind::OpenEditor] {
             assert!(kind.keeps_picture(), "{kind:?}");
         }
         for kind in [
@@ -1683,22 +1908,76 @@ mod tests {
         ] {
             assert!(!kind.keeps_picture(), "{kind:?}");
         }
-        for auto in [false, true] {
-            assert!(!finish_copies(
-                FinishKind::OpenEditorTurned(Turn::Right),
-                auto
-            ));
-        }
     }
 
     #[test]
     fn rotate_tip_names_its_shortcut() {
         crate::i18n::set_lang(crate::i18n::Lang::En);
-        assert_eq!(
-            tip(Btn::Rotate).as_deref(),
-            Some("Rotate right, open in editor (Ctrl+R)")
-        );
+        assert_eq!(tip(Btn::Rotate).as_deref(), Some("Rotate right (Ctrl+R)"));
         crate::i18n::set_lang(crate::i18n::Lang::Id);
+        assert_eq!(tip(Btn::Rotate).as_deref(), Some("Putar ke kanan (Ctrl+R)"));
+    }
+
+    #[test]
+    fn a_turn_alone_counts_as_a_change() {
+        assert!(!has_changes(false, 0));
+        assert!(has_changes(true, 0));
+        assert!(has_changes(false, 1));
+        assert!(has_changes(false, 3));
+        // So Esc asks before throwing a turn away.
+        let turned = KeyCtx {
+            has_annotations: has_changes(false, 2),
+            ..NONE
+        };
+        assert_eq!(key(0x1B, false, false, turned), InlineKey::AskDiscard);
+        assert_eq!(esc_step(turned), EscStep::Ask);
+    }
+
+    #[test]
+    fn a_press_on_the_card_only_takes_annotations() {
+        let card = Rect::new(200, 100, 300, 400);
+        assert_eq!(
+            card_press(card, (250, 150), true, true),
+            SelectPress::AnnotationHandle
+        );
+        assert_eq!(
+            card_press(card, (250, 150), false, true),
+            SelectPress::Annotation
+        );
+        // The card's edge and inside it: no selection handle, no move.
+        for pt in [(200, 100), (350, 300), (499, 499)] {
+            assert_eq!(card_press(card, pt, false, false), SelectPress::Nothing);
+        }
+        // Outside the card nothing is taken, not even an annotation.
+        for pt in [(10, 10), (199, 150), (900, 900)] {
+            assert_eq!(card_press(card, pt, true, true), SelectPress::Nothing);
+        }
+    }
+
+    #[test]
+    fn the_pointer_over_the_card_never_offers_to_resize() {
+        let card = Rect::new(200, 100, 300, 400);
+        assert_eq!(
+            cursor_on_card(card, (200, 100), Tool::Select),
+            Cursor::Arrow
+        );
+        assert_eq!(
+            cursor_on_card(card, (350, 300), Tool::Select),
+            Cursor::Arrow
+        );
+        assert_eq!(cursor_on_card(card, (350, 300), Tool::Text), Cursor::IBeam);
+        assert_eq!(cursor_on_card(card, (350, 300), Tool::Pen), Cursor::Cross);
+        for t in Tool::ALL {
+            assert_eq!(cursor_on_card(card, (10, 10), t), Cursor::Arrow, "{t:?}");
+        }
+    }
+
+    #[test]
+    fn a_card_on_a_monitor_narrower_than_its_margins_keeps_a_positive_scale() {
+        let mon = Rect::new(0, 0, 80, 1080);
+        let (c, s) = turned_card(Rect::new(0, 0, 60, 40), 1, mon, 1.0);
+        assert!(s >= 0.05, "{s}");
+        assert!(c.w >= 1 && c.h >= 1);
     }
 
     #[test]
@@ -1732,6 +2011,8 @@ mod tests {
         assert!(at(Layer::BarBack) < at(Layer::BarButtons));
         assert!(at(Layer::BarBack) < at(Layer::BarText));
         assert!(at(Layer::Frame) < at(Layer::Dim) && at(Layer::Dim) < at(Layer::Annotations));
+        // The lifted card sits on the dim, under its annotations.
+        assert!(at(Layer::Dim) < at(Layer::Card) && at(Layer::Card) < at(Layer::Annotations));
         // The tooltip and the notice are over everything.
         assert!(at(Layer::Tooltip) > at(Layer::BarText));
         assert_eq!(PAINT_ORDER.last(), Some(&Layer::Notice));
