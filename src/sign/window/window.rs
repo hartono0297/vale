@@ -1066,6 +1066,10 @@ fn make_password(hwnd: HWND, initial: &str) -> Option<HWND> {
         back: p.field,
         password: true,
         commit_on_blur: false,
+        bold: false,
+        italic: false,
+        underline: false,
+        format_keys: false,
     };
     let Some(made) = text_edit::create(hwnd, &spec) else {
         eprintln!("vale: the password field could not be made");
@@ -2059,6 +2063,10 @@ fn open_text(hwnd: HWND, at: (f32, f32), index: Option<usize>, typed: Option<Str
         back: 0xFFFFFF,
         password: false,
         commit_on_blur: true,
+        bold: false,
+        italic: false,
+        underline: false,
+        format_keys: false,
     };
     let f = text_edit::create(hwnd, &spec)?;
     let edit = f.edit;
