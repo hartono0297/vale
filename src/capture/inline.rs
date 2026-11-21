@@ -272,9 +272,11 @@ fn turned_size(w: i32, h: i32, turns: u8) -> (i32, i32) {
 }
 
 /// The card the turned selection is shown on while it is turned in place:
-/// the turned size, shrunk to fit `monitor` (a `48 * ui` px margin each
-/// side), centred on the selection and kept on the monitor. Returns the
-/// card and the scale shown (1 when it fits).
+/// the turned size, shrunk to fit `monitor` less a `48 * ui` px margin each
+/// side, centred on the selection and kept inside that margin (on the whole
+/// monitor when the card does not fit in it), so the size label above and
+/// the bar below always have room. Returns the card and the scale shown (1
+/// when it fits).
 pub fn turned_card(sel: Rect, turns: u8, monitor: Rect, ui: f32) -> (Rect, f32) {
     let (tw, th) = turned_size(sel.w, sel.h, turns);
     let m = (48.0 * ui).round();
@@ -286,9 +288,20 @@ pub fn turned_card(sel: Rect, turns: u8, monitor: Rect, ui: f32) -> (Rect, f32) 
     let w = (tw as f32 * s).round().max(1.0) as i32;
     let h = (th as f32 * s).round().max(1.0) as i32;
     let (cx, cy) = sel.center();
-    let x = (cx - w / 2).min(monitor.right() - w).max(monitor.x);
-    let y = (cy - h / 2).min(monitor.bottom() - h).max(monitor.y);
-    (Rect::new(x, y, w, h), s)
+    let m = m as i32;
+    let inset = Rect::new(
+        monitor.x + m,
+        monitor.y + m,
+        monitor.w - 2 * m,
+        monitor.h - 2 * m,
+    );
+    let area = if w <= inset.w && h <= inset.h {
+        inset
+    } else {
+        monitor
+    };
+    let card = clamp_into(Rect::new(cx - w / 2, cy - h / 2, w, h), area);
+    (card, s)
 }
 
 /// A screen point as a point of the turned crop (pixels of `size`), through
@@ -951,24 +964,64 @@ mod tests {
 
     #[test]
     fn card_fits_and_is_centred() {
+        // Centred on the selection, then kept 48 px off the monitor's edge.
         let (c, s) = turned_card(Rect::new(100, 100, 400, 200), 1, MON, 1.0);
-        assert_eq!(c, Rect::new(200, 0, 200, 400));
+        assert_eq!(c, Rect::new(200, 48, 200, 400));
         assert_eq!(s, 1.0);
     }
+
+    /// `MON` less the card's 48 px margin.
+    const INSET: Rect = Rect::new(48, 48, 1920 - 96, 1080 - 96);
 
     #[test]
     fn a_card_taller_than_the_monitor_shrinks() {
         let (c, s) = turned_card(Rect::new(0, 500, 1800, 300), 1, MON, 1.0);
         assert!((s - 984.0 / 1800.0).abs() < 1e-6);
         assert_eq!(c.h, 984);
-        assert!(inside(c, MON));
+        assert!(inside(c, INSET));
     }
 
     #[test]
     fn card_stays_on_a_negative_monitor() {
         let mon = Rect::new(-1920, 0, 1920, 1080);
         let (c, _) = turned_card(Rect::new(-300, 900, 600, 100), 1, mon, 1.0);
-        assert!(inside(c, mon));
+        assert!(inside(c, Rect::new(-1872, 48, 1824, 984)));
+    }
+
+    #[test]
+    fn a_shrunk_card_leaves_room_for_the_label_above_and_the_bar_below() {
+        let ui = 1.0;
+        let gap = (PANEL_GAP * ui).round() as i32;
+        let labels = BarLabels {
+            copy: 30.0,
+            save: 45.0,
+            editor: 95.0,
+            close: 35.0,
+            ask: 120.0,
+            discard: 40.0,
+            keep: 35.0,
+        };
+        let bar = bar_layout(ui, &labels, false).rect;
+        let strip = strip_layout(ui, MON.h - 32).rect;
+        // Wide selections near the bottom, the top and the middle: their
+        // turns are taller than the monitor and shrink.
+        for sel in [
+            Rect::new(0, 760, 1900, 300),
+            Rect::new(0, 0, 1900, 300),
+            Rect::new(10, 400, 1700, 250),
+        ] {
+            let (card, s) = turned_card(sel, 1, MON, ui);
+            assert!(s < 1.0, "{sel:?}");
+            // As `relayout` and the label layer place them.
+            let strip_at = place_side(card, (strip.w, strip.h), MON, Side::Right, gap);
+            let bar_at = place_side(card, (bar.w, bar.h), MON, Side::Below, gap);
+            let bar_at = separate(bar_at, strip_at, MON, gap);
+            let label = label_rect(card, (90, 22), MON, 6);
+            assert!(bar_at.y >= card.bottom(), "bar below {sel:?}: {bar_at:?}");
+            assert!(label.bottom() <= card.y, "label above {sel:?}: {label:?}");
+            assert!(!overlaps(bar_at, label), "{sel:?}");
+            assert!(!overlaps(bar_at, card), "{sel:?}");
+        }
     }
 
     #[test]

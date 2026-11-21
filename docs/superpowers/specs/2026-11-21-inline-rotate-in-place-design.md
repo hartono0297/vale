@@ -50,8 +50,10 @@ every call below is the agent's.
 - **Card.** Size = selection turned (w and h swap), at display scale
   `s = min(1, fit into the selection's monitor minus a 48 dip margin on each
   side)`; centred on the selection's centre, then moved (not shrunk further)
-  to lie fully on that monitor. The output is always full size; only the
-  display shrinks.
+  to lie inside that monitor minus the 48 dip margin (the whole monitor if
+  the card does not fit in it), so the size label above and the bar below
+  always have room. The output is always full size; only the display
+  shrinks.
 - **While turned (turns != 0):** the selection handles are hidden and the
   selection cannot be moved, resized or re-drawn; a press outside the card
   does nothing. The size label shows the turned size ("400 × 600"). The

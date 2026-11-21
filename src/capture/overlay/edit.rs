@@ -467,7 +467,7 @@ fn finish_text(hwnd: HWND, keep: bool) -> bool {
     true
 }
 
-/// Puts a native EDIT at `pos` (frame px): new text, or `index`'s text.
+/// Puts a native EDIT at `pos` (annotation px): new text, or `index`'s text.
 fn begin_text(hwnd: HWND, pos: Pt, index: Option<usize>) {
     commit_text(hwnd);
     struct Plan {
@@ -507,7 +507,7 @@ fn begin_text(hwnd: HWND, pos: Pt, index: Option<usize>) {
         }
     });
     let Some(plan) = plan else { return };
-    let px = (plan.size * plan.view_scale).round().max(8.0 * plan.ui);
+    let px = edit_px(plan.size, plan.view_scale, plan.ui);
     let Some(mut t) = text::create(
         hwnd,
         plan.client_pos,
@@ -536,9 +536,21 @@ fn begin_text(hwnd: HWND, pos: Pt, index: Option<usize>) {
     invalidate(hwnd);
 }
 
+/// The EDIT's font size in client px for a text of `size` annotation px
+/// shown at `scale`: never below 8 dip, so it stays readable on a small
+/// card. `begin_text` makes the font and `fit_edit` sizes the box with it.
+fn edit_px(size: f32, scale: f32, ui: f32) -> f32 {
+    (size * scale).round().max(8.0 * ui)
+}
+
 /// Grows the EDIT with its text.
 pub(super) fn fit_edit(hwnd: HWND) {
-    let plan = ed(|e, _| e.text.as_ref().map(|t| (t.edit, t.size * e.scale(), e.ui))).flatten();
+    let plan = ed(|e, _| {
+        e.text
+            .as_ref()
+            .map(|t| (t.edit, edit_px(t.size, e.scale(), e.ui), e.ui))
+    })
+    .flatten();
     let Some((edit, px, ui)) = plan else { return };
     text::fit(hwnd, edit, px, ui, |s| {
         ed(|_, env| env.gfx.measure(s, px, 400)).unwrap_or((0.0, 0.0))
@@ -579,7 +591,7 @@ enum Down {
     Pressed,
     /// Something is being dragged.
     Dragging,
-    /// A text goes here (frame px), or this annotation's text is edited.
+    /// A text goes here (annotation px), or this annotation's text is edited.
     Text(Pt, Option<usize>),
     /// Nothing.
     Idle,
