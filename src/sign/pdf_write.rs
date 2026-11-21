@@ -1142,22 +1142,18 @@ fn write_page(
                         .bytes(),
                 );
                 c.extend(winansi::pdf_string(&text));
-                c.extend(b" Tj ET
-");
+                c.extend(b" Tj ET\n");
                 if st.underline {
                     let w = text_draw::advance_em(s, st) * sx;
                     let y = 0.2 + 0.8 * (UNDERLINE_POS - UNDERLINE_THICK / 2.0);
                     c.extend(
-                        format!("0 {} {} {} re f
-", num(y), num(w), num(0.8 * UNDERLINE_THICK))
-                            .bytes(),
+                        format!("0 {} {} {} re f\n", num(y), num(w), num(0.8 * UNDERLINE_THICK)).bytes(),
                     );
                 }
             }
             ItemKind::Check(tint) => {
                 let tick = "0.12 w 1 J 1 j 0.18 0.52 m 0.42 0.26 l 0.84 0.8 l S";
-                c.extend(format!("{} RG {tick}
-", rgb(*tint)).bytes());
+                c.extend(format!("{} RG {tick}\n", rgb(*tint)).bytes());
             }
         }
         c.extend(b"Q\n");
