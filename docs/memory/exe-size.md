@@ -486,6 +486,7 @@ checksum checked against `vale.exe.sha256` at release time):
 | v5.5.0 (1ac63bd) | 4,937,728 (+178,688: mascot stories parts 1 and 2, What's new, shelf image preview, clipboard Clear all, fresh-install layout) |
 | v5.5.1 (05c6b78) | 4,942,336 (+4,608: mascot-story fix, the mascot's mini face in the shrunk notch) |
 | v5.5.2 (9710214) | 4,948,480 (+6,144: phone link copy button, drop onto the phone page, laptop naming) |
-
-v5.5.5 (v5.5.3 and v5.5.4 were skipped) adds the notch colour (Polos, Gradasi,
-Jadi muka) measured above; add its shipped size here after the release.
+| v5.5.5 (6a74e35) | 5,007,360 (+58,880: notch colour Polos, Gradasi, Jadi muka; v5.5.3 and v5.5.4 were skipped) |
+| v5.5.6 (e9d0c59) | 5,016,064 (+8,704: mascot plays on the hour, info button) |
+| v5.5.7 (9271d1c) | 5,017,088 (+1,024: transcript CPU retry, Face notch and lyric fixes) |
+| v5.6.0 (684f272) | 6,072,320 (+1,055,232: document signing with lopdf and Windows.Data.Pdf, text formatting, screenshot rotate in the editor and in place) |
