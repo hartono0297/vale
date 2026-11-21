@@ -1707,7 +1707,9 @@ fn act(hwnd: HWND, hit: Hit, kb: bool) {
                 let Some(i) = w.selected else { return };
                 let Some(d) = &mut w.doc else { return };
                 let n = d.session.initials_on_all(i);
-                if n == 0 {
+                if n == 0 && d.session.initials_everywhere(i) {
+                    say(w, Key::SignAllPagesAlready, Tone::Hint);
+                } else if n == 0 {
                     say(w, Key::SignAllPagesNone, Tone::Hint);
                 } else {
                     w.note = Some((all_pages_note(n), Tone::Hint));

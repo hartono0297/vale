@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use crate::sign::geom::{self, PageGeom};
-use crate::sign::{Item, ItemKind, Quarter};
+use crate::sign::{Item, ItemKind, Mark, Quarter};
 
 #[derive(Clone)]
 pub struct Page {
@@ -152,12 +152,7 @@ impl Session {
                 let copy = Item { kind: ItemKind::Initials(mark.clone()), page: p, x, y, w, h, turn };
                 let (bw, bh) = geom::occupied(&copy);
                 let g = page.geom;
-                let already = self.items.iter().any(|it| {
-                    it.page == p
-                        && matches!(&it.kind, ItemKind::Initials(m) if Arc::ptr_eq(m, &mark) || **m == *mark)
-                        && (it.x - x).abs() <= 0.5
-                        && (it.y - y).abs() <= 0.5
-                });
+                let already = self.has_initials_at(p, &mark, x, y);
                 (!already && x >= 0.0 && y >= 0.0 && x + bw <= g.w && y + bh <= g.h).then_some(copy)
             })
             .collect();
@@ -168,6 +163,26 @@ impl Session {
         let n = copies.len();
         self.items.extend(copies);
         n
+    }
+
+    /// Every other live page already has item `i`'s initials at its spot
+    /// (so "Pasang di semua halaman" has nothing left to add).
+    pub fn initials_everywhere(&self, i: usize) -> bool {
+        let Some(src) = self.items.get(i) else { return false };
+        let ItemKind::Initials(mark) = &src.kind else { return false };
+        let others: Vec<usize> = self.live_pages().into_iter().filter(|&p| p != src.page).collect();
+        !others.is_empty() && others.iter().all(|&p| self.has_initials_at(p, mark, src.x, src.y))
+    }
+
+    /// Page `p` has the same initials (the same `Arc` or an equal mark) at
+    /// `x, y`, within half a point.
+    fn has_initials_at(&self, p: usize, mark: &Arc<Mark>, x: f32, y: f32) -> bool {
+        self.items.iter().any(|it| {
+            it.page == p
+                && matches!(&it.kind, ItemKind::Initials(m) if Arc::ptr_eq(m, mark) || **m == **mark)
+                && (it.x - x).abs() <= 0.5
+                && (it.y - y).abs() <= 0.5
+        })
     }
 
     pub fn undo(&mut self) -> bool {
@@ -251,7 +266,9 @@ mod tests {
         let mut s = three();
         let m = mark();
         let i = s.add(item(ItemKind::Initials(m.clone()), 0, 500.0, 40.0, 48.0, 24.0));
+        assert!(!s.initials_everywhere(i));
         assert_eq!(s.initials_on_all(i), 2);
+        assert!(s.initials_everywhere(i), "the note says it is already there, not that there is no room");
         assert_eq!(s.initials_on_all(i), 0, "every other page already has it");
         assert_eq!(s.items.len(), 3);
         // An equal mark (not the same Arc) within half a point is the same.

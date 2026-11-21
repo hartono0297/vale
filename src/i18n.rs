@@ -617,6 +617,7 @@ keys! {
     SignAllPagesDone => "Paraf dipasang di {n} halaman lain.", "Initials put on {n} other pages.";
     SignAllPagesDoneOne => "Paraf dipasang di 1 halaman lain.", "Initials put on 1 other page.";
     SignAllPagesNone => "Tidak ada halaman lain yang muat untuk paraf ini.", "No other page has room for these initials.";
+    SignAllPagesAlready => "Paraf ini sudah ada di semua halaman lain.", "These initials are already on every other page.";
     SignMakerNewSignature => "Tanda tangan baru", "New signature";
     SignMakerNewInitials => "Paraf baru", "New initials";
     SignMakerPadHint => "Gambar di sini pakai mouse, touchpad, atau pen", "Draw here with a mouse, touchpad or pen";
@@ -5676,6 +5677,7 @@ mod copy_preview_tests {
             Key::SignAllPagesDone,
             Key::SignAllPagesDoneOne,
             Key::SignAllPagesNone,
+            Key::SignAllPagesAlready,
             Key::SignMakerNewSignature,
             Key::SignMakerNewInitials,
             Key::SignMakerPadHint,
