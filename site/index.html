@@ -192,7 +192,7 @@
       <button class="coat-chip" type="button" data-coat="black" aria-pressed="false" aria-label="Black"><i></i></button>
     </div>
     <h1 id="h-hero" class="hero-title"><span class="l">Your Windows,</span> <span class="l">with a notch.</span></h1>
-    <p class="hero-line">Free and open source, for Windows 11.</p>
+    <p class="hero-line">Music and lyrics, your clipboard, meeting recordings and a small mascot, at the top of the screen. Free and open source, one 6 MB exe for Windows 11.</p>
     <div class="actions">
       <a class="btn btn-primary" href="https://github.com/hartono0297/vale/releases/latest/download/vale.exe">Download for Windows</a>
     </div>
@@ -381,6 +381,7 @@
       <button class="btn btn-copy js-only" type="button" data-copy="#cmd-install"><span class="copy-ico" aria-hidden="true"></span><span class="copy-label">Copy</span></button>
       <span class="copy-msg js-only" role="status" aria-live="polite"></span>
     </div>
+    <p>Vale looks for a new version once a day and asks before it updates. After an update the notch tells you what changed. Moving to another PC? Export your settings in Settings, About, and import them there.</p>
     <details class="more">
       <summary>Update, uninstall and details</summary>
       <div class="more-body">
@@ -436,6 +437,14 @@
     <details class="more">
       <summary>Everything that can leave your PC</summary>
       <div class="more-body">
+        <h3>Stays on your PC</h3>
+        <ul class="plain">
+          <li>Notes, reminders, clipboard history, notification history and the file shelf.</li>
+          <li>Recordings and transcripts. A recording's audio and text never leave your PC, and the transcript engine and model are downloaded only when you click Download in Settings.</li>
+          <li>Live captions. They are made on your PC and never written to disk.</li>
+          <li>Signed documents and saved signatures. Signing is done on your PC, and nothing is uploaded. Saved signatures are encrypted with Windows DPAPI.</li>
+        </ul>
+        <h3>Can leave your PC</h3>
         <ul class="plain">
           <li><strong>The update check.</strong> On by default. About once a day, release builds ask the GitHub API for the latest release, with a <code>User-Agent: Vale/&lt;version&gt;</code> header. Turn it off with Check for updates automatically in Settings &gt; About. When you click Update, Vale downloads vale.exe and vale.exe.sha256 from the GitHub release and checks the SHA-256.</li>
           <li><strong>Lyrics from LRCLIB.</strong> Off by default. When you turn it on, Vale sends the song title, the artist and the duration, never the album.</li>
@@ -443,6 +452,7 @@
           <li><strong>Web search.</strong> Vale opens google.com/search in your default browser only when you pick that result.</li>
           <li><strong>Links.</strong> They open in your browser when you click them.</li>
           <li><strong>The installer.</strong> It downloads Vale from GitHub.</li>
+          <li><strong>The phone link.</strong> It runs only while a phone session is open. In Wi-Fi mode nothing goes over the internet. In Tailscale mode it goes through your own Tailscale network, which you install and sign in to yourself. Vale itself sends nothing to Tailscale.</li>
         </ul>
         <p>Album covers are not downloaded. They come from Windows' media session.</p>
       </div>
