@@ -604,6 +604,10 @@ fn make_name(hwnd: HWND, initial: &str) -> Option<HWND> {
         back: p.field,
         password: false,
         commit_on_blur: false,
+        bold: false,
+        italic: false,
+        underline: false,
+        format_keys: false,
     };
     let f = text_edit::create(hwnd, &spec)?;
     let edit = f.edit;
