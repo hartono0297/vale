@@ -63,7 +63,7 @@
 //!   the palette `DI_SURFACE` and `DI_ACCENT` pick) show them side by side
 //!   (`--demo-robot`, or `DI_DEMO_STEP=bata-colors` in `--demo`).
 //! - `DI_MASCOT=falk` (`cat`, `falk`, `octopus`) picks the mascot, with its
-//!   coat from `DI_FALK_COLOR=grey` (`lutino`, `grey`, `whiteface`) or
+//!   coat from `DI_FALK_COLOR=grey` (`lutino`, `grey` = Kuning, `whiteface`) or
 //!   `DI_OCTOPUS_COLOR=blue` (`coral`, `red`, `purple`, `blue`); `DI_CAT_COLOR`
 //!   and `DI_CAT_ACCESSORY` go on as above. Names are case-insensitive, an
 //!   unknown one is the default. `bata-sheet` draws the chosen mascot's eleven

@@ -1298,7 +1298,7 @@ keys! {
     MascotFalk => "Falk", "Cockatiel";
     MascotOctopus => "Gurita", "Octopus";
     FalkColorLutino => "Lutino", "Lutino";
-    FalkColorGrey => "Abu-abu", "Grey";
+    FalkColorGrey => "Kuning", "Yellow";
     FalkColorWhiteFace => "Muka putih", "White face";
     OctopusColorCoral => "Koral", "Coral";
     OctopusColorRed => "Merah", "Red";
@@ -5342,7 +5342,7 @@ mod tests {
         assert_eq!(both(Key::MascotFalk), ["Falk", "Cockatiel"]);
         assert_eq!(both(Key::MascotOctopus), ["Gurita", "Octopus"]);
         assert_eq!(both(Key::FalkColorLutino), ["Lutino", "Lutino"]);
-        assert_eq!(both(Key::FalkColorGrey), ["Abu-abu", "Grey"]);
+        assert_eq!(both(Key::FalkColorGrey), ["Kuning", "Yellow"]);
         assert_eq!(both(Key::FalkColorWhiteFace), ["Muka putih", "White face"]);
         assert_eq!(both(Key::OctopusColorCoral), ["Koral", "Coral"]);
         assert_eq!(both(Key::OctopusColorRed), ["Merah", "Red"]);

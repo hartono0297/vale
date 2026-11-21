@@ -67,6 +67,28 @@ const LOGO_EYE: u32 = 0x17120F;
 /// The equalizer of the preview, frozen mid-beat (the design's sample
 /// heights; the tallest is `BAR_MAX_H`).
 const PREVIEW_BARS: [f32; BAR_COUNT] = [5.0, 11.0, 8.0, 13.0, 6.0];
+/// A falk coat dot's colour and, when set, a centre in another colour at
+/// this fraction of the dot's radius.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CoatDot {
+    rgb: u32,
+    centre: Option<(u32, f32)>,
+}
+
+const KUNING_CENTRE: f32 = 0.6;
+
+/// A falk coat's dot: its face colour. Kuning's face is Lutino's to the eye
+/// (1.01:1), so its dot is that face as a centre on the surface Auto gives
+/// the coat (Night), the way the bird sits in the notch.
+fn falk_dot(c: theme::FalkColor) -> CoatDot {
+    let face = super::mascot::falk_ink(c).face;
+    if c == theme::FalkColor::Grey {
+        let ring = Surface::Auto.resolve(Coat::Falk(c), true).rgb();
+        return CoatDot { rgb: ring, centre: Some((face, KUNING_CENTRE)) };
+    }
+    CoatDot { rgb: face, centre: None }
+}
+
 /// A slider rail's thickness.
 const SLIDER_RAIL_H: f32 = 4.0;
 
@@ -1316,18 +1338,21 @@ impl Painter<'_> {
         }
     }
 
-    /// A coat dot of any mascot: the cat's as `cat_swatch`, the falk's its
-    /// face colour, the octopus's its coat.
+    /// A coat dot of any mascot: the cat's as `cat_swatch`, the falk's as
+    /// `falk_dot`, the octopus's its coat.
     fn coat_swatch(&self, r: Rect, coat: Coat, selected: bool, hover: bool) {
-        let rgb = match coat {
+        let dot = match coat {
             Coat::Cat(color) => return self.cat_swatch(r, color, selected, hover),
-            Coat::Falk(c) => super::mascot::falk_ink(c).face,
-            Coat::Octopus(c) => super::mascot::octopus_rgb(c),
+            Coat::Falk(c) => falk_dot(c),
+            Coat::Octopus(c) => CoatDot { rgb: super::mascot::octopus_rgb(c), centre: None },
         };
         let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
         let ring = r.w / 2.0 + SWATCH_RING_GAP + SWATCH_RING_W / 2.0;
         self.choice_ring(cx, cy, ring, selected, hover);
-        self.circle(cx, cy, r.w / 2.0, rgb, 1.0);
+        self.circle(cx, cy, r.w / 2.0, dot.rgb, 1.0);
+        if let Some((rgb, k)) = dot.centre {
+            self.circle(cx, cy, r.w / 2.0 * k, rgb, 1.0);
+        }
         self.coat_edge(cx, cy, r.w / 2.0);
     }
 
@@ -2406,6 +2431,23 @@ mod tests {
             }
         }
         assert!(swapped > 0, "some accent turns to the text colour on its bottom");
+    }
+
+    #[test]
+    fn falk_coat_dots_keep_lutino_and_white_face_and_set_kuning_apart() {
+        use crate::theme::FalkColor;
+        use crate::ui::notch_colour::contrast;
+        assert_eq!(falk_dot(FalkColor::Lutino), CoatDot { rgb: 0xF6D04A, centre: None });
+        assert_eq!(falk_dot(FalkColor::WhiteFace), CoatDot { rgb: 0xF4EFE6, centre: None });
+        // Kuning's face is Lutino's to the eye (1.01:1), so its dot is its
+        // face as a centre on the Night surface its notch gets.
+        let k = falk_dot(FalkColor::Grey);
+        assert_eq!(k, CoatDot { rgb: Surface::Night.rgb(), centre: Some((0xF2D35A, KUNING_CENTRE)) });
+        assert_eq!(Surface::Auto.resolve(Coat::Falk(FalkColor::Grey), true), Surface::Night);
+        assert!(contrast(k.rgb, 0xF6D04A) >= 3.0, "its ring stands off Lutino's dot");
+        assert!(contrast(k.rgb, 0xF2D35A) >= 3.0, "its centre stands off its ring");
+        // A ring wide enough to read at the 22 px swatch: 3 px or more.
+        assert!(crate::ui::settings_layout::SWATCH / 2.0 * (1.0 - KUNING_CENTRE) >= 3.0);
     }
 
     fn r(x: f32, w: f32) -> Rect {

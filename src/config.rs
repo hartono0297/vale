@@ -3299,6 +3299,17 @@ mod tests {
     }
 
     #[test]
+    fn a_stored_grey_falk_loads_as_the_kuning_coat() {
+        // The coat once called "Abu-abu" is now "Kuning"; the stored value
+        // stays "Grey", so nobody's pick resets to Lutino.
+        let c: Config = serde_json::from_str(r#"{"mascot":"Falk","falk_color":"Grey"}"#).unwrap();
+        assert_eq!(c.falk_color, FalkColor::Grey);
+        assert_eq!(serde_json::to_value(&c).unwrap()["falk_color"], "Grey");
+        let en = crate::i18n::text(crate::i18n::Lang::En, crate::i18n::Key::FalkColorGrey);
+        assert_eq!(en, "Yellow");
+    }
+
+    #[test]
     fn cat_fields_default_lenient_and_belong_to_the_island() {
         use crate::theme::{CatAccessory, CatColor};
         let cat = |c: &Config| {

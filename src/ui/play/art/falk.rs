@@ -15,22 +15,22 @@
 //! `falk_ink(coat).body`. Lutino is the mockup's own table (its `FK` and
 //! `WC`). Every other coat keeps its body's hue: each tone is the body moved
 //! toward black or white as far, in lightness, as the Lutino tone moves from
-//! the Lutino body (`tone`). Grey and WhiteFace share the grey body, so they
-//! share one wing:
+//! the Lutino body (`tone`). Kuning (stored as `Grey`) has the face's
+//! yellow for its body, WhiteFace the grey one:
 //!
-//! | tone  | Lutino (mockup) | Grey, WhiteFace |
-//! |-------|-----------------|-----------------|
-//! | body, edge | F1E4A2     | 9A959C          |
-//! | belly | F8F0CE          | CAC8CB          |
-//! | tail  | EFE3AA          | A09BA2          |
-//! | rim   | DCC67F          | 858086          |
-//! | under | E2CE86          | 8A858B          |
-//! | prim  | F8F1D2          | CECBCF          |
-//! | prim2 | F4EAC2          | BBB8BC          |
-//! | sec   | F3E7B0          | A9A5AB          |
-//! | sec2  | F0E2A4          | 9B969D          |
-//! | cov   | EEDC93          | 938E95          |
-//! | foot  | C99289          | C99289          |
+//! | tone  | Lutino (mockup) | Kuning | WhiteFace |
+//! |-------|-----------------|--------|-----------|
+//! | body, edge | F1E4A2     | F2D35A | 9A959C    |
+//! | belly | F8F0CE          | F8E8A9 | CAC8CB    |
+//! | tail  | EFE3AA          | F3D563 | A09BA2    |
+//! | rim   | DCC67F          | D0B64D | 858086    |
+//! | under | E2CE86          | D8BC50 | 8A858B    |
+//! | prim  | F8F1D2          | F9EAAF | CECBCF    |
+//! | prim2 | F4EAC2          | F6E190 | BBB8BC    |
+//! | sec   | F3E7B0          | F4DA73 | A9A5AB    |
+//! | sec2  | F0E2A4          | F2D35C | 9B969D    |
+//! | cov   | EEDC93          | E7CA56 | 938E95    |
+//! | foot  | C99289          | C99289 | C99289    |
 //!
 //! The feet are the mockup's `FK.foot`, a shade of the beak, and the beak
 //! (`FALK_BEAK`) is one colour on every coat, so the feet are too.
@@ -583,40 +583,56 @@ mod tests {
                 assert!(channels(t).iter().zip(body).all(|(v, b)| *v >= b), "{coat:?}: {t:06X}");
             }
         }
-        // Grey and WhiteFace share the grey body, so their wings are one.
-        let g = falk_coat(FalkColor::Grey);
-        assert_eq!(g, falk_coat(FalkColor::WhiteFace));
-        assert_eq!((g.prim, g.rim, g.belly), (0xCECBCF, 0x858086, 0xCAC8CB), "the table in the module's notes");
-        // Their tones keep the body's hue: each is the body moved toward
-        // black or white as far, in lightness, as the Lutino tone moves from
-        // the Lutino body, so its channel spread is the body's scaled by that
-        // move, with no cast of Lutino's yellow.
-        let light = |rgb: u32| {
-            let c = channels(rgb);
-            (c.iter().max().unwrap() + c.iter().min().unwrap()) as f32 / 2.0
-        };
-        let spread = |rgb: u32| {
-            let c = channels(rgb);
-            (c.iter().max().unwrap() - c.iter().min().unwrap()) as f32
-        };
-        let pairs = [
-            (g.belly, l.belly),
-            (g.tail, l.tail),
-            (g.rim, l.rim),
-            (g.under, l.under),
-            (g.prim, l.prim),
-            (g.prim2, l.prim2),
-            (g.sec, l.sec),
-            (g.sec2, l.sec2),
-            (g.cov, l.cov),
-        ];
-        let moved = |body: f32, t: f32| if t <= body { t / body } else { (t - body) / (255.0 - body) };
-        for (t, lt) in pairs {
-            let (lb, lg) = (light(g.body), light(t));
-            assert_eq!(lg <= lb, light(lt) <= light(l.body), "{t:06X}: the same way as {lt:06X}");
-            assert!((moved(lb, lg) - moved(light(l.body), light(lt))).abs() < 0.02, "{t:06X}: as far as {lt:06X}");
-            let k = if lg <= lb { lg / lb } else { (255.0 - lg) / (255.0 - lb) };
-            assert!((spread(t) - spread(g.body) * k).abs() <= 1.5, "{t:06X}: a cast ({} vs {})", spread(t), spread(g.body) * k);
+        // WhiteFace keeps its grey wing, exactly (the table in the module's
+        // notes); Kuning (stored as `Grey`) has its own, yellow one.
+        let w = falk_coat(FalkColor::WhiteFace);
+        assert_eq!(
+            [w.body, w.belly, w.tail, w.foot, w.rim, w.under, w.prim, w.prim2, w.sec, w.sec2, w.cov, w.edge],
+            [
+                0x9A959C, 0xCAC8CB, 0xA09BA2, 0xC99289, 0x858086, 0x8A858B, 0xCECBCF, 0xBBB8BC, 0xA9A5AB, 0x9B969D,
+                0x938E95, 0x9A959C
+            ]
+        );
+        let k = falk_coat(FalkColor::Grey);
+        assert_eq!(k.body, 0xF2D35A);
+        assert_ne!(k, w);
+        assert_eq!(
+            [k.belly, k.tail, k.rim, k.under, k.prim, k.prim2, k.sec, k.sec2, k.cov],
+            [0xF8E8A9, 0xF3D563, 0xD0B64D, 0xD8BC50, 0xF9EAAF, 0xF6E190, 0xF4DA73, 0xF2D35C, 0xE7CA56],
+            "the table in the module's notes"
+        );
+        // Every coat but Lutino keeps its body's hue: each tone is the body
+        // moved toward black or white as far, in lightness, as the Lutino
+        // tone moves from the Lutino body, so its channel spread is the
+        // body's scaled by that move, with no cast of Lutino's yellow.
+        for g in [w, k] {
+            let light = |rgb: u32| {
+                let c = channels(rgb);
+                (c.iter().max().unwrap() + c.iter().min().unwrap()) as f32 / 2.0
+            };
+            let spread = |rgb: u32| {
+                let c = channels(rgb);
+                (c.iter().max().unwrap() - c.iter().min().unwrap()) as f32
+            };
+            let pairs = [
+                (g.belly, l.belly),
+                (g.tail, l.tail),
+                (g.rim, l.rim),
+                (g.under, l.under),
+                (g.prim, l.prim),
+                (g.prim2, l.prim2),
+                (g.sec, l.sec),
+                (g.sec2, l.sec2),
+                (g.cov, l.cov),
+            ];
+            let moved = |body: f32, t: f32| if t <= body { t / body } else { (t - body) / (255.0 - body) };
+            for (t, lt) in pairs {
+                let (lb, lg) = (light(g.body), light(t));
+                assert_eq!(lg <= lb, light(lt) <= light(l.body), "{t:06X}: the same way as {lt:06X}");
+                assert!((moved(lb, lg) - moved(light(l.body), light(lt))).abs() < 0.02, "{t:06X}: as far as {lt:06X}");
+                let f = if lg <= lb { lg / lb } else { (255.0 - lg) / (255.0 - lb) };
+                assert!((spread(t) - spread(g.body) * f).abs() <= 1.5, "{t:06X}: a cast ({} vs {})", spread(t), spread(g.body) * f);
+            }
         }
     }
 
