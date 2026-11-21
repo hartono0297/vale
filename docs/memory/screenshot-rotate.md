@@ -8,7 +8,10 @@ date: 2026-11-21
 Spec: `docs/superpowers/specs/2026-11-20-screenshot-rotate-design.md`. The
 owner asked for it as "ketika lagi screenshot, ada tambahan bisa di rotate".
 Buttons in the editor toolbar (Putar ke kiri / kanan, Ctrl+Shift+R / Ctrl+R)
-plus one button in the inline mode that opens the editor already turned.
+plus the inline mode's rotate button and keys, which since 2026-11-21 turn the
+picked region in place on the frozen screen (spec
+`docs/superpowers/specs/2026-11-21-inline-rotate-in-place-design.md`; the owner
+asked "bisa ga tanpa masuk ke halaman editor?").
 
 - **Turns live in the undo snapshot.** `Session` keeps `turns` (0-3) next to
   the annotation list in every snapshot, so picture and annotations undo and
@@ -49,15 +52,33 @@ plus one button in the inline mode that opens the editor already turned.
 - **Key repeat is ignored for the rotate keys only.** Holding Ctrl+R turns
   once (`WM_KEYDOWN` lParam bit 30); undo and redo keep repeating as before.
   Without it a held key did a full turn and resize at the repeat rate.
-- **Inline hands off, it does not turn in place.** The selection on the frozen
-  screen cannot turn, so `Btn::Rotate` / `InlineKey::Rotate` finish with
-  `FinishKind::OpenEditorTurned`: the editor opens on the crop with the inline
-  annotations, `window::open_turned` applies the turn as its first undo step
-  (Ctrl+Z shows the unturned shot). `FinishKind::keeps_picture()` (Save,
-  OpenEditor, OpenEditorTurned) is the one list of finishes that crop the
-  picture; an empty crop turns any of them into a Cancel. The turn runs before
-  `ShowWindow` (else the editor flashes in the unturned shape) and before the
-  first auto-copy.
+- **Inline turns in place (2026-11-21).** `Btn::Rotate` / `InlineKey::Rotate`
+  lift the selection's crop as a turned card on the frozen screen; drawing
+  goes on there. Replaced the first version, which opened the editor turned
+  (`FinishKind::OpenEditorTurned`, removed).
+  - Coordinate spaces by turn state: at `turns == 0` annotations are in frame
+    px as always; a turn from 0 shifts them into crop px and turns them, a
+    turn back to 0 turns and shifts them back (`inline::turn_shifts`,
+    `Session::rotate_shifted`, one undo step each).
+  - Undo snapshots carry an opaque **anchor** (the selection the turn was made
+    at; `Session::set_anchor`, never compared by `end()`, never set by the
+    editor). Undo/redo into a turned state put `e.sel` back to it before the
+    crop is cut, else a moved selection put the turned annotations over other
+    pixels.
+  - Card: `inline::turned_card` = turned size at `s = min(1, fit)` with a 48
+    dip margin, floor 0.05, centred on the selection, clamped inside the
+    monitor minus the margin (whole monitor if that is empty) so the size
+    label fits above and the bar below. Pointer via `card_local`, hit
+    tolerance / s, text box font via one `edit_px` helper.
+  - While turned the selection is frozen (no handles, no move/resize/new
+    selection, a press outside the card does nothing); Esc asks even with
+    only a turn (`has_changes`).
+  - Output = the card: `inline_picture()` returns the lifted turned crop and
+    the doc as-is; the card draws annotations with `clip = None` (picture px,
+    the export's mosaic rule) and the card rect only as the D2D clip. "Buka di
+    editor" opens the turned picture (`open_turned(.., None)`; the editor's
+    `Some` path stays unused). `FinishKind::keeps_picture()` is Save and
+    OpenEditor; an empty crop turns them into a Cancel.
 - **Not done on purpose:** no flip (not picked), no free angle (blank corners
   and blurred text; screenshots need 90 degrees), no rotate from Clipboard
   history, the shelf or the screenshot notice (none can open the editor).
