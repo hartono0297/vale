@@ -16,6 +16,17 @@ pub struct Entry {
 /// Newest first. Add the entry for a version before bumping it.
 pub static ENTRIES: &[Entry] = &[
     Entry {
+        version: "5.6.1",
+        id: &[
+            "Falk Abu-abu kini Kuning: kuning seluruhnya, tanpa pita abu-abu di bawah pipi.",
+            "Pilihanmu tetap tersimpan: falk Abu-abu otomatis menjadi Kuning.",
+        ],
+        en: &[
+            "Falk's Grey coat is now Yellow: yellow all over, no grey band under the cheeks.",
+            "Your pick is kept: a Grey falk becomes Yellow on its own.",
+        ],
+    },
+    Entry {
         version: "5.6.0",
         id: &[
             "Tanda tangani dokumen: klik kanan kartu shelf → Tanda tangani (PDF, gambar, Office).",
