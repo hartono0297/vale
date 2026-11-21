@@ -389,7 +389,7 @@ html:not(.js) .js-only { display: none !important; }
 .notch.is-open .notch-face { height: 44px; }
 /* Without script the notch would be a button that does nothing, so it is not shown. */
 html:not(.js) #notch { display: none; }
-.notch :focus-visible { outline: 2px solid #F4EDE4; outline-offset: -4px; }
+.notch :focus-visible { outline: 3px solid #F4EDE4; outline-offset: -4px; }
 .notch .tab:focus-visible { outline-offset: 1px; border-radius: 6px; }
 
 .nf { position: absolute; inset: 0; display: flex; align-items: center; gap: 10px; padding: 0 20px; opacity: 0; pointer-events: none; transition: opacity .18s ease-out; }
@@ -418,27 +418,27 @@ html[data-mascot="falk"] .nc .u-falk, html[data-mascot="octo"] .nc .u-octo { dis
 .face-marks, .face-patch { display: none; }
 .face-marks { flex: none; overflow: visible; fill: var(--n-ink, #17120F); }
 .face-marks g { display: none; }
-.face-marks .fm-cat { display: inline; }
+.face-marks .fm-cat { display: inline; fill: var(--eye); }
 html[data-mascot="falk"] .face-marks .fm-cat, html[data-mascot="octo"] .face-marks .fm-cat { display: none; }
 html[data-mascot="falk"] .face-marks .fm-falk, html[data-mascot="octo"] .face-marks .fm-octo { display: inline; }
 .face-marks .fm-cheek { fill: var(--fk-cheek); }
 .face-marks .fm-beak { fill: #D9978F; }
 .face-marks .fm-spot { fill: var(--oc-spot); }
-html:is([data-notch-style="gradient"], [data-notch-style="face"]) .notch:not(.is-open) {
+html:is([data-notch-style="gradient"], [data-notch-style="face"]) #notch:not(.is-open) {
   background: linear-gradient(to bottom, var(--notch-bg) 0 28%, var(--n-bottom, var(--notch-bg)) 100%);
 }
-html[data-notch-style="face"] .notch[data-state="idle"]:not(.is-open) { background: var(--n-face, var(--notch-bg)); }
-html[data-notch-style="face"] .notch[data-state="idle"]:not(.is-open) .nf-idle { justify-content: center; gap: 10px; }
-html[data-notch-style="face"] .notch[data-state="idle"]:not(.is-open) .nc { display: none; }
-html[data-notch-style="face"] .notch[data-state="idle"]:not(.is-open) .face-marks { display: block; }
-html[data-notch-style="face"] .notch[data-state="idle"]:not(.is-open) .clock { color: var(--n-ink); }
+html[data-notch-style="face"] #notch[data-state="idle"]:not(.is-open) { background: var(--n-face, var(--notch-bg)); }
+html[data-notch-style="face"] #notch[data-state="idle"]:not(.is-open) .nf-idle { justify-content: center; gap: 10px; }
+html[data-notch-style="face"] #notch[data-state="idle"]:not(.is-open) .nc { display: none; }
+html[data-notch-style="face"] #notch[data-state="idle"]:not(.is-open) .face-marks { display: block; }
+html[data-notch-style="face"] #notch[data-state="idle"]:not(.is-open) .clock { color: var(--n-ink); }
 /* Calico patches, clipped by the notch like the app's face. */
-html[data-notch-style="face"]:not([data-mascot="falk"], [data-mascot="octo"]) .notch[data-state="idle"]:not(.is-open) .face-patch { display: block; opacity: var(--pa, 0); }
+html[data-notch-style="face"]:not([data-mascot="falk"], [data-mascot="octo"]) #notch[data-state="idle"]:not(.is-open) .face-patch { display: block; opacity: var(--pa, 0); }
 .face-patch { position: absolute; border-radius: 50%; pointer-events: none; }
 .fp-a { left: -8px; top: -10px; width: 26px; height: 26px; background: #E2683C; }
 .fp-b { right: -8px; bottom: -10px; width: 22px; height: 22px; background: #2B2420; }
 @media (max-width: 23.49em) {
-  html[data-notch-style="face"] .notch[data-state="idle"]:not(.is-open) .nf-idle { gap: 8px; }
+  html[data-notch-style="face"] #notch[data-state="idle"]:not(.is-open) .nf-idle { gap: 8px; }
   .face-marks { width: 28px; height: 19px; }
   .fp-b { display: none !important; }
 }
