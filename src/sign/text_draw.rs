@@ -7,10 +7,10 @@ use windows::Win32::Graphics::Direct2D::{
     D2D1_DRAW_TEXT_OPTIONS_NONE, ID2D1RenderTarget, ID2D1SolidColorBrush,
 };
 use windows::Win32::Graphics::DirectWrite::{
-    DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_ITALIC,
+    DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_FEATURE, DWRITE_FONT_FEATURE_TAG_KERNING, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_ITALIC,
     DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_WEIGHT_NORMAL,
-    DWRITE_LINE_METRICS, DWRITE_TEXT_METRICS, DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory,
-    IDWriteFactory, IDWriteTextFormat,
+    DWRITE_LINE_METRICS, DWRITE_TEXT_METRICS, DWRITE_TEXT_RANGE, DWRITE_WORD_WRAPPING_NO_WRAP,
+    DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat, IDWriteTextLayout,
 };
 use windows::core::HSTRING;
 use windows_numerics::Vector2;
@@ -24,6 +24,21 @@ fn factory() -> Option<&'static IDWriteFactory> {
     static F: OnceLock<Option<IDWriteFactory>> = OnceLock::new();
     F.get_or_init(|| unsafe { DWriteCreateFactory::<IDWriteFactory>(DWRITE_FACTORY_TYPE_SHARED).ok() })
         .as_ref()
+}
+
+/// Kerning off for the whole text. The PDF writer sets Helvetica and Times
+/// text without kerning, so the screen, image and measured widths must too.
+fn unkern(dwrite: &IDWriteFactory, layout: &IDWriteTextLayout, len: usize) {
+    unsafe {
+        let Ok(typo) = dwrite.CreateTypography() else { return };
+        let off = DWRITE_FONT_FEATURE { nameTag: DWRITE_FONT_FEATURE_TAG_KERNING, parameter: 0 };
+        if typo.AddFontFeature(off).is_ok() {
+            let _ = layout.SetTypography(
+                &typo,
+                DWRITE_TEXT_RANGE { startPosition: 0, length: len as u32 },
+            );
+        }
+    }
 }
 
 fn measure(s: &str, st: &TextStyle) -> Option<f32> {
@@ -43,6 +58,7 @@ fn measure(s: &str, st: &TextStyle) -> Option<f32> {
             .ok()?;
         let _ = fmt.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
         let layout = f.CreateTextLayout(&wide, &fmt, 1.0e6, 4.0).ok()?;
+        unkern(f, &layout, wide.len());
         let mut m = DWRITE_TEXT_METRICS::default();
         layout.GetMetrics(&mut m).ok()?;
         Some(m.widthIncludingTrailingWhitespace)
@@ -80,6 +96,7 @@ pub fn width(dwrite: &IDWriteFactory, s: &str, st: &TextStyle, size: f32) -> f32
     let wide: Vec<u16> = s.encode_utf16().collect();
     unsafe {
         let Ok(layout) = dwrite.CreateTextLayout(&wide, &f, 1.0e6, size * 4.0) else { return fallback };
+        unkern(dwrite, &layout, wide.len());
         let mut m = DWRITE_TEXT_METRICS::default();
         if layout.GetMetrics(&mut m).is_err() {
             return fallback;
@@ -114,6 +131,7 @@ pub fn draw(
     let wide: Vec<u16> = s.encode_utf16().collect();
     unsafe {
         let Ok(layout) = dwrite.CreateTextLayout(&wide, &f, 1.0e6, size * 4.0) else { return };
+        unkern(dwrite, &layout, wide.len());
         let mut lines = [DWRITE_LINE_METRICS::default()];
         let mut n = 0u32;
         let baseline = if layout.GetLineMetrics(Some(&mut lines), &mut n).is_ok() && n > 0 {
@@ -186,5 +204,18 @@ mod tests {
             advance_em("Budi", &st(Family::Serif, false)),
             advance_em("Budi", &st(Family::Sans, false))
         );
+    }
+
+    #[test]
+    fn kerned_pairs_advance_as_the_sum_of_singles() {
+        // The PDF writer sets text unkerned, so measuring must be unkerned too.
+        for family in [Family::Sans, Family::Serif] {
+            let s = st(family, false);
+            for word in ["AVATAR", "To", "AV"] {
+                let sum: f32 = word.chars().map(|c| advance_em(&c.to_string(), &s)).sum();
+                let whole = advance_em(word, &s);
+                assert!((whole - sum).abs() < 1e-3, "{word}: {whole} vs {sum}");
+            }
+        }
     }
 }

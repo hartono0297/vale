@@ -32,7 +32,6 @@ pub enum Tint {
 }
 
 impl Tint {
-    #[allow(dead_code)] // used by the format bar
     pub const ALL: [Tint; 3] = [Tint::Black, Tint::Blue, Tint::Red];
 
     pub fn rgb(self) -> u32 {
@@ -54,10 +53,8 @@ pub struct TextStyle {
 }
 
 /// Underline centre, in em below the baseline (negative = below).
-#[allow(dead_code)] // used by the renderers
 pub const UNDERLINE_POS: f32 = -0.1;
 /// Underline thickness in em.
-#[allow(dead_code)] // used by the renderers
 pub const UNDERLINE_THICK: f32 = 0.05;
 
 impl TextStyle {

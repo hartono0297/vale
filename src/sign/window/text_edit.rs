@@ -19,7 +19,7 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::{EM_GETSEL, EM_SETMARGINS, EM_SETSEL};
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL, VK_ESCAPE, VK_RETURN, VK_TAB};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL, VK_ESCAPE, VK_MENU, VK_RETURN, VK_TAB};
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DestroyWindow, EN_CHANGE, ES_AUTOHSCROLL, ES_PASSWORD, GetParent,
@@ -56,6 +56,8 @@ pub struct Field {
     brush: HBRUSH,
     pub color: u32,
     pub back: u32,
+    /// Font height in px the field was made (or last restyled) with.
+    pub px: f32,
 }
 
 /// How to make a field.
@@ -121,7 +123,7 @@ pub fn create(parent: HWND, s: &Spec) -> Option<Field> {
         let brush = CreateSolidBrush(colorref(s.back));
         let len = GetWindowTextLengthW(edit);
         SendMessageW(edit, EM_SETSEL, Some(WPARAM(len as usize)), Some(LPARAM(len as isize)));
-        Some(Field { edit, font, brush, color: s.color, back: s.back })
+        Some(Field { edit, font, brush, color: s.color, back: s.back, px: s.px })
     }
 }
 
@@ -157,13 +159,15 @@ pub fn restyle(f: &mut Field, face: PCWSTR, px: f32, bold: bool, italic: bool, u
         let _ = DeleteObject(HGDIOBJ(f.font.0));
         f.font = font;
         f.color = color;
+        f.px = px;
         let _ = InvalidateRect(Some(f.edit), None, true);
     }
 }
 
 /// Ctrl+B / Ctrl+I / Ctrl+U as a notify code.
-fn format_key(vk: u16, ctrl: bool) -> Option<usize> {
-    if !ctrl {
+fn format_key(vk: u16, ctrl: bool, alt: bool) -> Option<usize> {
+    // AltGr reports Ctrl and Alt together: it types characters, not formats.
+    if !ctrl || alt {
         return None;
     }
     match vk {
@@ -302,7 +306,8 @@ unsafe extern "system" fn edit_proc(
             }
             if data & FORMAT_KEYS != 0 {
                 let ctrl = unsafe { GetKeyState(VK_CONTROL.0 as i32) } < 0;
-                if let Some(code) = format_key(key, ctrl) {
+                let alt = unsafe { GetKeyState(VK_MENU.0 as i32) } < 0;
+                if let Some(code) = format_key(key, ctrl, alt) {
                     post(code);
                     return LRESULT(0);
                 }
@@ -336,11 +341,13 @@ mod tests {
 
     #[test]
     fn format_keys_post_and_swallow() {
-        assert_eq!(format_key(0x42, true), Some(EDIT_BOLD));
-        assert_eq!(format_key(0x49, true), Some(EDIT_ITALIC));
-        assert_eq!(format_key(0x55, true), Some(EDIT_UNDERLINE));
-        assert_eq!(format_key(0x42, false), None);
-        assert_eq!(format_key(0x41, true), None);
+        assert_eq!(format_key(0x42, true, false), Some(EDIT_BOLD));
+        assert_eq!(format_key(0x49, true, false), Some(EDIT_ITALIC));
+        assert_eq!(format_key(0x55, true, false), Some(EDIT_UNDERLINE));
+        assert_eq!(format_key(0x42, false, false), None);
+        assert_eq!(format_key(0x41, true, false), None);
+        assert_eq!(format_key(0x55, true, true), None);
+        assert_eq!(format_key(0x49, true, true), None);
         for ch in [0x02, 0x09, 0x15] {
             assert!(swallow_char(ch, true));
         }

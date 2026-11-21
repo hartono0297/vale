@@ -35,7 +35,7 @@ use windows::Win32::UI::HiDpi::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, ReleaseCapture, SetCapture, SetFocus, VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN,
-    VK_ESCAPE, VK_LEFT, VK_NEXT, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE, VK_TAB, VK_UP,
+    VK_ESCAPE, VK_LEFT, VK_MENU, VK_NEXT, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE, VK_TAB, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_DBLCLKS, CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetCursorPos,
@@ -1834,6 +1834,18 @@ pub(super) fn selected_tint(w: &Win) -> Option<style::Tint> {
     }
 }
 
+/// After a width change from `old_w`: keeps the left edge of the upright
+/// frame in place. It is the item's origin for no or a quarter turn, and
+/// moves with the width for a half or three quarter turn.
+fn keep_upright_left(it: &mut Item, old_w: f32) {
+    let grown = it.w - old_w;
+    match it.turn {
+        Quarter::R180 => it.x -= grown,
+        Quarter::R270 => it.y -= grown,
+        _ => {}
+    }
+}
+
 /// Applies `f` to the style of the selected Text or Date as one undo step.
 /// A change of face, weight or slant measures the text again: the box keeps
 /// its height and its left edge in its own upright frame, takes the measured
@@ -1867,12 +1879,7 @@ pub(super) fn restyle_selected(w: &mut Win, f: impl FnOnce(&mut style::TextStyle
         // The width grows from the left edge of the upright frame, which is
         // the item's origin: for a half or three quarter turn that corner
         // moves with the width.
-        let grown = it.w - old.w;
-        match it.turn {
-            Quarter::R180 => it.x -= grown,
-            Quarter::R270 => it.y -= grown,
-            _ => {}
-        }
+        keep_upright_left(it, old.w);
         let (bw, bh) = geom::occupied(it);
         (it.x, it.y) = layout::clamp_into(it.x, it.y, bw, bh, v.g.w, v.g.h);
     }
@@ -2177,11 +2184,7 @@ fn toggle_pending(hwnd: HWND, code: usize) {
             EDIT_UNDERLINE => st.underline = !st.underline,
             _ => return,
         }
-        let mut r = RECT::default();
-        unsafe {
-            let _ = windows::Win32::UI::WindowsAndMessaging::GetWindowRect(f.edit, &mut r);
-        }
-        let px = (r.bottom - r.top) as f32 / 1.5;
+        let px = f.px;
         let face = HSTRING::from(st.family.face());
         text_edit::restyle(f, PCWSTR(face.as_ptr()), px, st.bold, st.italic, st.underline, st.tint.rgb());
     });
@@ -2203,7 +2206,6 @@ fn finish_text(hwnd: HWND, keep: bool) -> bool {
         if !keep || typed.is_empty() {
             return;
         }
-        style::set_last_text(pending);
         let Some(v) = view(w) else { return };
         let width = |h: f32, st: &style::TextStyle| {
             text_draw::width(&w.gfx.dwrite, &typed, st, h * TEXT_FILL) + 2.0
@@ -2217,18 +2219,27 @@ fn finish_text(hwnd: HWND, keep: bool) -> bool {
                     w.selected = Some(i);
                     return;
                 }
+                let old_style = match &old.kind {
+                    ItemKind::Text(_, st) => Some(*st),
+                    _ => None,
+                };
+                if old_style != Some(pending) {
+                    style::set_last_text(pending);
+                }
                 let nw = width(old.h, &pending).max(8.0);
                 // One undo step: the resize takes the snapshot, the text
                 // and style change with it.
                 d.session.resize_item(i, nw, old.h);
                 if let Some(it) = d.session.items.get_mut(i) {
                     it.kind = ItemKind::Text(typed, pending);
+                    keep_upright_left(it, old.w);
                     let (bw, bh) = geom::occupied(it);
                     (it.x, it.y) = layout::clamp_into(it.x, it.y, bw, bh, v.g.w, v.g.h);
                 }
                 w.selected = Some(i);
             }
             None => {
+                style::set_last_text(pending);
                 let turn = geom::upright_turn(v.g, v.extra);
                 let iw = width(TEXT_H, &pending).max(8.0);
                 // The EDIT's left edge and middle are where the text sits.
@@ -2788,7 +2799,7 @@ fn on_key(hwnd: HWND, vk: u16) {
         0x5A if ctrl && shift => undo_redo(hwnd, true),
         0x5A if ctrl => undo_redo(hwnd, false),
         0x59 if ctrl => undo_redo(hwnd, true),
-        0x42 | 0x49 | 0x55 if ctrl => toggle_by_key(hwnd, vk),
+        0x42 | 0x49 | 0x55 if ctrl && !key_down(VK_MENU.0) => toggle_by_key(hwnd, vk),
         v if v == VK_DELETE.0 || v == VK_BACK.0 => {
             remove_selected(hwnd);
             invalidate(hwnd);
@@ -3165,11 +3176,14 @@ mod tests {
             d.session.add(item)
         })
         .expect("added");
-        let steps = undo_steps(hwnd);
-        begin_text(hwnd, (0.0, 0.0), Some(t));
-        assert!(with(hwnd, |w| w.text.is_some()).unwrap_or(false));
-        assert!(finish_text(hwnd, true));
-        assert_eq!(undo_steps(hwnd), steps, "same text, same document");
+        {
+            let _lock = style::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let steps = undo_steps(hwnd);
+            begin_text(hwnd, (0.0, 0.0), Some(t));
+            assert!(with(hwnd, |w| w.text.is_some()).unwrap_or(false));
+            assert!(finish_text(hwnd, true));
+            assert_eq!(undo_steps(hwnd), steps, "same text, same document");
+        }
 
         // The picker shows the same saved mark on every paint and hit test:
         // the bitmap cache does not grow.
@@ -3320,6 +3334,47 @@ mod tests {
         assert_eq!(kind(hwnd, n0), Some(ItemKind::Text("Halo".into(), plain_u)));
         assert_eq!(style::last_text(), plain_u);
         assert_eq!(undo_steps(hwnd), steps + 1);
+
+        // Re-committing an old style leaves the last-used one alone.
+        let blue_serif = TextStyle { family: style::Family::Serif, tint: Tint::Blue, ..Default::default() };
+        let old = with(hwnd, |w| {
+            let page = w.cur;
+            let d = w.doc.as_mut().expect("open");
+            d.session.add(Item { kind: ItemKind::Text("Lama".into(), blue_serif), page, x: 50.0, y: 50.0, w: 30.0, h: 14.0, turn: Quarter::R0 })
+        })
+        .expect("added");
+        style::set_last_text(TextStyle::default());
+        begin_text(hwnd, (0.0, 0.0), Some(old));
+        assert!(finish_text(hwnd, true));
+        assert_eq!(style::last_text(), TextStyle::default(), "nothing changed");
+        begin_text(hwnd, (0.0, 0.0), Some(old));
+        toggle_pending(hwnd, EDIT_BOLD);
+        assert!(finish_text(hwnd, true));
+        assert_eq!(style::last_text(), TextStyle { bold: true, ..blue_serif }, "a format change sets it");
+
+        // A turned item keeps its upright left edge when the text changes.
+        for turn in [Quarter::R180, Quarter::R270] {
+            let k = with(hwnd, |w| {
+                let page = w.cur;
+                let d = w.doc.as_mut().expect("open");
+                d.session.add(Item { kind: ItemKind::Text("Hai".into(), Default::default()), page, x: 150.0, y: 150.0, w: 20.0, h: 14.0, turn })
+            })
+            .expect("added");
+            let it = |hwnd| with(hwnd, |w| w.doc.as_ref().map(|d| d.session.items[k].clone())).flatten().expect("item");
+            let edge = |it: &Item| if turn == Quarter::R180 { it.x + it.w } else { it.y + it.w };
+            let before = it(hwnd);
+            begin_text(hwnd, (0.0, 0.0), Some(k));
+            set(edit(hwnd), "Hai dunia semuanya");
+            assert!(finish_text(hwnd, true));
+            let after = it(hwnd);
+            assert!(after.w > before.w);
+            assert!((edge(&after) - edge(&before)).abs() < 0.01, "{turn:?}");
+            begin_text(hwnd, (0.0, 0.0), Some(k));
+            toggle_pending(hwnd, EDIT_BOLD);
+            assert!(finish_text(hwnd, true));
+            let bold = it(hwnd);
+            assert!((edge(&bold) - edge(&before)).abs() < 0.01, "{turn:?} bold");
+        }
         style::set_last_text(TextStyle::default());
     }
 
@@ -3449,6 +3504,33 @@ mod tests {
         });
         with(hwnd, |w| w.selected = None);
         with(hwnd, |w| w.pop = None);
+
+        // A turned item keeps its upright left edge when the width changes:
+        // the right edge (R180) or the bottom edge (R270) of its box.
+        let words = "Halo dunia semuanya";
+        for turn in [Quarter::R180, Quarter::R270] {
+            for date in [false, true] {
+                let kind = if date {
+                    ItemKind::Date(words.into(), TextStyle::default())
+                } else {
+                    ItemKind::Text(words.into(), TextStyle::default())
+                };
+                let k = with(hwnd, |w| {
+                    let page = w.cur;
+                    let d = w.doc.as_mut().expect("open");
+                    let k = d.session.add(Item { kind, page, x: 150.0, y: 150.0, w: 38.0, h: 14.0, turn });
+                    w.selected = Some(k);
+                    k
+                })
+                .expect("added");
+                let edge = |it: &Item| if turn == Quarter::R180 { it.x + it.w } else { it.y + it.w };
+                let before = item(hwnd, k);
+                toggle_by_key(hwnd, 0x42);
+                let after = item(hwnd, k);
+                assert!(after.w != before.w, "bold changes the width ({turn:?}, date {date})");
+                assert!((edge(&after) - edge(&before)).abs() < 0.01, "{turn:?} date {date}");
+            }
+        }
     }
 
     #[test]
