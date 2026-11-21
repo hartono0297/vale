@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tanda Tangan Dokumen</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&display=swap" rel="stylesheet">
+<style>
+  /* Vale Studio: warm paper for the sheet, warm dark for Vale's own windows, terracotta as the one accent. */
+  :root {
+    --paper: #F1ECE4; --ink: #221A14; --ink2: #6E5F52; --rule: #DDD3C6; --card: #FFFBF5;
+    --a: #E2683C; --a-ink: #A9461F; --sage: #9DB59A;
+    --bg: #1E1814; --win: #272019; --pop: #2A221C; --tx: #F4EDE4; --tx2: #A89A8B; --ai: #17120F;
+    --b: rgba(244,237,228,.10); --field: #2C241D; --hov: #33291F; --sel: rgba(226,104,60,.18);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--paper); color: var(--ink); font-family: 'DM Sans', system-ui, sans-serif; font-size: 15px; line-height: 1.55; }
+  main { max-width: 1120px; margin: 0 auto; padding: 40px 16px 72px; }
+  h1 { font-weight: 600; font-size: 30px; letter-spacing: -.01em; line-height: 1.2; }
+  h2 { font-weight: 600; font-size: 21px; letter-spacing: -.005em; margin-bottom: 6px; }
+  .lede { color: var(--ink2); max-width: 660px; margin-top: 8px; }
+  section { margin-top: 56px; }
+  .note { color: var(--ink2); font-size: 14px; max-width: 640px; }
+  .tag { font-size: 12.5px; font-weight: 600; color: var(--a-ink); }
+  svg { display: block; }
+  :focus-visible { outline: 2px solid var(--a); outline-offset: 2px; }
+
+  /* flow */
+  .flow { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 0; margin-top: 20px; border-top: 2px solid var(--ink); }
+  .flow div { padding: 14px 18px 0 0; }
+  .flow b { display: block; font-size: 15px; margin-bottom: 2px; }
+  .flow b span { color: var(--a-ink); margin-right: 6px; font-variant-numeric: tabular-nums; }
+  .flow p { font-size: 13.5px; color: var(--ink2); }
+
+  /* panel + menu */
+  .row { display: flex; gap: 32px; align-items: flex-start; flex-wrap: wrap; margin-top: 20px; }
+  .row > .side { flex: 1 1 260px; }
+  .panel { width: 420px; max-width: 100%; background: var(--bg); color: var(--tx); border-radius: 22px; padding: 16px; position: relative; font-size: 12.5px; }
+  .panel .ph { display: flex; justify-content: space-between; color: var(--tx2); margin-bottom: 12px; }
+  .panel .ph b { color: var(--tx); font-weight: 600; font-size: 14px; }
+  .cards { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 10px; }
+  .fc { background: var(--win); border: 1px solid var(--b); border-radius: 12px; padding: 10px; height: 92px; display: flex; flex-direction: column; justify-content: space-between; }
+  .fc.on { border-color: var(--a); }
+  .fc i { width: 26px; height: 32px; border-radius: 4px; background: var(--hov); display: flex; align-items: flex-end; justify-content: center; font-style: normal; font-size: 8.5px; font-weight: 600; color: var(--tx2); padding-bottom: 3px; }
+  .fc.pdf i { color: #F2A07F; }
+  .fc span { font-size: 11.5px; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .menu { position: absolute; left: 112px; top: 98px; width: 196px; background: var(--pop); border: 1px solid var(--b); border-radius: 12px; padding: 5px; box-shadow: 0 14px 30px rgba(0,0,0,.4); }
+  .menu div { padding: 7px 10px; border-radius: 8px; display: flex; gap: 9px; align-items: center; }
+  .menu div.hov { background: var(--sel); color: #FFB596; }
+  .menu svg { width: 15px; height: 15px; }
+  .menu hr { border: 0; border-top: 1px solid var(--b); margin: 4px 6px; }
+
+  /* editor window */
+  .ed { max-width: 100%; margin-top: 20px; background: var(--bg); color: var(--tx); border-radius: 14px; overflow: hidden; border: 1px solid #3A2F26; box-shadow: 0 22px 50px rgba(34,26,20,.28); font-size: 12.5px; }
+  .ed .tb { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--b); }
+  .ed .tb .nm { font-weight: 600; font-size: 13.5px; }
+  .ed .tb .pg { color: var(--tx2); }
+  .ed .tb .sp { flex: 1; }
+  .ed .tb .wc { display: flex; gap: 14px; color: var(--tx2); }
+  .ed .tb .wc svg { width: 14px; height: 14px; }
+  .tools { display: flex; gap: 4px; padding: 8px 12px; border-bottom: 1px solid var(--b); flex-wrap: wrap; }
+  .t { display: flex; align-items: center; gap: 7px; padding: 7px 11px; border-radius: 9px; color: var(--tx); white-space: nowrap; }
+  .t svg { width: 16px; height: 16px; color: var(--tx2); }
+  .t.on { background: var(--sel); color: #FFB596; }
+  .t.on svg { color: #FFB596; }
+  .tools .div { width: 1px; background: var(--b); margin: 4px 6px; }
+  .body { display: grid; grid-template-columns: 132px 1fr; min-height: 560px; }
+  .rail { border-right: 1px solid var(--b); padding: 12px; display: flex; flex-direction: column; gap: 12px; align-items: center; }
+  .th { width: 74px; text-align: center; color: var(--tx2); font-size: 11px; }
+  .th div { height: 96px; background: #F7F3EC; border-radius: 3px; margin-bottom: 4px; position: relative; padding: 9px 8px; }
+  .th div i { display: block; height: 3px; background: #D5CBBE; border-radius: 2px; margin-bottom: 5px; }
+  .th.on div { box-shadow: 0 0 0 2px var(--a); }
+  .th.on { color: var(--tx); }
+  .th em { position: absolute; right: 6px; bottom: 7px; width: 18px; height: 7px; border-bottom: 1.5px solid #2B3F8C; border-radius: 0 0 50% 50%; }
+  .stage { background: #15110E; display: flex; justify-content: center; padding: 26px 20px; overflow: hidden; }
+  .sheet { width: 430px; max-width: 100%; background: #FFFDF9; color: #2A2A2A; border-radius: 2px; padding: 40px 42px; position: relative; font-size: 10.5px; box-shadow: 0 4px 18px rgba(0,0,0,.45); }
+  .sheet h3 { font-size: 12.5px; text-align: center; margin-bottom: 4px; font-weight: 600; }
+  .sheet .sub { text-align: center; color: #666; margin-bottom: 18px; }
+  .ln { height: 5px; background: #E4DED4; border-radius: 2px; margin-bottom: 9px; }
+  .sigs { display: grid; grid-template-columns: 1fr 1fr; gap: 26px; margin-top: 30px; }
+  .sigs .who { color: #555; margin-bottom: 4px; }
+  .sigs .box { height: 74px; border-bottom: 1px solid #999; position: relative; }
+  .sigs .nm { margin-top: 4px; color: #555; }
+  .placed { position: absolute; left: -6px; top: -4px; right: -10px; bottom: 2px; border: 1.5px dashed var(--a); border-radius: 4px; }
+  .placed .h { position: absolute; width: 8px; height: 8px; background: #fff; border: 1.5px solid var(--a); border-radius: 2px; }
+  .placed svg { position: absolute; left: 8px; top: 6px; width: 150px; height: 52px; color: #1F3A8A; }
+  .placed .dt { position: absolute; left: 12px; bottom: -1px; font-size: 9.5px; color: #1F3A8A; }
+  .float { position: absolute; left: -2px; top: -46px; background: var(--pop); color: var(--tx); border: 1px solid var(--b); border-radius: 10px; padding: 4px; display: flex; gap: 2px; font-size: 11.5px; white-space: nowrap; box-shadow: 0 10px 24px rgba(0,0,0,.35); }
+  .float span { padding: 5px 8px; border-radius: 7px; }
+  .float span.on { background: var(--sel); color: #FFB596; }
+  .paraf { position: absolute; right: 16px; bottom: 12px; color: #1F3A8A; display: block; line-height: 0; border: 1px dashed rgba(226,104,60,.6); padding: 0 6px; border-radius: 4px; }
+  .ft { display: flex; align-items: center; gap: 10px; padding: 11px 14px; border-top: 1px solid var(--b); flex-wrap: wrap; }
+  .ft .out { flex: 1; color: var(--tx2); min-width: 220px; }
+  .ft .out b { color: var(--tx); font-weight: 500; }
+  .btn { font-size: 12.5px; padding: 8px 16px; border-radius: 99px; background: var(--hov); color: var(--tx); border: 0; font-family: inherit; }
+  .btn.pri { background: var(--a); color: var(--ai); font-weight: 600; }
+
+  /* signature maker */
+  .maker { width: 400px; max-width: 100%; background: var(--pop); color: var(--tx); border-radius: 16px; border: 1px solid var(--b); padding: 14px; font-size: 12.5px; box-shadow: 0 18px 40px rgba(34,26,20,.28); }
+  .tabs { display: flex; gap: 4px; background: var(--bg); border-radius: 10px; padding: 3px; margin-bottom: 12px; }
+  .tabs span { flex: 1; text-align: center; padding: 6px 0; border-radius: 8px; color: var(--tx2); }
+  .tabs span.on { background: var(--hov); color: var(--tx); font-weight: 500; }
+  .pad { background: #FFFDF9; border-radius: 10px; height: 150px; position: relative; }
+  .pad svg { position: absolute; left: 10%; top: 30px; width: 80%; height: 90px; color: #1F3A8A; }
+  .pad .base { position: absolute; left: 24px; right: 24px; bottom: 28px; border-bottom: 1px dashed #C9C0B4; }
+  .pad .clr { position: absolute; right: 10px; top: 8px; color: #6E5F52; font-size: 11.5px; }
+  .opts { display: flex; align-items: center; gap: 8px; margin-top: 12px; color: var(--tx2); }
+  .sw { width: 18px; height: 18px; border-radius: 50%; border: 1.5px solid rgba(244,237,228,.55); }
+  .sw.on { box-shadow: 0 0 0 2px var(--pop), 0 0 0 4px var(--a); }
+  .chk { display: flex; gap: 9px; align-items: flex-start; margin-top: 12px; color: var(--tx2); line-height: 1.4; }
+  .chk i { flex: none; width: 16px; height: 16px; border-radius: 4px; background: var(--a); display: flex; align-items: center; justify-content: center; margin-top: 1px; }
+  .chk i svg { width: 11px; height: 11px; color: var(--ai); }
+  .chk b { color: var(--tx); font-weight: 500; display: block; }
+  .mf { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+  .saved { display: flex; gap: 8px; margin-top: 12px; }
+  .saved div { flex: 1; background: #FFFDF9; border-radius: 8px; height: 48px; display: flex; align-items: center; justify-content: center; color: #1F3A8A; }
+  .saved div.add { background: transparent; border: 1px dashed var(--b); color: var(--tx2); font-family: inherit; font-size: 12px; }
+
+  /* notch notice */
+  .notch { margin-top: 20px; width: 470px; max-width: 100%; background: #0E0B09; color: var(--tx); border-radius: 0 0 26px 26px; padding: 14px 20px 16px; display: flex; gap: 14px; align-items: center; font-size: 12.5px; }
+  .notch .ic { width: 36px; height: 44px; background: #F7F3EC; border-radius: 4px; position: relative; flex: none; }
+  .notch .ic em { position: absolute; left: 6px; right: 6px; bottom: 9px; height: 8px; border-bottom: 1.6px solid #1F3A8A; border-radius: 0 0 50% 50%; }
+  .notch b { display: block; font-weight: 600; font-size: 13px; }
+  .notch span { color: var(--tx2); }
+
+  /* tables */
+  table { border-collapse: collapse; width: 100%; margin-top: 16px; font-size: 14px; }
+  th, td { text-align: left; vertical-align: top; padding: 11px 14px 11px 0; border-bottom: 1px solid var(--rule); }
+  th { font-weight: 600; font-size: 13px; color: var(--ink2); border-bottom: 2px solid var(--ink); }
+  td:first-child { font-weight: 600; white-space: nowrap; }
+  .wrap { overflow-x: auto; }
+  .lv { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 0; margin-top: 18px; }
+  .lv > div { padding: 16px 20px 18px 0; border-top: 2px solid var(--rule); }
+  .lv > div.pick { border-top-color: var(--a); }
+  .lv b { display: block; font-size: 16px; margin-bottom: 4px; }
+  .lv p { font-size: 13.5px; color: var(--ink2); }
+  .lv .tag { display: block; margin-bottom: 6px; }
+  .cost { margin-top: 18px; background: var(--card); border-radius: 14px; padding: 18px 20px; display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 20px; }
+  .cost b { display: block; font-size: 15px; }
+  .cost p { font-size: 13.5px; color: var(--ink2); }
+
+  @media (max-width: 760px) {
+    h1 { font-size: 25px; }
+    .flow, .lv, .cost { grid-template-columns: 1fr 1fr; }
+    .body { grid-template-columns: 1fr; }
+    .rail { flex-direction: row; border-right: 0; border-bottom: 1px solid var(--b); overflow-x: auto; }
+    .sheet { padding: 28px 20px; }
+    .tools { flex-wrap: nowrap; overflow-x: auto; }
+  }
+  @media (max-width: 480px) {
+    .flow, .lv, .cost { grid-template-columns: 1fr; }
+    .menu { left: 60px; }
+    .sigs { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Tanda tangan dokumen di Vale</h1>
+  <p class="lede">Usulan pertama untuk modul edit file + tanda tangan. Semua di PC, tanpa internet. Nama file dan isi dokumen di bawah cuma contoh.</p>
+
+  <section>
+    <h2>Alurnya</h2>
+    <p class="note">Masuknya lewat rak berkas, karena jalur drag ke notch dan kiriman dari HP udah berakhir di situ.</p>
+    <div class="flow">
+      <div><b><span>1</span>File masuk ke rak</b><p>Drag ke notch, kirim dari HP, atau tarik dari Explorer.</p></div>
+      <div><b><span>2</span>Klik kanan, Tanda tangani</b><p>Bisa buat PDF, gambar, dan file Office.</p></div>
+      <div><b><span>3</span>Pasang di halaman</b><p>Tanda tangan, paraf, tanggal, teks, centang. Halaman bisa diputar atau dihapus.</p></div>
+      <div><b><span>4</span>Simpan sebagai file baru</b><p>File asli nggak disentuh. Hasilnya muncul di rak, siap di-drag ke WhatsApp atau email.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>1 · Dari rak berkas</h2>
+    <div class="row">
+      <div class="panel" aria-label="Contoh panel rak berkas">
+        <div class="ph"><b>Rak</b><span>3 file</span></div>
+        <div class="cards">
+          <div class="fc pdf on"><i>PDF</i><span>Kontrak sewa.pdf</span></div>
+          <div class="fc"><i>JPG</i><span>Surat kuasa.jpg</span></div>
+          <div class="fc"><i>DOC</i><span>Penawaran.docx</span></div>
+        </div>
+        <div style="height:90px"></div>
+        <div class="menu">
+          <div class="hov"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17c3-6 5-9 7-9s-1 8 2 8 3-5 5-5 1 4 4 4"/><path d="M3 21h18"/></svg>Tanda tangani</div>
+          <div><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5c-5 0-9 7-9 7s4 7 9 7 9-7 9-7-4-7-9-7z"/><circle cx="12" cy="12" r="3"/></svg>Pratinjau</div>
+        </div>
+      </div>
+      <div class="side">
+        <p class="note">Menu klik kanan kartu sekarang cuma punya "Pratinjau gambar". Tambah satu item, "Tanda tangani", buat PDF, gambar, Word, Excel, dan PowerPoint.</p>
+        <p class="note" style="margin-top:10px">Kalau mau lebih cepat lagi, nanti bisa ditambah zona kedua di area drop notch: "Jatuhkan untuk tanda tangan". Itu opsional, bukan buat versi pertama.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>2 · Jendela tanda tangan</h2>
+    <p class="note">Jendela sendiri, kayak editor screenshot, karena naruh tanda tangan di kotak yang pas butuh halaman yang gede. Gelap atau terang ngikut setelan jendela Vale.</p>
+    <div class="ed" aria-label="Contoh jendela tanda tangan">
+      <div class="tb">
+        <span class="nm">Kontrak sewa.pdf</span><span class="pg">Halaman 4 dari 4</span><span class="sp"></span>
+        <span class="wc"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M5 12h14"/></svg><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="5" y="5" width="14" height="14" rx="1"/></svg><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></span>
+      </div>
+      <div class="tools">
+        <span class="t on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17c3-6 5-9 7-9s-1 8 2 8 3-5 5-5 1 4 4 4"/><path d="M3 21h18"/></svg>Tanda tangan</span>
+        <span class="t"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 15c2-4 3-6 4-6s0 5 2 5 2-3 3-3"/><path d="M17 17h3"/></svg>Paraf</span>
+        <span class="t"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>Tanggal</span>
+        <span class="t"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 6V4h14v2M12 4v16M9 20h6"/></svg>Teks</span>
+        <span class="t"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7"/></svg>Centang</span>
+        <span class="div"></span>
+        <span class="t"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg>Putar</span>
+        <span class="t"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>Hapus halaman</span>
+      </div>
+      <div class="body">
+        <div class="rail">
+          <div class="th"><div><i></i><i></i><i style="width:70%"></i><i></i><i></i><i style="width:50%"></i></div>1</div>
+          <div class="th"><div><i></i><i></i><i></i><i style="width:60%"></i><i></i><i></i></div>2</div>
+          <div class="th"><div><i></i><i style="width:80%"></i><i></i><i></i><i></i><i style="width:40%"></i></div>3</div>
+          <div class="th on"><div><i></i><i></i><i style="width:60%"></i><em></em></div>4</div>
+        </div>
+        <div class="stage">
+          <div class="sheet">
+            <h3>Contoh dokumen</h3>
+            <div class="sub">halaman terakhir, bagian tanda tangan</div>
+            <div class="ln"></div><div class="ln"></div><div class="ln" style="width:86%"></div><div class="ln"></div><div class="ln" style="width:64%"></div>
+            <div style="height:10px"></div>
+            <div class="ln"></div><div class="ln" style="width:92%"></div><div class="ln" style="width:48%"></div>
+            <div class="sigs">
+              <div><div class="who">Pihak pertama</div><div class="box"></div><div class="nm">(nama)</div></div>
+              <div><div class="who">Pihak kedua</div>
+                <div class="box">
+                  <div class="placed">
+                    <div class="float"><span>Lebih kecil</span><span>Lebih besar</span><span class="on">+ Tanggal</span><span>Hapus</span></div>
+                    <span class="h" style="left:-5px;top:-5px"></span><span class="h" style="right:-5px;top:-5px"></span><span class="h" style="left:-5px;bottom:-5px"></span><span class="h" style="right:-5px;bottom:-5px"></span>
+                    <svg viewBox="0 0 300 90" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 62c14-30 30-52 40-46 9 6-14 50-4 52 12 2 22-38 34-36 10 2-4 30 6 30 9 0 16-20 26-20 8 0 4 16 12 16 10 0 18-12 28-14M150 50c10-4 24-8 40-6 20 2 40 8 70 2"/></svg>
+                    <span class="dt">20 November 2026</span>
+                  </div>
+                </div>
+                <div class="nm">(nama)</div>
+              </div>
+            </div>
+            <span class="paraf"><svg viewBox="0 0 60 30" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="width:34px;height:17px"><path d="M4 22c6-10 10-16 13-14s-5 14 0 13 7-12 11-11-1 9 4 9 8-6 12-7"/></svg></span>
+          </div>
+        </div>
+      </div>
+      <div class="ft">
+        <span class="out">Disimpan sebagai <b>Kontrak sewa (ditandatangani).pdf</b>, di folder yang sama</span>
+        <button class="btn">Batal</button><button class="btn pri">Simpan</button>
+      </div>
+    </div>
+    <p class="note" style="margin-top:12px">Paraf (pojok kanan bawah) bisa dipasang sekali ke semua halaman. Klik di halaman buat naruh, tarik buat geser, pegangan sudut buat ukuran. Ctrl+Z buat undo, sama kayak editor screenshot.</p>
+  </section>
+
+  <section>
+    <h2>3 · Bikin tanda tangan sekali, pakai terus</h2>
+    <div class="row">
+      <div class="maker" aria-label="Contoh pembuat tanda tangan">
+        <div class="tabs"><span class="on">Gambar</span><span>Ketik</span><span>Dari foto</span></div>
+        <div class="pad">
+          <span class="clr">Ulangi</span>
+          <svg viewBox="0 0 300 90" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 62c14-30 30-52 40-46 9 6-14 50-4 52 12 2 22-38 34-36 10 2-4 30 6 30 9 0 16-20 26-20 8 0 4 16 12 16 10 0 18-12 28-14M150 50c10-4 24-8 40-6 20 2 40 8 70 2"/></svg>
+          <div class="base"></div>
+        </div>
+        <div class="opts">Tinta <span class="sw on" style="background:#1F3A8A" title="Biru"></span><span class="sw" style="background:#1C1C1C" title="Hitam"></span></div>
+        <div class="chk"><i><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7"/></svg></i><span><b>Simpan di PC ini</b>Terkunci ke akun Windows lo, kayak riwayat clipboard. Orang lain di PC yang sama nggak bisa buka.</span></div>
+        <div class="saved"><div title="Paraf"><svg viewBox="0 0 60 30" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="width:34px;height:17px"><path d="M4 22c6-10 10-16 13-14s-5 14 0 13 7-12 11-11-1 9 4 9 8-6 12-7"/></svg></div><div title="Tanda tangan"><svg viewBox="0 0 300 90" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" style="width:90px;height:30px"><path d="M10 62c14-30 30-52 40-46 9 6-14 50-4 52 12 2 22-38 34-36 10 2-4 30 6 30 9 0 16-20 26-20 8 0 4 16 12 16 10 0 18-12 28-14M150 50c10-4 24-8 40-6 20 2 40 8 70 2"/></svg></div><div class="add">+ Baru</div></div>
+        <div class="mf"><button class="btn">Batal</button><button class="btn pri">Pakai</button></div>
+      </div>
+      <div class="side">
+        <p class="note"><b style="color:var(--ink)">Gambar:</b> pakai mouse, touchpad, atau pen. <b style="color:var(--ink)">Ketik:</b> nama lo ditulis pakai huruf tulisan tangan. <b style="color:var(--ink)">Dari foto:</b> foto tanda tangan di kertas, latar putihnya dibuang otomatis.</p>
+        <p class="note" style="margin-top:10px">Tanda tangan dan paraf disimpan terpisah, maksimal beberapa buah. Bisa dihapus kapan aja dari jendela ini.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>4 · Selesai</h2>
+    <p class="note">Begitu disimpan, notch ngasih tahu. Klik buat buka foldernya. File-nya juga langsung nongol di rak.</p>
+    <div class="notch" aria-label="Contoh pemberitahuan di notch">
+      <div class="ic"><em></em></div>
+      <div><b>Ditandatangani</b><span>Kontrak sewa (ditandatangani).pdf · klik untuk buka</span></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>File apa aja yang bisa</h2>
+    <div class="wrap"><table>
+      <tr><th>File</th><th>Yang terjadi</th><th>Hasilnya</th></tr>
+      <tr><td>PDF</td><td>Langsung dibuka. PDF yang dikunci password diminta password-nya dulu.</td><td>PDF baru</td></tr>
+      <tr><td>Gambar (JPG, PNG)</td><td>Dibuka sebagai satu halaman. Hasil foto dokumen juga masuk sini.</td><td>Pilih: gambar atau PDF</td></tr>
+      <tr><td>Word, Excel, PowerPoint</td><td>Diubah ke PDF dulu pakai Office yang terpasang di PC, tanpa internet. Kalau Office nggak ada, Vale bilang: simpan sebagai PDF dulu dari aplikasinya.</td><td>PDF baru</td></tr>
+      <tr><td>Lainnya</td><td>Nggak muncul "Tanda tangani" di menunya.</td><td>-</td></tr>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>Tanda tangan yang kayak gimana</h2>
+    <p class="note">Ada tiga tingkat. Usul gw mulai dari yang pertama.</p>
+    <div class="lv">
+      <div class="pick"><span class="tag">Usul gw, versi pertama</span><b>Gambar tanda tangan</b><p>Persis kayak tanda tangan basah yang di-scan. Cukup buat kebanyakan surat, kontrak sewa, formulir, dan penawaran. Sepenuhnya di PC.</p></div>
+      <div><span class="tag">Bisa nyusul</span><b>Tanda tangan digital</b><p>Ditambah segel tak terlihat pakai sertifikat bikinan sendiri. Kalau file diubah setelah ditandatangani, ketahuan. Tapi Adobe nampilin tanda kuning "belum dipercaya" karena sertifikatnya bukan dari lembaga resmi.</p></div>
+      <div><span class="tag">Di luar Vale</span><b>TTE tersertifikasi</b><p>Yang diakui penuh menurut PP 71/2019. Wajib lewat PSrE (Privy, Peruri, VIDA, BSrE) dengan verifikasi identitas online. Itu ngelanggar janji Vale "nggak ada data keluar".</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Biayanya</h2>
+    <div class="cost">
+      <div><b>Ukuran vale.exe</b><p>Nampilin halaman pakai mesin PDF bawaan Windows, jadi nol. Nulis PDF butuh satu library (lopdf). Perkiraan nambah 0,3 sampai 0,7 MB, angka pastinya diukur pas dibangun.</p></div>
+      <div><b>Saat diam</b><p>Nol. Nggak ada timer atau thread yang jalan selama jendela tanda tangan nggak dibuka.</p></div>
+      <div><b>Privasi</b><p>File, tanda tangan, dan hasilnya nggak pernah keluar dari PC. Tanda tangan yang disimpan dienkripsi ke akun Windows.</p></div>
+    </div>
+  </section>
+</main>
+</body>
+</html>

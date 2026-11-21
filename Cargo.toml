@@ -16,7 +16,9 @@ windows-core = "0.62"
 # The QR code of the phone link (Nayuki, no dependencies).
 qrcodegen = "=1.8.0"
 # Inflates the transcript engine's .tar.gz (pure Rust, one small dependency).
-miniz_oxide = "0.8"
+miniz_oxide = "0.9"
+# Reads and edits the PDF being signed (no default features: no image or time crates).
+lopdf = { version = "0.47", default-features = false }
 
 [dependencies.windows]
 version = "0.62"
@@ -90,6 +92,7 @@ features = [
     "Graphics_DirectX_Direct3D11",
     "Foundation",
     "Foundation_Collections",
+    "Data_Pdf",
     "Media_Control",
     "Storage_Streams",
     "UI_Notifications",

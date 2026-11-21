@@ -697,6 +697,50 @@ pub fn note_card_menu(hwnd: HWND, label: &str) -> bool {
     }
 }
 
+/// Shows a menu of `labels` at the cursor; the index of the one chosen.
+/// Modal like `note_card_menu`: the caller must not hold any state borrow.
+pub fn card_menu(hwnd: HWND, labels: &[&str]) -> Option<usize> {
+    if labels.is_empty() {
+        return None;
+    }
+    unsafe {
+        let Ok(menu) = CreatePopupMenu() else {
+            return None;
+        };
+        for (i, label) in labels.iter().enumerate() {
+            let _ = AppendMenuW(menu, MF_STRING, card_menu_id(i), &HSTRING::from(*label));
+        }
+        let mut pt = POINT::default();
+        let _ = GetCursorPos(&mut pt);
+        // Without the foreground the menu would not close on a click elsewhere.
+        let _ = SetForegroundWindow(hwnd);
+        let chosen = TrackPopupMenu(
+            menu,
+            TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+            pt.x,
+            pt.y,
+            None,
+            hwnd,
+            None,
+        );
+        // Lets the menu dismiss properly the next time it opens.
+        let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
+        let _ = DestroyMenu(menu);
+        card_menu_pick(chosen.0, labels.len())
+    }
+}
+
+/// The command id of item `i` of a card menu: 1-based, 0 being "nothing".
+fn card_menu_id(i: usize) -> usize {
+    i + 1
+}
+
+/// The item a `TrackPopupMenu` result of `id` picked, among `n`.
+fn card_menu_pick(id: i32, n: usize) -> Option<usize> {
+    let i = usize::try_from(id).ok()?.checked_sub(1)?;
+    (i < n).then_some(i)
+}
+
 /// Fills `menu` with the Monitor entries as a radio group: the checked one
 /// gets the radio bullet (`CheckMenuRadioItem` sets `MFT_RADIOCHECK` on it),
 /// the entries that cannot be chosen are greyed.
@@ -818,6 +862,16 @@ unsafe fn write_run_value(key: HKEY) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_card_menu_result_maps_back_to_its_item() {
+        assert_eq!(card_menu_pick(card_menu_id(0) as i32, 2), Some(0));
+        assert_eq!(card_menu_pick(card_menu_id(1) as i32, 2), Some(1));
+        // Dismissed (0), past the items, or nonsense.
+        assert_eq!(card_menu_pick(0, 2), None);
+        assert_eq!(card_menu_pick(3, 2), None);
+        assert_eq!(card_menu_pick(-1, 2), None);
+    }
     use crate::i18n::Lang;
 
     fn labels(items: &[MenuItem]) -> Vec<&str> {

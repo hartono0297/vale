@@ -663,6 +663,10 @@ pub enum Event {
     /// (a drop latches it like a click): the drag is over, so what held the
     /// panel for the drag ends, and the drop's own visit does not close it.
     ShelfDropped,
+    /// "Tanda tangani" was picked on shelf card `i`: the panel collapses and
+    /// `Effect::ShelfSign(i)` follows, as a click on the card does for
+    /// `ShelfOpen`.
+    ShelfSign(usize),
     /// The pointer left the island with the drop's visit still on and the
     /// dwell never fired (so no `Hover(false)` follows): the visit is over.
     /// `App` sends it when the reducer says `shelf_drop_here()`.
@@ -1040,6 +1044,9 @@ pub enum Effect {
     /// Open shelf card `i`'s file / take it off / empty the shelf; `App`
     /// keeps the shelf.
     ShelfOpen(usize),
+    /// Open the signing window on shelf card `i`'s file, once the panel is
+    /// out of the way (like `ShelfOpen`).
+    ShelfSign(usize),
     ShelfRemove(usize),
     ShelfClear,
     /// The phone link, as the hits of the same names; `App` keeps the server.
