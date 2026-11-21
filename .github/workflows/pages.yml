@@ -21,20 +21,27 @@ concurrency:
   group: pages
   cancel-in-progress: false
 
+# Two jobs: deploy-pages could not find an artifact uploaded earlier in the
+# same job (actions/deploy-pages#451, failed twice on 2026-11-21), so the
+# upload finishes in its own job before the deploy job starts.
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v6
 
       - uses: actions/configure-pages@v5
 
-      - uses: actions/upload-pages-artifact@v4
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: site
 
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
