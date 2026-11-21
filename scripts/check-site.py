@@ -21,11 +21,19 @@ site/*.html it checks:
     in style.css uses;
   - every table sits in div.table-wrap[role=region][tabindex=0] with a name;
   - .reveal sits only on h2, h3, figure and article.play-card;
-  - the notch dock on index.html has the 14 tabs of Page::ALL, in order, each
+  - the notch dock on index.html has the 15 tabs of Page::ALL, in order, each
     controlling an existing panel;
-  - the story on index.html (ol.story-list) lists the same 14 pages in the
-    same order (li[data-page]), the playground has exactly six .play-card, and
+  - the story on index.html (ol.story-list) lists the same 15 pages in the
+    same order (li[data-page]), the playground's article.play-card[data-card]
+    are sign, draw, captions, phone, typing, susun, copy, mascots in that order
+    (sign and mascots alone carry .play-wide, so the six small cards fill rows
+    of 1, 2 or 3 with no empty cell), and
     the Google Calendar and privacy sections each hold a <details>;
+  - the hero on index.html has div.picks.js-only with a Mascot group (Cat,
+    Cockatiel, Octopus) and a Notch colour group (Plain, Gradient, Face) of
+    button.pick[aria-pressed], one pressed per group, ordered Mascot, Notch
+    colour, coat chips, h1#h-hero; svg#cat has the g.m-cat, g.m-falk and g.m-octo
+    bodies;
   - no third-party resource is loaded (external http(s) links are listed, not
     fetched).
 It also checks that no text file under site/ contains an em dash (U+2014).
@@ -42,10 +50,19 @@ SITE = Path(__file__).resolve().parent.parent / "site"
 VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
 TEXT_SUFFIXES = {".html", ".css", ".js", ".md", ".svg", ".json", ".xml", ".webmanifest"}
 EM_DASH = "—"
-DOCK_TABS = ["tab-" + n for n in ("calendar", "pomodoro", "reminders", "notes", "music", "mixer", "clipboard",
+DOCK_TABS = ["tab-" + n for n in ("calendar", "pomodoro", "record", "reminders", "notes", "music", "mixer", "clipboard",
                                   "notifications", "shelf", "system", "devices", "cli", "arrange", "shortcuts")]
+MASCOT_SYMBOLS = ["falk-idle", "falk-happy", "falk-sleep", "octo-idle", "octo-happy", "octo-sleep"]
+MASCOT_USES = ["u-cat", "u-falk", "u-octo"]
 STORY_PAGES = [t[len("tab-"):] for t in DOCK_TABS]  # the story's data-page ids are the dock's page ids
-PLAY_CARDS = 6
+PLAY_CARDS = ["sign", "draw", "captions", "phone", "typing", "susun", "copy", "mascots"]
+PLAY_WIDE = ["sign", "mascots"]  # full-row cards; the rest must fill 1, 2 and 3 columns exactly
+# The hero picks: group aria-label -> (data attribute, [(value, visible text)]), in order.
+PICKS = {
+    "Mascot": ("data-mascot", [("cat", "Cat"), ("falk", "Cockatiel"), ("octo", "Octopus")]),
+    "Notch colour": ("data-notch-style", [("plain", "Plain"), ("gradient", "Gradient"), ("face", "Face")]),
+}
+HERO_BODIES = ["m-cat", "m-falk", "m-octo"]
 problems = []
 externals = []
 
@@ -69,8 +86,15 @@ class Page(HTMLParser):
         self.to_top = []  # attrs of every a.to-top
         self.preloads = []  # (href, line) of every <link rel=preload as=font>
         self.story_pages = []  # data-page of every li inside ol.story-list, in order
-        self.play_cards = 0  # .play-card elements inside #playground
+        self.play_cards = []  # (data-card, is .play-wide) of every .play-card inside #playground, in order
+        self.nc_uses = []  # (line, [class of every <use>]) of every svg.nc inside #notch
+        self.coat_labels = []  # aria-label of every div.coats
         self.details = []  # id of the nearest section around every <details> (None when there is none)
+        self.pick_groups = []  # {label, line, picks (classes of the nearest div.picks or None), buttons}
+        self.pick_btn = None  # the button.pick whose text is being read
+        self.coats_line = None  # line of div.coats
+        self.h_hero_line = None  # line of h1#h-hero
+        self.hero_bodies = []  # m-* classes of every <g> inside svg#cat
 
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
@@ -92,7 +116,32 @@ class Page(HTMLParser):
                 t == "ol" and "story-list" in (at.get("class") or "").split() for t, at, _ in self.stack):
             self.story_pages.append(a["data-page"])
         if "play-card" in classes and any(at.get("id") == "playground" for _, at, _ in self.stack):
-            self.play_cards += 1
+            self.play_cards.append((a.get("data-card"), "play-wide" in classes))
+        if tag == "svg" and "nc" in classes and any(at.get("id") == "notch" for _, at, _ in self.stack):
+            self.nc_uses.append((line, []))
+        if tag == "use" and self.nc_uses and any(
+                t == "svg" and "nc" in (at.get("class") or "").split() for t, at, _ in self.stack):
+            self.nc_uses[-1][1].append(" ".join(classes))
+        if tag == "div" and "coats" in classes:
+            self.coat_labels.append(a.get("aria-label"))
+            if self.coats_line is None:
+                self.coats_line = line
+        if tag == "h1" and a.get("id") == "h-hero":
+            self.h_hero_line = line
+        if tag == "div" and a.get("role") == "group" and a.get("aria-label") in PICKS:
+            picks = next((at for t, at, _ in reversed(self.stack) if t == "div" and "picks" in (at.get("class") or "").split()), None)
+            self.pick_groups.append({"label": a.get("aria-label"), "line": line,
+                                     "picks": (picks.get("class") or "").split() if picks is not None else None,
+                                     "buttons": []})
+        if tag == "button" and "pick" in classes:
+            group = next((at for t, at, _ in reversed(self.stack) if t == "div" and at.get("role") == "group"), None)
+            if group is not None and group.get("aria-label") in PICKS and self.pick_groups:
+                self.pick_btn = {"attrs": a, "text": "", "line": line}
+                self.pick_groups[-1]["buttons"].append(self.pick_btn)
+            else:
+                problem(self.name, f"line {line}: button.pick outside a Mascot or Notch colour group")
+        if tag == "g" and any(t == "svg" and at.get("id") == "cat" for t, at, _ in self.stack):
+            self.hero_bodies.extend(c for c in classes if c.startswith("m-"))
         if tag == "details":
             self.details.append(next((at.get("id") for t, at, _ in reversed(self.stack) if t == "section" and at.get("id")), None))
         if tag == "a" and "to-top" in classes:
@@ -123,6 +172,8 @@ class Page(HTMLParser):
     def handle_endtag(self, tag):
         if tag in VOID:
             return
+        if tag == "button":
+            self.pick_btn = None
         line = self.getpos()[0]
         if not self.stack:
             problem(self.name, f"line {line}: stray </{tag}>")
@@ -142,6 +193,8 @@ class Page(HTMLParser):
     def handle_data(self, data):
         if self.in_script and self.scripts:
             self.scripts[-1]["text"] += data
+        if self.pick_btn is not None:
+            self.pick_btn["text"] += data
 
     def finish(self):
         for tag, a, line in self.stack:
@@ -264,6 +317,16 @@ def main():
     if not pages:
         problem("site", "no html files found")
 
+    # A control character in the text is a typo (a pasted "	" in a path shows as a gap).
+    for path in sorted(SITE.rglob("*")):
+        if path.suffix not in (".html", ".css", ".js", ".json", ".txt", ".svg", ".xml", ".webmanifest"):
+            continue
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            body = line.lstrip("	")
+            if any(ord(c) < 32 for c in body):
+                bad = next(c for c in body if ord(c) < 32)
+                problem(f"{path.relative_to(SITE).as_posix()}:{n}", f"control character U+{ord(bad):04X}")
+
     for name, page in pages.items():
         seen = set()
         for i in page.ids:
@@ -383,7 +446,7 @@ def main():
             elif norm not in face_urls:
                 problem(name, f"line {line}: font preload {href!r} is not used by an @font-face in style.css")
 
-    # The notch dock on index.html: the 14 pages of Page::ALL (src/model.rs), in order.
+    # The notch dock on index.html: the 15 pages of Page::ALL (src/model.rs), in order.
     if "index.html" in pages:
         page = pages["index.html"]
         got = [t for t, _ in page.tabs]
@@ -393,17 +456,76 @@ def main():
             if not panel or panel not in page.ids:
                 problem("index.html", f"tab {tab!r} controls {panel!r}, which is not an id")
 
-    # The story lists the 14 pages of Page::ALL in order, the playground has six cards,
+    # The story lists the 15 pages of Page::ALL in order, the playground has its eight cards,
     # and the Calendar and privacy sections each hold a <details>.
     if "index.html" in pages:
         page = pages["index.html"]
         if page.story_pages != STORY_PAGES:
             problem("index.html", f"the story lists {page.story_pages}, expected {STORY_PAGES} (Page::ALL order, ol.story-list li[data-page])")
-        if page.play_cards != PLAY_CARDS:
-            problem("index.html", f"#playground has {page.play_cards} .play-card, expected {PLAY_CARDS}")
+        cards = [c for c, _ in page.play_cards]
+        if cards != PLAY_CARDS:
+            problem("index.html", f"#playground cards are {cards}, expected {PLAY_CARDS} (data-card, in order)")
+        wide = [c for c, w in page.play_cards if w]
+        if wide != PLAY_WIDE:
+            problem("index.html", f"#playground .play-wide cards are {wide}, expected {PLAY_WIDE}")
+        small = len(page.play_cards) - len(wide)
+        if small % 2 or small % 3:
+            problem("index.html", f"#playground has {small} small cards; a 2 or 3 column row would stay part empty")
         for section in ("google-calendar", "privacy"):
             if section not in page.details:
                 problem("index.html", f"#{section} has no <details>")
+
+    # The mascot sprite: the cat, the cockatiel and the octopus, three moods each; every
+    # notch svg.nc holds one <use> per mascot; the coat group is named "Coat".
+    if "index.html" in pages:
+        page = pages["index.html"]
+        for sym in MASCOT_SYMBOLS:
+            if sym not in page.ids:
+                problem("index.html", f"the sprite has no symbol #{sym}")
+        if not page.nc_uses:
+            problem("index.html", "no svg.nc inside #notch")
+        for line, uses in page.nc_uses:
+            if uses != MASCOT_USES:
+                problem("index.html", f"line {line}: svg.nc has <use> classes {uses}, expected {MASCOT_USES}")
+        if page.coat_labels != ["Coat"]:
+            problem("index.html", f"div.coats aria-labels are {page.coat_labels}, expected ['Coat']")
+
+    # The hero picks: div.picks.js-only holds the Mascot group, then the Notch colour group,
+    # each with exactly its button.pick[aria-pressed] (one pressed); then the coat chips, then
+    # the headline. svg#cat holds one body per mascot.
+    if "index.html" in pages:
+        page = pages["index.html"]
+        labels = [g["label"] for g in page.pick_groups]
+        if labels != list(PICKS):
+            problem("index.html", f"hero pick groups are {labels}, expected {list(PICKS)}")
+        for g in page.pick_groups:
+            attr, want = PICKS[g["label"]]
+            where = f"line {g['line']}: the {g['label']} group"
+            if g["picks"] is None or "js-only" not in g["picks"]:
+                problem("index.html", f"{where} is not inside div.picks.js-only")
+            got = [(b["attrs"].get(attr), " ".join(b["text"].split())) for b in g["buttons"]]
+            if got != want:
+                problem("index.html", f"{where} has buttons {got}, expected {want}")
+            pressed = [b["attrs"].get("aria-pressed") for b in g["buttons"]]
+            if any(v not in ("true", "false") for v in pressed):
+                problem("index.html", f"{where}: every button.pick needs aria-pressed true or false, got {pressed}")
+            elif pressed.count("true") != 1:
+                problem("index.html", f"{where}: exactly one button.pick should be pressed, got {pressed}")
+            for b in g["buttons"]:
+                if b["attrs"].get("type") != "button":
+                    problem("index.html", f"line {b['line']}: button.pick needs type=button")
+        order = [("the Mascot group", next((g["line"] for g in page.pick_groups if g["label"] == "Mascot"), None)),
+                 ("the Notch colour group", next((g["line"] for g in page.pick_groups if g["label"] == "Notch colour"), None)),
+                 ("div.coats", page.coats_line),
+                 ("h1#h-hero", page.h_hero_line)]
+        lines = [n for _, n in order]
+        if None in lines:
+            problem("index.html", "hero order: missing " + ", ".join(w for w, n in order if n is None))
+        elif lines != sorted(lines) or len(set(lines)) != len(lines):
+            problem("index.html", "hero order is " + ", ".join(f"{w} (line {n})" for w, n in order)
+                    + ", expected the Mascot group, the Notch colour group, the coat chips, then h1#h-hero")
+        if sorted(page.hero_bodies) != sorted(HERO_BODIES):
+            problem("index.html", f"svg#cat bodies are {page.hero_bodies}, expected {HERO_BODIES}")
 
     # No em dash in any text file under site/.
     for path in sorted(SITE.rglob("*")):

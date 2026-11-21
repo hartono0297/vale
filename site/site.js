@@ -25,7 +25,7 @@
   var S = { dirty: true, sy: 0, max: 0, p: 0, vw: 0, vh: 0, px: 0.5, py: 0.5, mx: -1, my: -1, moving: false, scrollAt: 0 };
   var loop = null;
   var notchApi = null;
-  var coatApi = null;
+  var mascotApi = null;
 
   /* ---------- the one animation loop ----------
      Tasks have read(t, dt) and write(t, dt), and optionally on() and busy.
@@ -250,41 +250,239 @@
     });
   }
 
-  /* ---------- the cat's coat ----------
-     The coat lives in seven custom properties on <html> (--tip is the colour
-     of the go-to-top tail's tip); the hero cat, the notch cats, the picture
-     cats, the walking cat and the tail all read them. DECIDED
-     for the site: Black has the #75675B rim and amber eyes (the app's own rim
-     is #8E7CB8). The brand logo and the header brand stay terracotta. */
-  var COATS = {
-    terracotta: { coat: '#E2683C', l: '#E2683C', r: '#E2683C', eye: '#17120F', rim: 'transparent', pa: '0', tip: '#F4EDE4' },
-    calico: { coat: '#F4EDE4', l: '#E2683C', r: '#2B2420', eye: '#17120F', rim: 'transparent', pa: '1', tip: '#E2683C' },
-    white: { coat: '#F6F1EA', l: '#F6F1EA', r: '#F6F1EA', eye: '#17120F', rim: 'transparent', pa: '0', tip: '#E3D8CA' },
-    black: { coat: '#1E1B22', l: '#1E1B22', r: '#1E1B22', eye: '#F2B33D', rim: '#75675B', pa: '0', tip: '#4B4650' }
+  /* ---------- the mascot and its coat ----------
+     Three mascots: the cat, the cockatiel (falk) and the octopus (octo). The
+     choice is data-mascot on <html> (CSS shows the matching <use> in the notch).
+     Each mascot keeps its own coat in custom properties on <html>: the cat's
+     seven (--coat --earl --earr --eye --rim --pa, and --tip for the go-to-top
+     tail's tip) ALWAYS hold the cat's coat, even while another mascot is picked,
+     because the walking cat, the tail, the story cat and the wish stay cat-only;
+     --fk-body --fk-face --fk-crest --fk-cheek hold the cockatiel's and --oc-body
+     --oc-spot the octopus's. DECIDED for the site: Black has the #75675B rim and
+     amber eyes (the app's own rim is #8E7CB8). The brand logo and the header brand
+     stay terracotta. tint is the notch tint for that coat. Storage is only a
+     convenience: blocked or missing storage means Cat and each mascot's default. */
+  var MASCOTS = {
+    cat: {
+      label: 'Cat', def: 'terracotta',
+      coats: {
+        terracotta: { label: 'Terracotta', coat: '#E2683C', l: '#E2683C', r: '#E2683C', eye: '#17120F', rim: 'transparent', pa: '0', tip: '#F4EDE4', tint: '#E2683C' },
+        calico: { label: 'Calico', coat: '#F4EDE4', l: '#E2683C', r: '#2B2420', eye: '#17120F', rim: 'transparent', pa: '1', tip: '#E2683C', tint: '#E2683C' },
+        white: { label: 'White', coat: '#F6F1EA', l: '#F6F1EA', r: '#F6F1EA', eye: '#17120F', rim: 'transparent', pa: '0', tip: '#E3D8CA', tint: '#F6F1EA' },
+        black: { label: 'Black', coat: '#1E1B22', l: '#1E1B22', r: '#1E1B22', eye: '#F2B33D', rim: '#75675B', pa: '0', tip: '#4B4650', tint: '#8E7CB8' }
+      }
+    },
+    falk: {
+      label: 'Cockatiel', def: 'lutino',
+      coats: {
+        lutino: { label: 'Lutino', body: '#F1E4A2', face: '#F6D04A', crest: '#F6D04A', cheek: '#EC6B3A', tint: '#F6D04A' },
+        grey: { label: 'Grey', body: '#9A959C', face: '#F2D35A', crest: '#E9CF62', cheek: '#EC6B3A', tint: '#9A959C' },
+        whiteface: { label: 'White face', body: '#9A959C', face: '#F4EFE6', crest: '#E4DED6', cheek: 'transparent', tint: '#9A959C' }
+      }
+    },
+    octo: {
+      label: 'Octopus', def: 'coral',
+      coats: {
+        coral: { label: 'Coral', body: '#E87C8E', tint: '#E87C8E' },
+        red: { label: 'Red', body: '#D9505F', tint: '#D9505F' },
+        purple: { label: 'Purple', body: '#A98BD6', tint: '#A98BD6' },
+        sea: { label: 'Sea blue', body: '#5FA8C9', tint: '#5FA8C9' }
+      }
+    }
   };
 
-  function initCoats() {
-    var chips = $$('.coat-chip');
-    if (!chips.length) return null;
-    function setCoat(name, pop) {
-      var k = COATS[name];
-      if (!k) return;
-      var st = root.style;
-      st.setProperty('--coat', k.coat);
-      st.setProperty('--earl', k.l);
-      st.setProperty('--earr', k.r);
-      st.setProperty('--eye', k.eye);
-      st.setProperty('--rim', k.rim);
-      st.setProperty('--pa', k.pa);
-      st.setProperty('--tip', k.tip);
-      chips.forEach(function (c) { c.setAttribute('aria-pressed', c.getAttribute('data-coat') === name ? 'true' : 'false'); });
-      if (pop && coatApi && coatApi.pop) coatApi.pop();
+  /* A hex colour mixed toward black by t (the octopus's spots are 18 %). */
+  function darken(hex, t) {
+    var out = '#';
+    for (var i = 1; i < 7; i += 2) {
+      var v = Math.round(parseInt(hex.slice(i, i + 2), 16) * (1 - t));
+      out += (v < 16 ? '0' : '') + v.toString(16);
     }
-    chips.forEach(function (c) {
-      c.addEventListener('click', function () { setCoat(c.getAttribute('data-coat'), true); });
+    return out;
+  }
+
+  function readPref(key) {
+    try { return localStorage.getItem(key); } catch (e) { return null; }
+  }
+
+  function initMascot() {
+    var group = $('.coats');
+    var listeners = [];
+    var mascot = 'cat';
+    var coats = { cat: MASCOTS.cat.def, falk: MASCOTS.falk.def, octo: MASCOTS.octo.def };
+    var m;
+    for (m in MASCOTS) {
+      var saved = readPref('vale-coat-' + m);
+      if (saved && MASCOTS[m].coats[saved]) coats[m] = saved;
+    }
+    var savedMascot = readPref('vale-mascot');
+    if (savedMascot && MASCOTS[savedMascot]) mascot = savedMascot;
+
+    function paint(name) {
+      var k = MASCOTS[name].coats[coats[name]];
+      var st = root.style;
+      if (name === 'cat') {
+        st.setProperty('--coat', k.coat);
+        st.setProperty('--earl', k.l);
+        st.setProperty('--earr', k.r);
+        st.setProperty('--eye', k.eye);
+        st.setProperty('--rim', k.rim);
+        st.setProperty('--pa', k.pa);
+        st.setProperty('--tip', k.tip);
+      } else if (name === 'falk') {
+        st.setProperty('--fk-body', k.body);
+        st.setProperty('--fk-face', k.face);
+        st.setProperty('--fk-crest', k.crest);
+        st.setProperty('--fk-cheek', k.cheek);
+      } else {
+        st.setProperty('--oc-body', k.body);
+        st.setProperty('--oc-spot', darken(k.body, 0.18));
+      }
+    }
+    /* Pages without the chips (privacy, terms, 404) only wear the stored cat
+       coat: the go-to-top tail and the 404 notch cat are cat-only, so no
+       data-mascot is set there. */
+    if (!group) { paint('cat'); return null; }
+
+    var chips = [];
+    function buildChips() {
+      group.textContent = '';
+      chips = [];
+      var def = MASCOTS[mascot];
+      Object.keys(def.coats).forEach(function (key) {
+        var b = doc.createElement('button');
+        b.className = 'coat-chip';
+        b.type = 'button';
+        b.setAttribute('data-coat', key);
+        b.setAttribute('aria-label', def.coats[key].label);
+        b.setAttribute('aria-pressed', key === coats[mascot] ? 'true' : 'false');
+        b.appendChild(doc.createElement('i'));
+        b.addEventListener('click', function () { api.setCoat(key, true); });
+        group.appendChild(b);
+        chips.push(b);
+      });
+    }
+
+    function fire() { listeners.forEach(function (fn) { fn(mascot, coats[mascot]); }); }
+    function pop() { if (api.pop) api.pop(); }
+
+    var api = {
+      pop: null,
+      get: function () { return mascot; },
+      coat: function () { return coats[mascot]; },
+      set: function (name, doPop) {
+        if (!MASCOTS[name] || name === mascot) return;
+        mascot = name;
+        root.setAttribute('data-mascot', mascot);
+        store('vale-mascot', mascot);
+        buildChips();
+        if (doPop) pop();
+        fire();
+      },
+      setCoat: function (key, doPop) {
+        if (!MASCOTS[mascot].coats[key]) return;
+        coats[mascot] = key;
+        paint(mascot);
+        store('vale-coat-' + mascot, key);
+        chips.forEach(function (c) { c.setAttribute('aria-pressed', c.getAttribute('data-coat') === key ? 'true' : 'false'); });
+        if (doPop) pop();
+        fire();
+      },
+      on: function (fn) { listeners.push(fn); }
+    };
+
+    for (m in MASCOTS) paint(m);
+    root.setAttribute('data-mascot', mascot);
+    buildChips();
+    mascotApi = api;
+    return api;
+  }
+
+  /* Notch colour maths, ported from src/ui/notch_colour.rs. relLum and
+     contrastOf are WCAG 2.x. notchBottom blends the surface #17120F toward the
+     coat's tint by the largest t <= 0.45 (steps of 0.01) where the cream text
+     #F4EDE4 holds 5:1 and the caption colour #A89A8B holds 4.5:1 on the result
+     (no accent cap: the site's notch has no accent glyph on it). faceFill is
+     the colour Face fills the notch with (the app's peek_face fill): the cat's
+     coat, the cockatiel's face colour, the octopus's body; faceInk is #17120F
+     where it holds 4.5:1 on that fill, else cream. */
+  var N_SURFACE = '#17120F';
+  var N_CREAM = '#F4EDE4';
+  var N_CAPTION = '#A89A8B';
+  function hexRgb(h) { return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)]; }
+  function rgbHex(c) {
+    return '#' + c.map(function (v) { return (v < 16 ? '0' : '') + v.toString(16); }).join('').toUpperCase();
+  }
+  function relLum(h) {
+    var c = hexRgb(h).map(function (v) {
+      v /= 255;
+      return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
     });
-    coatApi = { set: setCoat, pop: null };
-    return coatApi;
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  }
+  function contrastOf(a, b) {
+    var x = relLum(a), y = relLum(b);
+    return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+  }
+  function mixHex(a, b, t) {
+    var x = hexRgb(a), y = hexRgb(b);
+    return rgbHex(x.map(function (v, i) { return Math.round(v + (y[i] - v) * t); }));
+  }
+  function notchBottom(tint) {
+    for (var n = 45; n >= 1; n--) {
+      var b = mixHex(N_SURFACE, tint, n / 100);
+      if (contrastOf(N_CREAM, b) >= 5 && contrastOf(N_CAPTION, b) >= 4.5) return b;
+    }
+    return N_SURFACE;
+  }
+  function faceFill(mascot, k) {
+    return mascot === 'cat' ? k.coat : mascot === 'falk' ? k.face : k.body;
+  }
+  function faceInk(fill) { return contrastOf(N_SURFACE, fill) >= 4.5 ? N_SURFACE : N_CREAM; }
+
+  /* The hero picks. Mascot buttons switch the mascot through mascotApi (and
+     follow it); Notch colour buttons store vale-notch-style and set
+     data-notch-style on <html> (Plain without storage or with an unknown
+     value). The notch paints from --n-bottom (Gradient), --n-face and --n-ink
+     (Face), written on <html> whenever the mascot, its coat or the style
+     changes. */
+  var NOTCH_STYLES = ['plain', 'gradient', 'face'];
+  function initPicks() {
+    var mascotBtns = $$('.pick[data-mascot]');
+    var styleBtns = $$('.pick[data-notch-style]');
+    function press(btns, attr, value) {
+      btns.forEach(function (b) { b.setAttribute('aria-pressed', b.getAttribute(attr) === value ? 'true' : 'false'); });
+    }
+    function paintNotch() {
+      if (!mascotApi) return;
+      var name = mascotApi.get();
+      var k = MASCOTS[name].coats[mascotApi.coat()];
+      var fill = faceFill(name, k);
+      var st = root.style;
+      st.setProperty('--n-bottom', notchBottom(k.tint));
+      st.setProperty('--n-face', fill);
+      st.setProperty('--n-ink', faceInk(fill));
+    }
+    if (mascotApi) {
+      press(mascotBtns, 'data-mascot', mascotApi.get());
+      mascotBtns.forEach(function (b) {
+        b.addEventListener('click', function () { mascotApi.set(b.getAttribute('data-mascot'), true); });
+      });
+      mascotApi.on(function (name) { press(mascotBtns, 'data-mascot', name); paintNotch(); });
+      paintNotch();
+    }
+    var style = readPref('vale-notch-style');
+    if (NOTCH_STYLES.indexOf(style) < 0) style = 'plain';
+    root.setAttribute('data-notch-style', style);
+    press(styleBtns, 'data-notch-style', style);
+    styleBtns.forEach(function (b) {
+      b.addEventListener('click', function () {
+        style = b.getAttribute('data-notch-style');
+        root.setAttribute('data-notch-style', style);
+        store('vale-notch-style', style);
+        press(styleBtns, 'data-notch-style', style);
+      });
+    });
   }
 
   /* ---------- progress, the sky and the stars ----------
@@ -427,8 +625,10 @@
       meteors = alive;
       /* ... then the stars gather into the cat's head. */
       if (con) {
-        var e = t - con.t0;
-        var fade = e > 6200 ? Math.max(0, 1 - (e - 6200) / 1200) : 1;
+        /* Cancelled (another mascot was picked): the stars stop where they are,
+           no line is drawn, and they fade out in 400 ms. */
+        var e = con.cut ? con.cut - con.t0 : t - con.t0;
+        var fade = con.cut ? Math.max(0, 1 - (t - con.cut) / 400) : e > 6200 ? Math.max(0, 1 - (e - 6200) / 1200) : 1;
         var oy = con.sy - sy;
         if (fade <= 0) {
           con = null;
@@ -438,7 +638,7 @@
             var q = 1 - Math.pow(1 - k2, 3);
             return [p.sx + (p.x - p.sx) * q, p.sy + (p.y + oy - p.sy) * q, k2];
           });
-          var lk = clamp((e - 2600) / 1400, 0, 1);
+          var lk = con.cut ? 0 : clamp((e - 2600) / 1400, 0, 1);
           var ink = light ? '168,67,28' : '244,237,228';
           ctx.strokeStyle = 'rgba(' + ink + ',' + (0.55 * fade).toFixed(3) + ')';
           ctx.lineWidth = 1.2;
@@ -483,10 +683,11 @@
     };
     skyApi = {
       fx: fx,
-      /* The wish: cx, cy and s place the constellation (viewport px, px per grid unit). */
+      /* The wish: cx, cy and s place the constellation (viewport px, px per grid unit).
+         The constellation is the cat's head, so it is the cat's wish only. */
       wish: function (cx, cy, s) {
         var t = performance.now();
-        if (reduce.matches) return false;
+        if (reduce.matches || (mascotApi && mascotApi.get() !== 'cat')) return false;
         var i;
         for (i = 0; i < 14; i++) meteors.push({ t0: t + i * 110 + Math.random() * 80, d: 700 + Math.random() * 300, x: W * (0.3 + Math.random() * 0.8), y: Math.random() * H * 0.4, len: 300 + Math.random() * 200 });
         con = {
@@ -498,6 +699,9 @@
         };
         loop.kick(fx);
         return true;
+      },
+      cancelWish: function () {
+        if (con && !con.cut) { con.cut = performance.now(); loop.kick(fx); }
       }
     };
     loop.add(fx);
@@ -611,10 +815,12 @@
        The copy notice is 340 x 56 and the greeting 230 x 38; refresh() keeps
        either at the idle footprint when it would touch a header pill. */
     notchApi = {
-      showCopy: function (text) {
+      showCopy: function (text, title) {
         if (open) return;
         var preview = $('#notch-clip-preview');
         if (preview) preview.textContent = text;
+        var head = $('.clip-title');
+        if (head) head.textContent = title || 'Copied';
         clearTimeout(copyTimer);
         copyTimer = setTimeout(function () {
           copyTimer = 0;
@@ -881,7 +1087,13 @@
      pops back saying "again?". Five presses within 2 s make a wish: the
      bubbles "make a wish" and "granted", meteors, and a constellation of the
      cat's head behind it. Reduced motion: no jump, sparks, vibration, meteors
-     or constellation; bubbles and eye changes still work. */
+     or constellation; bubbles and eye changes still work.
+     The same svg holds the cockatiel and the octopus (html[data-mascot] shows
+     one body, the face is shared), and all of the above works for them too,
+     except the ear twitch and the wish, which stay the cat's: with another
+     mascot five presses are five pokes. Picking another mascot ends a drag
+     (it springs home) and cancels a running wish (the stars fade). */
+  var HERO_LABELS = { cat: 'Vale’s cat', falk: 'Falk, Vale’s cockatiel', octo: 'Vale’s octopus' };
   function initHeroCat() {
     var wrap = $('#cat-wrap');
     var stage = $('#hero-cat');
@@ -891,10 +1103,12 @@
     var bubble = $('#cat-bubble');
     if (!wrap || !stage || !cat || !eyes || !all || !bubble) return;
     var notchEl = $('#notch');
+    function mascot() { return mascotApi ? mascotApi.get() : 'cat'; }
+    function label() { stage.setAttribute('aria-label', HERO_LABELS[mascot()] + '. Press to poke it'); }
 
     stage.setAttribute('role', 'button');
     stage.setAttribute('tabindex', '0');
-    stage.setAttribute('aria-label', 'Vale’s cat. Press to poke it');
+    label();
     /* Quick swipes still scroll; only an armed long press on touch drags. */
     stage.addEventListener('contextmenu', function (e) { e.preventDefault(); });
 
@@ -933,7 +1147,7 @@
     function pop() {
       animate(cat, [{ transform: 'none' }, { transform: 'scale(.82,1.12)', offset: 0.3 }, { transform: 'none' }], { duration: 450, easing: 'cubic-bezier(.3,1.7,.5,1)' });
     }
-    if (coatApi) coatApi.pop = pop;
+    if (mascotApi) mascotApi.pop = pop;
 
     /* ----- blink and ear twitch ----- */
     var purring = false;
@@ -950,35 +1164,55 @@
     (function twitch() {
       setTimeout(function () {
         var ear = $('.er', cat);
-        if (!doc.hidden && ear && !reduce.matches) animate(ear, [{ transform: 'none' }, { transform: 'rotate(14deg)', offset: 0.4 }, { transform: 'none' }], { duration: 350 });
+        if (!doc.hidden && ear && !reduce.matches && mascot() === 'cat') animate(ear, [{ transform: 'none' }, { transform: 'rotate(14deg)', offset: 0.4 }, { transform: 'none' }], { duration: 350 });
         twitch();
       }, rnd(4000, 9000));
     })();
 
     /* ----- poke, and the wish after five presses within 2 s ----- */
-    var SAYS = ['mrrp!', 'meow', 'hi!', 'nya~'];
+    /* Poke words, one list per mascot (the cockatiel does not meow). */
+    var SAYS = { cat: ['mrrp!', 'meow', 'hi!', 'nya~'], falk: ['chirp!', 'hi!', 'tweet'], octo: ['blub', 'hi!', 'boop'] };
     var sayAt = 0;
     var presses = [];
     var looking = false;
     var lookTimer = 0;
+    var grantTimer = 0;
+    var wishEnd = 0; /* the wish's bubbles show until then (Date.now() ms) */
     function wish() {
-      say('make a wish ✨', 3000);
+      say('make a wish', 3000);
+      wishEnd = Date.now() + 3000;
       if (reduce.matches || !skyApi) return;
       var r = wrap.getBoundingClientRect();
       var ok = skyApi.wish(r.left + r.width / 2, r.top + r.height / 2, 1.8 * r.width / 256);
       if (!ok) return;
+      wishEnd = Date.now() + 7000;
       looking = true;
       clearTimeout(lookTimer);
+      clearTimeout(grantTimer);
       lookTimer = setTimeout(function () { looking = false; loop.kick(catFx); }, 6500);
-      setTimeout(function () { say('✨ granted', 1800); }, 5200);
+      grantTimer = setTimeout(function () { say('granted', 1800); }, 5200);
+      loop.kick(catFx);
+    }
+    function cancelWish() {
+      presses = [];
+      if (skyApi) skyApi.cancelWish();
+      if (Date.now() >= wishEnd) return;
+      wishEnd = 0;
+      looking = false;
+      clearTimeout(lookTimer);
+      clearTimeout(grantTimer);
+      clearTimeout(sayTimer);
+      bubble.classList.remove('on');
+      if (skyApi) skyApi.cancelWish();
       loop.kick(catFx);
     }
     function poke() {
       var now = Date.now();
       presses = presses.filter(function (x) { return now - x < 2000; });
       presses.push(now);
-      if (presses.length >= 5) { presses = []; wish(); return; }
-      say(SAYS[sayAt++ % SAYS.length]);
+      if (presses.length >= 5 && mascot() === 'cat') { presses = []; wish(); return; }
+      var words = SAYS[mascot()] || SAYS.cat;
+      say(words[sayAt++ % words.length]);
       animate(cat, [
         { transform: 'none' },
         { transform: 'scale(1.12,.85)', offset: 0.18 },
@@ -1028,6 +1262,12 @@
       if (heroInner) heroInner.classList.add('is-carrying');
       stopPurr();
       loop.kick(catFx);
+    }
+    function letGo() {
+      held = false;
+      cat.classList.remove('is-held');
+      stage.classList.remove('is-held');
+      if (heroInner) heroInner.classList.remove('is-carrying');
     }
     stage.addEventListener('pointerdown', function (e) {
       if (absorbed) return;
@@ -1098,10 +1338,7 @@
       var wasHeld = held;
       clearTimeout(lpTimer);
       down = null;
-      held = false;
-      cat.classList.remove('is-held');
-      stage.classList.remove('is-held');
-      if (heroInner) heroInner.classList.remove('is-carrying');
+      letGo();
       if (e && e.type === 'pointercancel') { returning = true; loop.kick(catFx); return; }
       if (!wasHeld) { poke(); return; }
       if (over) absorb(); else { returning = true; loop.kick(catFx); }
@@ -1226,11 +1463,32 @@
       },
       busy: false
     };
+    /* ----- another mascot picked: a drag ends and it springs home; a wish is cancelled ----- */
+    function dropHold() {
+      clearTimeout(lpTimer);
+      if (down) { try { stage.releasePointerCapture(down.id); } catch (err) { /* already released */ } }
+      down = null;
+      if (!held) return;
+      letGo();
+      over = false;
+      if (notchApi) notchApi.glow(false);
+      returning = true;
+      loop.kick(catFx);
+    }
+    var shownMascot = mascot();
+    if (mascotApi) mascotApi.on(function (name) {
+      if (name === shownMascot) return;
+      shownMascot = name;
+      label();
+      dropHold();
+      cancelWish();
+    });
+
     loop.gate(wrap, catFx, '100px 0px');
     loop.add(catFx);
   }
 
-  /* ---------- marquee: the 14 names move sideways with the scroll ---------- */
+  /* ---------- marquee: the 15 names move sideways with the scroll ---------- */
   function initMarquee() {
     var wrapEl = $('.marquee');
     var row = $('#marquee');
@@ -1370,18 +1628,18 @@
     });
   }
 
-  /* ---------- the story: one hover, fourteen pages ----------
+  /* ---------- the story: one hover, fifteen pages ----------
      The wrapper (.story-pin) is about 560vh (420vh on phones) while .is-pin is
      set, and the stage inside it, 100svh tall, sticks to the top. p =
      clamp(-top / (height - svh), 0, 1) of the wrapper. z = clamp(p * 8, 0, 1)
      grows the panel from notch size to full; q = clamp((p - .1) / .9, 0, 1)
-     picks the page, round(q * 13), while the page position fpos eases toward
-     q * 13 and the dock icons magnify as the live notch's dock does
+     picks the page, round(q * (N - 1)), while the page position fpos eases toward
+     q * (N - 1) and the dock icons magnify as the live notch's dock does
      (1 + 0.9 * falloff(d), falloff = .5 (1 + cos(pi d / 2)) within 2 icons).
      .is-pin is set only with motion welcome and a stage that fits 100svh
      (measured with a hidden probe, again once fonts are in and on viewport
      changes, never on innerHeight); otherwise the story is static: the first
-     page on the screen and the 14 names as a readable list.
+     page on the screen and the 15 names as a readable list.
      Scroll position (kept from the old Susun scrub): (1) the first choice is
      made synchronously when this runs, before the browser handles a
      fragment; (2) until the reader scrolls or presses something, and while
@@ -1599,41 +1857,260 @@
   }
 
   /* ---------- the playground ----------
-     Six live cards. The controls are .js-only (the text and pictures show
-     without script). Reduced motion: the dance, the dots and the paws stand
-     still, the Susun windows jump at once. */
+     Eight cards: sign, draw, captions, phone, typing, susun, copy, mascots.
+     The controls are .js-only (the text and pictures show without script).
+     Reduced motion: every action lands in its end state at once (no
+     animation is started), and the stories show as still poses. */
   function playCard(name) { return $('.play-card[data-card="' + name + '"]'); }
 
-  function initDance() {
-    var card = playCard('dance');
-    var btn = card && $('[data-act="dance"]', card);
-    var pic = card && $('.play-pic', card);
-    if (!btn || !pic) return;
-    var timer = 0;
-    function note() {
-      if (doc.hidden || !pic.animate) return;
-      var n = doc.createElement('span');
-      n.className = 'note';
-      n.setAttribute('aria-hidden', 'true');
-      n.textContent = Math.random() < 0.5 ? '♪' : '♫';
-      pic.appendChild(n);
-      var an = n.animate([
-        { transform: 'translate(-50%,0)', opacity: 1 },
-        { transform: 'translate(' + ((Math.random() - 0.5) * 200).toFixed(0) + 'px,110px) rotate(' + ((Math.random() - 0.5) * 60).toFixed(0) + 'deg)', opacity: 0 }
-      ], { duration: 1600, easing: 'ease-out' });
-      an.onfinish = function () { if (n.parentNode) n.parentNode.removeChild(n); };
+  var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+  /* Sign: with script the picture starts unsigned; a press places the
+     signature, today's date and the check, and the notch says Signed. */
+  function initSignCard() {
+    var card = playCard('sign');
+    var btn = card && $('[data-act="sign"]', card);
+    var date = card && $('.sg-date', card);
+    if (!btn || !date) return;
+    var d = new Date();
+    date.textContent = d.getDate() + ' ' + MONTHS[d.getMonth()] + ' ' + d.getFullYear();
+    var signed = false;
+    btn.setAttribute('aria-pressed', 'false');
+    btn.addEventListener('click', function () {
+      signed = !signed;
+      card.classList.toggle('is-signed', signed);
+      btn.setAttribute('aria-pressed', signed ? 'true' : 'false');
+      if (signed && notchApi) notchApi.showCopy('sample (signed).pdf', 'Signed');
+    });
+  }
+
+  /* Captions: three scripted lines, grey while spoken (about 1.2 s each),
+     white when done. The live text announces only finished lines. */
+  function initCaptionsCard() {
+    var card = playCard('captions');
+    var btn = card && $('[data-act="captions"]', card);
+    var cap = card && $('.cap', card);
+    var live = card && $('[data-live]', card);
+    if (!btn || !cap) return;
+    var LINES = [
+      ['Others', 'So the draft goes out on Friday.'],
+      ['Me', 'Friday works, I\'ll send it in the morning.'],
+      ['Others', 'Good, I\'ll tell the team.']
+    ];
+    var STEP = 1200;
+    var playing = false;
+    function line(i, spoken) {
+      var p = doc.createElement('p');
+      p.className = 'cl' + (spoken ? ' is-live' : '');
+      var b = doc.createElement('b');
+      b.textContent = LINES[i][0];
+      p.appendChild(b);
+      p.appendChild(doc.createTextNode(' ' + LINES[i][1]));
+      return p;
     }
-    function sync() {
-      clearInterval(timer);
-      timer = 0;
-      if (card.classList.contains('is-on') && !reduce.matches) timer = setInterval(note, 500);
+    function say(text) { if (live) live.textContent = text; }
+    function said(i) { return LINES[i][0] + ': ' + LINES[i][1]; }
+    function finish() {
+      playing = false;
+      btn.removeAttribute('aria-disabled');
+      btn.textContent = 'Play again';
     }
     btn.addEventListener('click', function () {
-      var on = card.classList.toggle('is-on');
-      btn.textContent = on ? 'Pause' : 'Play a beat';
-      sync();
+      if (playing) return;
+      playing = true;
+      btn.setAttribute('aria-disabled', 'true');
+      cap.textContent = '';
+      say('');
+      if (reduce.matches) {
+        LINES.forEach(function (l, i) { cap.appendChild(line(i, false)); });
+        say(LINES.map(function (l, i) { return said(i); }).join(' '));
+        finish();
+        return;
+      }
+      btn.textContent = 'Playing';
+      LINES.forEach(function (l, i) {
+        setTimeout(function () { cap.appendChild(line(i, true)); }, i * STEP);
+        setTimeout(function () {
+          cap.children[i].classList.remove('is-live');
+          say(said(i));
+          if (i === LINES.length - 1) finish();
+        }, (i + 1) * STEP);
+      });
     });
-    if (reduce.addEventListener) reduce.addEventListener('change', sync);
+  }
+
+  /* Phone: Wi-Fi or Tailscale, one pressed at a time. */
+  function initPhoneCard() {
+    var card = playCard('phone');
+    var btns = card ? $$('[data-net]', card) : [];
+    var line = card && $('.net-line', card);
+    if (btns.length !== 2 || !line) return;
+    var TEXT = {
+      wifi: 'On the same Wi-Fi as your PC.',
+      tailscale: 'Through your own Tailscale network, from anywhere.'
+    };
+    btns.forEach(function (b) {
+      b.addEventListener('click', function () {
+        btns.forEach(function (x) { x.setAttribute('aria-pressed', x === b ? 'true' : 'false'); });
+        line.textContent = TEXT[b.getAttribute('data-net')];
+      });
+    });
+  }
+
+  /* Mascots: three mini notches. The pointer over one shrinks it to that
+     mascot's eyes (touch: a tap toggles). "Play a story" acts out one short
+     story per notch, one after another. The coats come from the same custom
+     properties as the hero, and the hero's pick is outlined in CSS. */
+  function initMascotCard() {
+    var card = playCard('mascots');
+    var slots = card ? $$('.ms', card) : [];
+    var btn = card && $('[data-act="story"]', card);
+    if (slots.length !== 3 || !btn) return;
+    var SVGNS = 'http://www.w3.org/2000/svg';
+    var running = false;
+    var items = slots.map(function (slot) {
+      return { slot: slot, mn: $('.mn', slot), eyes: $$('.pe i', slot), on: false, box: null, shown: '' };
+    });
+    var fx = {
+      on: function () { return items.some(function (it) { return it.on; }); },
+      read: function () { items.forEach(function (it) { if (it.on) it.box = it.mn.getBoundingClientRect(); }); },
+      write: function () {
+        items.forEach(function (it) {
+          if (!it.on) {
+            if (it.shown) { it.shown = ''; it.eyes.forEach(function (e) { e.style.transform = ''; }); }
+            return;
+          }
+          var dx = S.mx < 0 ? 0 : clamp((S.mx - (it.box.left + it.box.width / 2)) / 40, -2.5, 2.5);
+          var dy = S.my < 0 ? 0 : clamp((S.my - it.box.bottom) / 60, 0, 2.5);
+          var v = 'translate(' + dx.toFixed(2) + 'px,' + dy.toFixed(2) + 'px)';
+          if (v === it.shown) return;
+          it.shown = v;
+          it.eyes.forEach(function (e) { e.style.transform = v; });
+        });
+      }
+    };
+    loop.add(fx);
+    function setEyes(it, on) {
+      it.on = on;
+      it.slot.classList.toggle('is-eyes', on);
+      if (!on) it.slot.classList.remove('is-blink');
+      loop.kick(fx);
+    }
+    items.forEach(function (it) {
+      it.slot.addEventListener('pointerenter', function (e) { if (e.pointerType !== 'touch' && !running) setEyes(it, true); });
+      it.slot.addEventListener('pointerleave', function (e) { if (e.pointerType !== 'touch') setEyes(it, false); });
+      it.slot.addEventListener('pointerup', function (e) { if (e.pointerType === 'touch' && !running) setEyes(it, !it.on); });
+      it.slot.addEventListener('pointermove', function () { if (it.on) loop.kick(fx); }, { passive: true });
+    });
+    (function blink() {
+      setTimeout(function () {
+        if (!doc.hidden && !reduce.matches) {
+          var open = items.filter(function (it) { return it.on; });
+          open.forEach(function (it) { it.slot.classList.add('is-blink'); });
+          setTimeout(function () { open.forEach(function (it) { it.slot.classList.remove('is-blink'); }); }, 130);
+        }
+        blink();
+      }, rnd(2200, 4700));
+    })();
+
+    /* ----- stories ----- */
+    var STORY_MS = 3000;
+    function actor(sym, size, flip) {
+      var svg = doc.createElementNS(SVGNS, 'svg');
+      svg.setAttribute('class', 'st-actor');
+      svg.setAttribute('viewBox', '0 0 256 256');
+      svg.setAttribute('width', size);
+      svg.setAttribute('height', size);
+      svg.setAttribute('aria-hidden', 'true');
+      svg.setAttribute('focusable', 'false');
+      var g = doc.createElementNS(SVGNS, 'g');
+      if (flip) g.setAttribute('transform', 'rotate(180 128 128)');
+      var use = doc.createElementNS(SVGNS, 'use');
+      use.setAttribute('href', '#' + sym);
+      g.appendChild(use);
+      svg.appendChild(g);
+      return svg;
+    }
+    function put(el, x, y) { el.style.left = Math.round(x) + 'px'; el.style.top = Math.round(y) + 'px'; }
+    /* A box inside the slot, from the slot's padding edge. */
+    function rel(slot, el) {
+      var a = slot.getBoundingClientRect();
+      var b = el.getBoundingClientRect();
+      var l = b.left - a.left - slot.clientLeft;
+      var t = b.top - a.top - slot.clientTop;
+      return { l: l, t: t, r: l + b.width, b: t + b.height, w: b.width, h: b.height };
+    }
+    /* Each story adds its actor and returns the nodes to remove. Motion is
+       Web Animations and is skipped under reduced motion (a still pose). */
+    var STORIES = {
+      cat: function (it, motion) {
+        var n = rel(it.slot, it.mn);
+        var clk = $('.clk', it.slot);
+        var c = clk ? rel(it.slot, clk) : { r: n.r - 12 };
+        var a = actor('cat-sleep', 22, false);
+        put(a, c.r - 15, n.t + (n.h - 22) / 2);
+        var z = doc.createElement('span');
+        z.className = 'st-z';
+        z.setAttribute('aria-hidden', 'true');
+        z.textContent = 'z';
+        put(z, c.r + 2, n.t + 1);
+        it.slot.appendChild(a);
+        it.slot.appendChild(z);
+        if (motion && a.animate) {
+          a.animate([{ transform: 'translateY(-14px)', opacity: 0 }, { transform: 'none', opacity: 1 }], { duration: 320, easing: 'ease-out' });
+          z.animate([{ transform: 'translate(0,2px) scale(.7)', opacity: 0 }, { opacity: 1, offset: 0.3 }, { transform: 'translate(5px,-10px) scale(1.1)', opacity: 0 }], { duration: 1500, iterations: Infinity, easing: 'ease-out' });
+        }
+        return [a, z];
+      },
+      falk: function (it, motion) {
+        var n = rel(it.slot, it.mn);
+        var a = actor('falk-idle', 34, true);
+        put(a, n.r - 22, n.b - 6);
+        a.style.transformOrigin = '50% 0';
+        it.slot.appendChild(a);
+        if (motion && a.animate) a.animate([{ transform: 'rotate(-9deg)' }, { transform: 'rotate(9deg)' }], { duration: 750, iterations: Infinity, direction: 'alternate', easing: 'ease-in-out' });
+        return [a];
+      },
+      octo: function (it, motion) {
+        var n = rel(it.slot, it.mn);
+        var size = Math.min(52, it.slot.clientWidth - 6);
+        var a = actor('octo-happy', size, false);
+        put(a, n.l + n.w / 2 - size / 2, n.t + n.h - size * 0.55);
+        a.style.transformOrigin = '50% 40%';
+        it.slot.appendChild(a);
+        if (motion && a.animate) a.animate([{ transform: 'scale(.55)', opacity: 0 }, { transform: 'scale(1)', opacity: 1, offset: 0.15 }, { transform: 'scale(.93)', offset: 0.55 }, { transform: 'scale(1)' }], { duration: 900, iterations: Infinity, easing: 'ease-in-out' });
+        return [a];
+      }
+    };
+    var nodes = [];
+    function startStory(i) {
+      var it = items[i];
+      it.slot.classList.add('is-story');
+      nodes = STORIES[it.slot.getAttribute('data-m')](it, !reduce.matches);
+    }
+    function endStory(i) {
+      items[i].slot.classList.remove('is-story');
+      nodes.forEach(function (n) { if (n.parentNode) n.parentNode.removeChild(n); });
+      nodes = [];
+    }
+    /* A mini notch in eyes mode (a touch tap) springs back to full width in
+       .45 s (.mn's transition); the stories measure it, so they wait for that. */
+    var EYES_BACK_MS = 480;
+    btn.addEventListener('click', function () {
+      if (running) return;
+      running = true;
+      btn.setAttribute('aria-disabled', 'true');
+      var wait = items.some(function (it) { return it.on; }) && !reduce.matches ? EYES_BACK_MS : 0;
+      items.forEach(function (it) { setEyes(it, false); });
+      items.forEach(function (it, i) {
+        setTimeout(function () { if (i) endStory(i - 1); startStory(i); }, wait + i * STORY_MS);
+      });
+      setTimeout(function () {
+        endStory(items.length - 1);
+        running = false;
+        btn.removeAttribute('aria-disabled');
+      }, wait + items.length * STORY_MS);
+    });
   }
 
   function initTyping() {
@@ -1645,9 +2122,9 @@
     var LINES = ['> claude "fix the flaky test"', 'Reading src/app.rs', 'Editing 2 files', 'Running cargo test', '1857 passed'];
     function say(text) { if (live) live.textContent = text; }
     btn.addEventListener('click', function () {
-      if (card.getAttribute('data-s') === 'work') return;
+      if (btn.getAttribute('aria-disabled') === 'true') return;
       card.setAttribute('data-s', 'work');
-      btn.disabled = true;
+      btn.setAttribute('aria-disabled', 'true');
       term.textContent = '';
       say('Claude is working');
       LINES.forEach(function (l, i) {
@@ -1660,54 +2137,10 @@
       setTimeout(function () { card.setAttribute('data-s', 'done'); say('Claude is done'); }, 3600);
       setTimeout(function () {
         card.setAttribute('data-s', 'idle');
-        btn.disabled = false;
+        btn.removeAttribute('aria-disabled');
         term.textContent = '';
       }, 7000);
     });
-  }
-
-  function initPeek() {
-    var card = playCard('peek');
-    var pic = card && $('.play-pic', card);
-    var mn = card && $('.mn-peek', card);
-    var eyeEls = card ? $$('.pe i', card) : [];
-    if (!pic || !mn || eyeEls.length < 2) return;
-    var eyesOn = false;
-    var box = null;
-    var shown = '';
-    function set(on) {
-      eyesOn = on;
-      card.classList.toggle('is-eyes', on);
-      loop.kick(fx);
-    }
-    var fx = {
-      on: function () { return eyesOn; },
-      read: function () { box = mn.getBoundingClientRect(); },
-      write: function () {
-        if (!eyesOn) { if (shown) { shown = ''; eyeEls.forEach(function (e) { e.style.transform = ''; }); } return; }
-        var dx = S.mx < 0 ? 0 : clamp((S.mx - (box.left + box.width / 2)) / 40, -2.5, 2.5);
-        var dy = S.my < 0 ? 0 : clamp((S.my - box.bottom) / 60, 0, 2.5);
-        var v = 'translate(' + dx.toFixed(2) + 'px,' + dy.toFixed(2) + 'px)';
-        if (v === shown) return;
-        shown = v;
-        eyeEls.forEach(function (e) { e.style.transform = v; });
-      }
-    };
-    loop.add(fx);
-    /* Mouse and pen: while the pointer is inside the picture. Touch: a tap toggles. */
-    pic.addEventListener('pointerenter', function (e) { if (e.pointerType !== 'touch') set(true); });
-    pic.addEventListener('pointerleave', function (e) { if (e.pointerType !== 'touch') set(false); });
-    pic.addEventListener('pointerup', function (e) { if (e.pointerType === 'touch') set(!eyesOn); });
-    pic.addEventListener('pointermove', function () { if (eyesOn) loop.kick(fx); }, { passive: true });
-    (function blink() {
-      setTimeout(function () {
-        if (eyesOn && !doc.hidden) {
-          card.classList.add('is-blink');
-          setTimeout(function () { card.classList.remove('is-blink'); }, 130);
-        }
-        blink();
-      }, rnd(2200, 4700));
-    })();
   }
 
   function initSusunCard() {
@@ -1761,15 +2194,23 @@
     var pic = card && $('.play-pic', card);
     var cv = card && $('.draw-cv', card);
     var sel = card && $('.sel', card);
-    var toolBtns = card ? $$('.tools button', card) : [];
+    var toolBtns = card ? $$('.tools button[data-t]', card) : [];
     if (!pic || !cv || !sel || !toolBtns.length) return;
     var ctx = cv.getContext('2d');
     if (!ctx) return;
-    /* The selection box inside the picture, as fractions (matches .sel in style.css). */
-    var X0 = 0.12;
-    var Y0 = 0.22;
-    var X1 = 0.88;
-    var Y1 = 0.76;
+    var turns = 0;
+    /* Strokes are kept as (u, v) inside the selection box, so Turn can map
+       them with (u, v) to (1 - v, u). The box is given as fractions of the
+       picture (left, top, right, bottom): landscape at rest (LAND matches
+       .sel in style.css) and a portrait one (about 360:640) after an odd
+       number of turns, ending above the tools bar. */
+    var LAND = [0.12, 0.22, 0.88, 0.76];
+    var PORT = [0.41, 0.12, 0.59, 0.70];
+    function box() { return turns % 2 ? PORT : LAND; }
+    function toPic(p) {
+      var b = box();
+      return [b[0] + p[0] * (b[2] - b[0]), b[1] + p[1] * (b[3] - b[1])];
+    }
     var tool = 'pen';
     var strokes = [];
     var current = null;
@@ -1784,7 +2225,8 @@
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
       var list = current ? strokes.concat([current]) : strokes;
-      list.forEach(function (s) {
+      list.forEach(function (st) {
+        var s = { type: st.type, pts: st.pts.map(toPic) };
         if (s.type === 'box') {
           var a = s.pts[0];
           var b = s.pts[s.pts.length - 1];
@@ -1801,7 +2243,8 @@
         }
       });
     }
-    /* Strokes are kept as fractions of the picture, so a resize redraws them in place. */
+    /* The canvas follows the picture's size; the strokes are relative to the
+       selection box, so a resize redraws them in place. */
     var fx = {
       on: function () { return false; },
       read: function () { picBox = pic.getBoundingClientRect(); },
@@ -1823,7 +2266,10 @@
     loop.add(fx);
     function point(e) {
       var r = pic.getBoundingClientRect();
-      return [clamp((e.clientX - r.left) / Math.max(r.width, 1), X0, X1), clamp((e.clientY - r.top) / Math.max(r.height, 1), Y0, Y1)];
+      var b = box();
+      var px = (e.clientX - r.left) / Math.max(r.width, 1);
+      var py = (e.clientY - r.top) / Math.max(r.height, 1);
+      return [clamp((px - b[0]) / (b[2] - b[0]), 0, 1), clamp((py - b[1]) / (b[3] - b[1]), 0, 1)];
     }
     sel.addEventListener('pointerdown', function (e) {
       if (e.pointerType === 'mouse' && e.button !== 0) return;
@@ -1849,13 +2295,46 @@
       b.addEventListener('click', function () {
         var t = b.getAttribute('data-t');
         if (t === 'clear') { strokes = []; current = null; redraw(); return; }
-        if (t === 'copy') { if (notchApi) notchApi.showCopy('Screenshot 640 x 360'); return; }
+        if (t === 'copy') { if (notchApi) notchApi.showCopy('Screenshot ' + (turns % 2 ? '360 x 640' : '640 x 360')); return; }
         tool = t;
         toolBtns.forEach(function (x) {
           if (x.getAttribute('data-t') === 'pen' || x.getAttribute('data-t') === 'box') x.setAttribute('aria-pressed', x === b ? 'true' : 'false');
           x.classList.toggle('on', x === b);
         });
       });
+    });
+
+    /* Turn: a quarter, strokes and selection together. The strokes and the
+       selection turn together: the strokes are (u, v) inside the box, a
+       clockwise quarter maps them to (1 - v, u), the other way (v, 1 - u);
+       the box changes between landscape and portrait and the label swaps. */
+    function mapPt(p, dir) { return dir > 0 ? [1 - p[1], p[0]] : [p[1], 1 - p[0]]; }
+    function turn(dir) {
+      if (current) end();
+      strokes.forEach(function (s) { s.pts = s.pts.map(function (p) { return mapPt(p, dir); }); });
+      turns += dir;
+      var b = box();
+      sel.style.left = (b[0] * 100) + '%';
+      sel.style.top = (b[1] * 100) + '%';
+      sel.style.width = ((b[2] - b[0]) * 100) + '%';
+      sel.style.height = ((b[3] - b[1]) * 100) + '%';
+      if (turns % 2) sel.setAttribute('data-dim', '360 x 640'); else sel.removeAttribute('data-dim');
+      redraw();
+      if (!reduce.matches && sel.animate) {
+        var spin = [{ transform: 'rotate(' + (-90 * dir) + 'deg)', opacity: 0.4 }, { transform: 'none', opacity: 1 }];
+        sel.animate(spin, { duration: 260, easing: 'ease-out' });
+        cv.animate(spin, { duration: 260, easing: 'ease-out' });
+      }
+    }
+    var turnBtn = $('[data-tool="turn"]', card);
+    if (turnBtn) {
+      turnBtn.setAttribute('aria-keyshortcuts', 'Control+R');
+      turnBtn.addEventListener('click', function () { turn(1); });
+    }
+    card.addEventListener('keydown', function (e) {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || (e.key !== 'r' && e.key !== 'R')) return;
+      e.preventDefault();
+      turn(e.shiftKey ? -1 : 1);
     });
   }
 
@@ -2052,7 +2531,8 @@
   safe(initMenu);
   safe(initCopy);
   safe(initCmdFade);
-  safe(initCoats);
+  safe(initMascot);
+  safe(initPicks);
   safe(initMiniClocks);
   if (loop) {
     safe(initSky);
@@ -2062,9 +2542,11 @@
     safe(initHeader);
     safe(initToTop);
     safe(initStory);
-    safe(initDance);
+    safe(initSignCard);
+    safe(initCaptionsCard);
+    safe(initPhoneCard);
+    safe(initMascotCard);
     safe(initTyping);
-    safe(initPeek);
     safe(initSusunCard);
     safe(initDraw);
     safe(initWalk);

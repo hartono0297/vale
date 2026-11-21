@@ -60,6 +60,16 @@
   --eye: #17120F;
   --rim: transparent;
   --pa: 0;
+
+  /* The cockatiel and the octopus. The cat's own variables above always hold the
+     cat's coat; these hold the other two mascots' (Lutino and Coral by default;
+     --oc-spot is the body mixed 18 % toward black, set by site.js). */
+  --fk-body: #F1E4A2;
+  --fk-face: #F6D04A;
+  --fk-crest: #F6D04A;
+  --fk-cheek: #EC6B3A;
+  --oc-body: #E87C8E;
+  --oc-spot: #BE6674;
   /* The go-to-top tail: its tip colour (set with the coat) and its outline. */
   --tip: #F4EDE4;
   --tail-edge: #A89A8B;
@@ -379,7 +389,7 @@ html:not(.js) .js-only { display: none !important; }
 .notch.is-open .notch-face { height: 44px; }
 /* Without script the notch would be a button that does nothing, so it is not shown. */
 html:not(.js) #notch { display: none; }
-.notch :focus-visible { outline: 2px solid #F4EDE4; outline-offset: -4px; }
+.notch :focus-visible { outline: 3px solid #F4EDE4; outline-offset: -4px; }
 .notch .tab:focus-visible { outline-offset: 1px; border-radius: 6px; }
 
 .nf { position: absolute; inset: 0; display: flex; align-items: center; gap: 10px; padding: 0 20px; opacity: 0; pointer-events: none; transition: opacity .18s ease-out; }
@@ -392,6 +402,48 @@ html:not(.js) #notch { display: none; }
 .nf-idle { justify-content: space-between; }
 .nf-idle .clock { font-family: var(--mono); font-weight: 400; font-size: 13px; font-variant-numeric: tabular-nums; }
 .nc { flex: none; overflow: visible; }
+/* One <use> per mascot in every notch svg and in the typing card; html[data-mascot]
+   picks which one shows (no attribute, no script: the cat). */
+.u-falk, .u-octo { display: none; }
+html[data-mascot="falk"] .u-cat, html[data-mascot="falk"] .u-octo,
+html[data-mascot="octo"] .u-cat, html[data-mascot="octo"] .u-falk { display: none; }
+html[data-mascot="falk"] .u-falk, html[data-mascot="octo"] .u-octo { display: inline; }
+/* Notch colour (the hero picks set html[data-notch-style]; site.js writes
+   --n-bottom, --n-face and --n-ink from the mascot's coat, ported from the
+   app's notch_colour.rs). Gradient: the surface down to 28 %, then the coat's
+   tint, in the idle, clipboard and greet states. Face: idle only, the notch
+   takes the face colour and shows the face marks and the clock as one centred
+   group; clipboard and greet stay Gradient, as in the app. The open panel keeps
+   the plain surface in every mode. Same in both themes, like the notch itself. */
+.face-marks, .face-patch { display: none; }
+.face-marks { flex: none; overflow: visible; fill: var(--n-ink, #17120F); }
+.face-marks g { display: none; }
+.face-marks .fm-cat { display: inline; fill: var(--eye); }
+html[data-mascot="falk"] .face-marks .fm-cat, html[data-mascot="octo"] .face-marks .fm-cat { display: none; }
+html[data-mascot="falk"] .face-marks .fm-falk, html[data-mascot="octo"] .face-marks .fm-octo { display: inline; }
+.face-marks .fm-cheek { fill: var(--fk-cheek); }
+.face-marks .fm-beak { fill: #D9978F; }
+.face-marks .fm-spot { fill: var(--oc-spot); }
+html:is([data-notch-style="gradient"], [data-notch-style="face"]) #notch:not(.is-open) {
+  background: linear-gradient(to bottom, var(--notch-bg) 0 28%, var(--n-bottom, var(--notch-bg)) 100%);
+}
+html[data-notch-style="face"] #notch[data-state="idle"]:not(.is-open) { background: var(--n-face, var(--notch-bg)); }
+html[data-notch-style="face"] #notch[data-state="idle"]:not(.is-open) .nf-idle { justify-content: center; gap: 10px; }
+html[data-notch-style="face"] #notch[data-state="idle"]:not(.is-open) .nc { display: none; }
+html[data-notch-style="face"] #notch[data-state="idle"]:not(.is-open) .face-marks { display: block; }
+html[data-notch-style="face"] #notch[data-state="idle"]:not(.is-open) .clock { color: var(--n-ink); }
+/* The cream focus ring would vanish on a light face (1.00 on Calico); the face ink holds 4.5:1 on every fill. */
+html[data-notch-style="face"] #notch[data-state="idle"]:not(.is-open) .notch-face:focus-visible { outline-color: var(--n-ink); }
+/* Calico patches, clipped by the notch like the app's face. */
+html[data-notch-style="face"]:not([data-mascot="falk"], [data-mascot="octo"]) #notch[data-state="idle"]:not(.is-open) .face-patch { display: block; opacity: var(--pa, 0); }
+.face-patch { position: absolute; border-radius: 50%; pointer-events: none; }
+.fp-a { left: -8px; top: -10px; width: 26px; height: 26px; background: #E2683C; }
+.fp-b { right: -8px; bottom: -10px; width: 22px; height: 22px; background: #2B2420; }
+@media (max-width: 23.49em) {
+  html[data-notch-style="face"] #notch[data-state="idle"]:not(.is-open) .nf-idle { gap: 8px; }
+  .face-marks { width: 28px; height: 19px; }
+  .fp-b { display: none !important; }
+}
 .nf-clip { padding: 0 16px; gap: 12px; }
 .clip-text { display: flex; flex-direction: column; min-width: 0; }
 .clip-title { font-weight: 600; font-size: 14px; white-space: nowrap; }
@@ -430,14 +482,17 @@ html:not(.js) #notch { display: none; }
 .pg-tiles b { color: var(--notch-text); font-weight: 600; font-size: 14px; }
 .pg-code { margin: 6px 0 0; padding: 12px 14px; border: 1px solid var(--notch-line); border-radius: 10px; font-family: var(--mono); font-weight: 400; font-size: 13px; line-height: 1.7; }
 .pg-code .pr { color: var(--notch-accent); }
+.rec-btn { position: relative; flex: none; width: 56px; height: 56px; border: 2px solid #E5534B; border-radius: 50%; }
+.rec-btn::after { content: ""; position: absolute; inset: 9px; border-radius: 50%; background: #E5534B; }
+.pg-time { font-family: var(--mono); font-weight: 400; }
 .caret { display: inline-block; width: 7px; height: 14px; vertical-align: -2px; background: var(--notch-accent); }
 .pg-minis { display: grid; grid-template-columns: repeat(3, 48px); gap: 14px 22px; padding: 10px 0 14px; color: var(--notch-2); }
 .pg-minis svg { display: block; }
 .pg-minis .on { color: var(--notch-accent); }
 
-/* 14 tabs of 30 px plus 24 px padding fit the 458 px inside the open notch's edges. */
+/* 15 tabs of 28 px plus 24 px padding (444 px) fit the 458 px inside the open notch's edges, as the 14 of 30 px did. */
 .dock { display: flex; justify-content: center; align-items: flex-end; height: 64px; padding: 0 12px 6px; }
-.tab { display: flex; align-items: flex-end; justify-content: center; flex: none; width: 30px; height: 32px; margin: 0; padding: 0 0 7px; border: 0; background: transparent; color: var(--notch-2); cursor: pointer; }
+.tab { display: flex; align-items: flex-end; justify-content: center; flex: none; width: 28px; height: 32px; margin: 0; padding: 0 0 7px; border: 0; background: transparent; color: var(--notch-2); cursor: pointer; }
 .tab[aria-selected="true"] { color: var(--notch-accent); }
 .dock-ico { width: 18px; height: 18px; transform-origin: 50% 100%; pointer-events: none; }
 @media (pointer: coarse), (max-width: 32.5em) {
@@ -475,15 +530,20 @@ h3 { font-size: clamp(1.25rem, 1.1rem + .6vw, 1.5rem); letter-spacing: -.015em; 
   .btn-copy.is-copied { border-color: var(--ink); }
 }
 .btn-s { min-height: 44px; padding: 0 18px; border-color: var(--control); background: transparent; color: var(--text); font-size: .9375rem; font-weight: 500; }
-.btn-s:hover:not(:disabled) { border-color: var(--ink); }
-.btn-s:disabled { opacity: .6; cursor: default; }
+.btn-s:hover:not(:disabled, [aria-disabled="true"]) { border-color: var(--ink); }
+/* A running demo keeps its button focusable (aria-disabled, not disabled), so a
+   keyboard user keeps their place; it looks the same as a disabled one. */
+.btn-s:disabled, .btn-s[aria-disabled="true"] { opacity: .6; cursor: default; }
+/* A pressed toggle (Sign) is filled like the pressed picks; its label stays. */
+.btn-s[aria-pressed="true"] { border-color: var(--text); background: var(--text); color: var(--bg); }
 .actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin: 2.25rem 0 0; }
 
 /* ---------- hero ----------
-   Centred: the cat, four coat chips, a two-line headline, one line, Download
-   and the install line, on the night horizon. The top padding keeps the notch
-   and the header pills clear. Without script the cat is a still picture and
-   the chips are not shown. */
+   Centred: the mascot, the Mascot and Notch colour picks, its coat chips, a
+   two-line headline, one line, Download and the install line, on the night
+   horizon. The top padding keeps the notch and the header pills clear.
+   Without script the cat is a still picture and the picks and chips are not
+   shown. */
 .hero { position: relative; display: flex; align-items: center; justify-content: center; min-height: min(100vh, 62rem); min-height: min(100svh, 62rem); padding-block: clamp(6.5rem, 14vh, 8.5rem) clamp(4rem, 9vh, 6rem); text-align: center; overflow-x: clip; }
 html:not(.js) .hero { min-height: 0; }
 .hero-inner { position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; }
@@ -519,21 +579,75 @@ html[data-theme="light"] .horizon { background: radial-gradient(closest-side, #F
 .cat.is-held .squint { opacity: 1; }
 .cat.purr { animation: purr .12s linear infinite; }
 @keyframes purr { 50% { translate: 1.5px 0; } }
+/* Three bodies, one face. html[data-mascot] (set by site.js; absent without
+   script, so the cat shows) picks the body; the eyes, happy and squint shapes
+   are shared. The cockatiel and the octopus have dark eyes whatever the cat's
+   coat (--eye always holds the cat's), and the octopus's face sits 12 units
+   higher, as in its notch symbols. The crest tilts on hover, the cat's ears perk. */
+.cat { --eye-dy: 0px; }
+.cat .face { transform: translateY(var(--eye-dy)); }
+.cat .m-falk, .cat .m-octo,
+html[data-mascot="falk"] .cat .m-cat, html[data-mascot="octo"] .cat .m-cat { display: none; }
+html[data-mascot="falk"] .cat .m-falk, html[data-mascot="octo"] .cat .m-octo { display: inline; }
+html[data-mascot="falk"] .cat, html[data-mascot="octo"] .cat { --eye: #17120F; }
+html[data-mascot="octo"] .cat { --eye-dy: -12px; }
+.cat .crest { transform-origin: 128px 108px; transition: transform .3s cubic-bezier(.3, 1.6, .5, 1); }
+.stage:hover .crest { transform: rotate(-8deg); }
 .bubble { position: absolute; left: 62%; top: -22px; z-index: 6; margin: 0; padding: 6px 12px; border-radius: 14px 14px 14px 4px; background: var(--bubble-bg); color: var(--bubble-text); font-weight: 600; font-size: .875rem; line-height: 1.4; white-space: nowrap; opacity: 0; transform: translateY(8px) scale(.8); transform-origin: 0 100%; transition: opacity .25s, transform .25s cubic-bezier(.3, 1.6, .5, 1); pointer-events: none; }
 .bubble.on { opacity: 1; transform: none; }
 .fx { position: absolute; left: 50%; top: 50%; z-index: 6; pointer-events: none; font-size: 18px; line-height: 1; color: var(--ink); }
 
-.coats { display: flex; gap: 4px; justify-content: center; margin: 0 0 1.5rem; }
-.coat-chip { position: relative; width: 36px; height: 36px; padding: 0; border: 0; border-radius: 50%; background: transparent; cursor: pointer; }
-.coat-chip i { position: absolute; inset: 5px; border-radius: 50%; border: 1px solid var(--control); }
-.coat-chip[aria-pressed="true"]::after { content: ""; position: absolute; inset: 0; border-radius: 50%; border: 2px solid var(--text); }
+/* The hero picks: two groups drawn like the header pills (3 px padding, a
+   1 px edge) holding 44 px buttons. The pressed one is filled with the text
+   colour and its label takes the page colour, so the state reads by
+   lightness, not hue. One row from 40em; stacked and centred below. A group
+   that still does not fit wraps inside its rounded box. */
+.picks { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px 12px; max-width: 100%; margin: 8px 0 4px; }
+.pick-group { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; max-width: 100%; padding: 3px; border: 1px solid var(--control); border-radius: 26px; }
+/* Short visible labels so "Plain / Gradient / Face" reads as the notch's colour
+   (decided in Task 4: without them the second group names nothing). Sentence
+   case, no tracking; --text-2 on the page colour is 6.78:1 dark and 7.03:1 light. */
+.pick-set { display: flex; flex-direction: column; align-items: center; gap: 4px; max-width: 100%; }
+.pick-label { font-size: .8125rem; color: var(--text-2); }
+.pick, .net button { min-height: 44px; padding: 0 14px; border: 0; border-radius: 999px; background: transparent; color: var(--text); font: inherit; font-size: .9375rem; font-weight: 500; cursor: pointer; }
+.pick:hover, .net button:hover { background: color-mix(in srgb, transparent, var(--text) 10%); }
+.pick[aria-pressed="true"], .net button[aria-pressed="true"] { background: var(--text); color: var(--bg); }
+/* Below 20em the Mascot group needs 250 px at 14 px padding; at 10 px it fits 280 px windows on one row. */
+@media (max-width: 19.99em) { .pick { padding: 0 10px; } }
+.coats { display: flex; gap: 0; justify-content: center; margin: 0 0 1.5rem; }
+.coat-chip { position: relative; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 50%; background: transparent; cursor: pointer; }
+.coat-chip i { position: absolute; inset: 9px; border-radius: 50%; border: 1px solid var(--control); }
+.coat-chip:focus-visible { outline-offset: -3px; }
+.coat-chip[aria-pressed="true"]::after { content: ""; position: absolute; inset: 4px; border-radius: 50%; border: 2px solid var(--text); }
 .coat-chip[data-coat="terracotta"] i { background: #E2683C; }
 .coat-chip[data-coat="calico"] i { background: conic-gradient(#F4EDE4 0 50%, #E2683C 0 75%, #2B2420 0); }
 .coat-chip[data-coat="white"] i { background: #F6F1EA; }
 .coat-chip[data-coat="black"] i { background: #1E1B22; border-color: #75675B; }
+.coat-chip[data-coat="lutino"] i { background: conic-gradient(#F6D04A 0 50%, #EC6B3A 0 75%, #F1E4A2 0); }
+.coat-chip[data-coat="grey"] i { background: conic-gradient(#F2D35A 0 50%, #EC6B3A 0 75%, #9A959C 0); }
+.coat-chip[data-coat="whiteface"] i { background: conic-gradient(#F4EFE6 0 50%, #9A959C 0); }
+.coat-chip[data-coat="coral"] i { background: #E87C8E; }
+.coat-chip[data-coat="red"] i { background: #D9505F; }
+.coat-chip[data-coat="purple"] i { background: #A98BD6; }
+.coat-chip[data-coat="sea"] i { background: #5FA8C9; }
+/* Short screens (up to 50em tall, such as 375 x 667, 1280 x 800 and 1366 x 768):
+   a smaller mascot and a tighter rhythm between the mascot, the picks, the
+   chips, the headline, its line and Download, so Download is in the first
+   screen. The order stays the same; the 44 px targets stay. */
+@media (max-height: 50em) {
+  .hero { padding-top: 5.25rem; }
+  .cat-wrap { width: clamp(96px, 16vh, 136px); width: clamp(96px, 16svh, 136px); margin-bottom: 0; }
+  .picks { margin-top: 4px; row-gap: 4px; }
+  .pick-set { gap: 2px; }
+  .pick-label { line-height: 1.25; }
+  .coats { margin-bottom: .5rem; }
+  .hero-line { margin-top: .75rem; }
+  .hero .actions { margin-top: 1.25rem; }
+}
+@media (max-height: 50em) and (min-width: 40em) { .coats { margin-bottom: 1rem; } }
 
 /* ---------- marquee ----------
-   The 14 page names, moved sideways by scroll (site.js). Static without
+   The 15 page names, moved sideways by scroll (site.js). Static without
    script or with reduced motion; clipped, so it never causes overflow. */
 .marquee { overflow: hidden; padding: 26px 0; border-block: 1px solid rgba(244, 237, 228, .06); background: rgba(18, 14, 16, .45); -webkit-mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent); mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent); }
 html[data-theme="light"] .marquee { border-color: rgba(23, 18, 15, .08); background: rgba(255, 253, 249, .5); }
@@ -544,9 +658,9 @@ html[data-theme="light"] .marquee { border-color: rgba(23, 18, 15, .08); backgro
 html[data-theme="light"] .marquee-row span { color: rgba(23, 18, 15, .58); }
 html[data-theme="light"] .marquee-row span:nth-child(3n + 1) { color: var(--text); }
 
-/* ---------- story: one hover, fourteen pages ----------
+/* ---------- story: one hover, fifteen pages ----------
    Without script, with reduced motion, or when the stage does not fit the
-   viewport: static. The first page shows on the screen and the 14 pages are
+   viewport: static. The first page shows on the screen and the 15 pages are
    a readable list. site.js adds .is-pin when motion is welcome and the stage
    fits 100svh: the wrapper is tall, the stage sticks, and scroll progress
    grows the panel from notch size and flips through the pages. */
@@ -627,9 +741,34 @@ html[data-theme="light"] .screen { box-shadow: 0 30px 80px -30px rgba(40, 24, 16
 .bp-pg .bar-w { width: 220px; max-width: 100%; margin-top: 10px; }
 .bp-pg code { font: 12px var(--mono); line-height: 1.8; color: var(--scr-text); }
 .bp-pg .pr { color: #E2683C; }
+.bp-pg .rec { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); gap: 18px; }
+.bp-pg .rec-top { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+.bp-pg .rec-btn { width: 40px; height: 40px; }
+.bp-pg .rec-btn::after { inset: 7px; }
+.bp-pg .rec-t { font: 1.125rem var(--mono); }
+.bp-pg .rec-sw { display: flex; align-items: center; gap: 10px; padding: 4px 0; color: var(--scr-2); }
+.bp-pg .sw { position: relative; flex: none; width: 26px; height: 14px; border: 1px solid #75675B; border-radius: 7px; }
+.bp-pg .sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 8px; height: 8px; border-radius: 50%; background: #75675B; }
+.bp-pg .sw.on { border-color: #E2683C; background: #E2683C; }
+.bp-pg .sw.on::after { left: 14px; background: #17120F; }
+.bp-pg .rec-r { min-width: 0; }
+.bp-pg .rec-r b { display: block; margin-bottom: 2px; font-size: .8125rem; }
+.bp-pg .rr { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid #3A302A; }
+.bp-pg .rr span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bp-pg .rr em { flex: none; font-style: normal; font-size: .75rem; color: #E2683C; }
 .bp-dock { display: flex; align-items: flex-end; justify-content: center; gap: 6px; height: 34px; opacity: var(--z); }
 .bp-dock svg { flex: none; width: 20px; height: 20px; color: var(--scr-2); transform-origin: 50% 100%; transform: scale(var(--s, 1)); }
 .bp-dock svg.on { color: #E2683C; }
+/* Short wide screens (1024 x 600): the pages area is about 121 px, so the Record
+   page (the tallest, 137 px) takes a smaller button and tighter rows to clear
+   the dock row. Phones have their own sizes below. */
+@media (min-width: 40.01em) and (max-height: 40em) {
+  .bp-pg .rec-top { margin-bottom: 4px; }
+  .bp-pg .rec-btn { width: 32px; height: 32px; }
+  .bp-pg .rec-btn::after { inset: 6px; }
+  .bp-pg .rec-sw { padding: 1px 0; }
+  .bp-pg .rr { padding: 4px 0; }
+}
 @media (max-width: 40em) {
   .screen { aspect-ratio: 5 / 4; padding: 5px; border-radius: 14px; }
   .bigpanel { width: 94%; height: 88%; padding: 8px 12px; border-radius: 0 0 18px 18px; }
@@ -643,6 +782,17 @@ html[data-theme="light"] .screen { box-shadow: 0 30px 80px -30px rgba(40, 24, 16
   .bp-pg .cv { width: 52px; height: 52px; border-radius: 10px; }
   .bp-pg .big svg { width: 64px; height: 64px; }
   .bp-pg .tl div { padding: 6px 8px; }
+  .bp-pg .rec { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 10px; }
+  .bp-pg .rec-top { margin-bottom: 2px; gap: 8px; }
+  .bp-pg .rec-btn { width: 28px; height: 28px; }
+  .bp-pg .rec-btn::after { inset: 5px; }
+  .bp-pg .rec-t { font-size: .875rem; }
+  .bp-pg .rec-sw { gap: 5px; padding: 1px 0; font-size: .6875rem; white-space: nowrap; }
+  .bp-pg .sw { width: 22px; height: 12px; border-radius: 6px; }
+  .bp-pg .sw::after { width: 6px; height: 6px; }
+  .bp-pg .sw.on::after { left: 12px; }
+  .bp-pg .rr { padding: 3px 0; gap: 4px; font-size: .6875rem; }
+  .bp-pg .rr em { font-size: .625rem; }
   .bp-dock { gap: 2px; height: 28px; }
   .bp-dock svg { width: 15px; height: 15px; }
   .bp-top { font-size: .8125rem; }
@@ -654,32 +804,31 @@ html[data-theme="light"] .screen { box-shadow: 0 30px 80px -30px rgba(40, 24, 16
 .play h2 { margin-bottom: .875rem; text-align: center; }
 .sub { max-width: 34em; margin: 0 auto clamp(2.25rem, 6vw, 3.5rem); font-size: 1.125rem; color: var(--text-2); text-align: center; }
 .play-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+/* Exactly 1, 2 or 3 columns, never auto-fit: Sign and Mascots span the row and
+   the six small cards fill it (3 + 3, 2 + 2 + 2 or one each), so no cell stays
+   empty at any width (the owner's rule; check-site.py counts the cards). */
 @media (min-width: 40em) { .play-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (min-width: 60em) { .play-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.play-wide { grid-column: 1 / -1; }
 .play-card { display: flex; flex-direction: column; min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 24px; background: var(--card); }
 .play-pic { position: relative; flex: none; height: 190px; overflow: hidden; background: radial-gradient(90% 90% at 20% 110%, #4A2030 0, transparent 60%), radial-gradient(70% 70% at 95% 0, #7A3A22 0, transparent 60%), #120E0E; color: var(--scr-text); }
 .play-body { display: flex; flex: 1; flex-direction: column; gap: 8px; padding: 20px 22px 22px; }
 .play-body h3 { font-size: 1.1875rem; font-weight: 600; }
 .play-body p { flex: 1; margin: 0; font-size: .90625rem; line-height: 1.5; color: var(--text-2); }
 .ctl { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+/* The wide cards put picture and text side by side from 40em: the Sign
+   picture on the left, the Mascots picture on the right. */
+@media (min-width: 40em) {
+  .play-wide { flex-direction: row; }
+  .play-wide[data-card="mascots"] { flex-direction: row-reverse; }
+  .play-wide .play-pic { flex: 0 0 56%; height: auto; min-height: 240px; }
+  .play-wide .play-body { justify-content: center; padding: 28px 32px; }
+  .play-wide .play-body p { flex: none; max-width: 34em; }
+}
 /* The mini notch inside a picture. */
 .mn { position: absolute; top: 0; left: 50%; translate: -50% 0; display: flex; align-items: center; gap: 8px; width: var(--w, 150px); height: var(--h, 30px); max-width: calc(100% - 16px); overflow: hidden; padding: 0 12px; border: 1px solid #75675B; border-top: 0; border-radius: 0 0 16px 16px; background: #17120F; color: #F4EDE4; font: 11px var(--mono); transition: width .45s cubic-bezier(.3, 1.3, .5, 1), height .45s cubic-bezier(.3, 1.3, .5, 1), border-radius .45s; }
 .mn svg { flex: none; }
 .clk { font: 11px var(--mono); color: #A89A8B; }
-.mn-wide { --w: 230px; --h: 34px; }
-/* dance */
-.mn .lyric { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 11px var(--font); }
-.mn .eq { flex: none; display: flex; align-items: flex-end; gap: 2px; height: 14px; }
-.mn .eq i { display: block; width: 3px; height: 100%; border-radius: 2px; background: #E2683C; transform-origin: 50% 100%; transform: scaleY(.5); animation: eq .9s ease-in-out infinite alternate paused; }
-.mn .eq i:nth-child(2) { animation-delay: -.3s; transform: scaleY(.85); }
-.mn .eq i:nth-child(3) { animation-delay: -.6s; transform: scaleY(.6); }
-.mn .eq i:nth-child(4) { animation-delay: -.15s; transform: scaleY(1); }
-@keyframes eq { from { transform: scaleY(.22); } to { transform: scaleY(1); } }
-.play-card.is-on .eq i { animation-play-state: running; }
-.dance-cat { position: absolute; left: 50%; bottom: -18px; width: 120px; height: 120px; translate: -50% 0; transform-origin: 50% 100%; }
-.play-card.is-on .dance-cat { animation: nod .5s ease-in-out infinite; }
-@keyframes nod { 30% { transform: translateY(2px) rotate(-6deg); } 60% { transform: translateY(-1px) rotate(5deg); } }
-.note { position: absolute; top: 40px; left: 50%; font-size: 16px; line-height: 1; color: #E2683C; pointer-events: none; }
 /* typing */
 .mn-type { justify-content: space-between; }
 .mn-type .ti { display: flex; align-items: center; justify-content: space-between; width: 100%; }
@@ -690,26 +839,88 @@ html[data-theme="light"] .screen { box-shadow: 0 30px 80px -30px rgba(40, 24, 16
 .play-card[data-s="work"] .mn-type .tw, .play-card[data-s="done"] .mn-type .td { display: flex; }
 .td b { font-weight: 600; font-size: 12px; white-space: nowrap; }
 .td .open { margin-left: auto; padding: 4px 10px; border-radius: 999px; background: #E2683C; color: #17120F; font-weight: 600; font-size: 11px; }
-.paw { transform-box: fill-box; animation: paw .18s ease-in-out infinite alternate; }
+.paw { fill: var(--coat); transform-box: fill-box; animation: paw .18s ease-in-out infinite alternate; }
+html[data-mascot="falk"] .paw { fill: var(--fk-body); }
+html[data-mascot="octo"] .paw { fill: var(--oc-body); }
 .paw2 { animation-delay: -.09s; }
 @keyframes paw { to { transform: translateY(-3px); } }
 .dots { white-space: nowrap; }
 .dots::after { content: ""; animation: dots 1.2s steps(4) infinite; }
 @keyframes dots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } }
 .term-lines { position: absolute; left: 18px; right: 18px; bottom: 14px; font: 11px var(--mono); line-height: 1.6; color: rgba(244, 237, 228, .7); }
-/* peek */
-.play-card[data-card="peek"] .play-pic { cursor: crosshair; }
-.play-pic .full { position: absolute; left: 10px; right: 10px; top: 10px; bottom: 0; border-radius: 10px 10px 0 0; background: #211A17; border: 1px solid rgba(244, 237, 228, .07); }
-.play-pic .full::before { content: ""; position: absolute; left: 14px; top: 14px; width: 40%; height: 7px; border-radius: 4px; background: rgba(244, 237, 228, .1); }
-.play-pic .full::after { content: ""; position: absolute; left: 14px; top: 34px; right: 30%; height: 60px; border-radius: 6px; background: repeating-linear-gradient(rgba(244, 237, 228, .06) 0 6px, transparent 6px 14px); }
+/* the peek mini notch (the mascots card has one per mascot) */
 .mn-peek { z-index: 2; }
 .mn-peek .pi { display: flex; align-items: center; justify-content: space-between; width: 100%; }
 .mn-peek .pe { display: none; gap: 10px; margin: 0 auto; }
 .mn-peek .pe i { display: block; width: 7px; height: 12px; border-radius: 4px; background: #E2683C; transition: transform .08s; }
-.play-card.is-eyes .mn-peek { --w: 58px; --h: 22px; padding: 0 12px; border-radius: 0 0 12px 12px; }
-.play-card.is-eyes .mn-peek .pi { display: none; }
-.play-card.is-eyes .mn-peek .pe { display: flex; }
-.play-card.is-blink .pe i { transform: scaleY(.15) !important; }
+.ms.is-eyes .mn-peek { --w: 58px; --h: 22px; padding: 0 12px; border-radius: 0 0 12px 12px; }
+.ms.is-eyes .mn-peek .pi { display: none; }
+.ms.is-eyes .mn-peek .pe { display: flex; }
+.ms.is-blink .pe i { transform: scaleY(.15) !important; }
+/* sign: a sample page (cream paper, the signature in pen blue, 5.57 on it)
+   and the shelf's context menu with Sign chosen. The .sg-mark parts are what
+   Sign places; without script they show, so the picture reads signed. The
+   menu opens from the page's right edge, so both share the page's box. */
+.play-card[data-card="sign"] .play-pic { --sg-left: max(7%, 50% - 190px); --sg-w: min(46%, 230px); }
+.sg-page { position: absolute; left: var(--sg-left); top: 18px; bottom: -12px; width: var(--sg-w); padding: 16px 16px 0; border-radius: 6px 6px 0 0; background: #F4EDE4; color: #17120F; }
+.sg-title { display: block; overflow: hidden; font-size: 11px; font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
+.sg-text { display: block; height: 52px; margin-top: 8px; background: repeating-linear-gradient(#CFC4B8 0 4px, transparent 4px 11px); }
+.sg-check { position: absolute; left: 16px; bottom: 74px; }
+.sg-sig { position: absolute; left: 14px; bottom: 34px; width: min(72%, 130px); height: auto; overflow: visible; }
+.sg-line { position: absolute; left: 16px; right: 16px; bottom: 40px; height: 1px; background: #5C524A; }
+.sg-date { position: absolute; left: 16px; bottom: 20px; font: 10px var(--mono); color: #3A302A; }
+/* With script the page starts unsigned and Sign fades the three marks in. */
+.js .sg-mark { opacity: 0; }
+.js .play-card.is-signed .sg-mark { opacity: 1; }
+@media (prefers-reduced-motion: no-preference) {
+  .js .sg-mark { transition: opacity .4s ease-out; }
+  .js .sg-date { transition-delay: .15s; }
+  .js .sg-check { transition-delay: .3s; }
+}
+/* The menu opens over the page's right edge; its shadow is the one thing here that sits above another surface. */
+.sg-menu { position: absolute; left: calc(var(--sg-left) + var(--sg-w) - 24px); top: 46px; display: flex; flex-direction: column; width: min(40%, 168px); padding: 4px; border: 1px solid #3A302A; border-radius: 10px; background: #17120F; box-shadow: 0 8px 24px rgba(0, 0, 0, .45); font-size: 12px; }
+.sg-menu span { padding: 6px 10px; border-radius: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sg-menu .on { background: #4A2A1C; }
+.sg-menu .sg-file { margin-bottom: 4px; border-bottom: 1px solid #3A302A; border-radius: 6px 6px 0 0; font: 11px var(--mono); color: #A89A8B; }
+/* captions: a call window and the caption card over it; the second line is
+   still being spoken, so it is grey (6.78 on the card). */
+.call { position: absolute; inset: 14px 14px auto; display: grid; grid-template-columns: 1fr 1fr; gap: 6px; height: 74px; }
+.call span { border-radius: 8px; background: #241C19; border: 1px solid rgba(244, 237, 228, .08); }
+.cap { position: absolute; left: 14px; right: 14px; bottom: 12px; padding: 8px 12px; border: 1px solid #3A302A; border-radius: 12px; background: #17120F; }
+.cl { margin: 0; font-size: 12px; line-height: 1.45; color: #F4EDE4; }
+.cl b { margin-right: 4px; font-weight: 600; color: #E2683C; }
+.cl.is-live { color: #A89A8B; }
+/* phone: the shelf's QR (decorative and not a real code: no timing or format
+   modules) and a phone showing the shelf's files. */
+.qr { position: absolute; left: calc(50% - 128px); top: 34px; width: 120px; height: 120px; }
+.phone { position: absolute; left: calc(50% + 24px); top: 22px; display: flex; flex-direction: column; gap: 7px; width: 82px; height: 190px; padding: 14px 9px; border: 2px solid #75675B; border-radius: 16px; background: #17120F; }
+.ph-bar { flex: none; width: 26px; height: 4px; margin: 0 auto 6px; border-radius: 2px; background: #3A302A; }
+.ph-row { flex: none; height: 22px; border-radius: 6px; background: #241C19; border: 1px solid rgba(244, 237, 228, .08); }
+.ph-bar + .ph-row { border-color: #E2683C; }
+.net { display: flex; gap: 4px; padding: 3px; border: 1px solid var(--control); border-radius: 26px; }
+.play-body .net-line { flex: 0 0 100%; margin: 0; font-size: .875rem; color: var(--text-2); }
+/* mascots: the three side by side, each in its own coat on its own mini
+   notch (stacked below 24em). The hero's pick gets a cream ring, so the
+   choice reads by shape, not by colour. Without script html has no
+   data-mascot, which means the cat. */
+.trio { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; height: 100%; padding: 14px; }
+.ms { position: relative; container-type: inline-size; min-height: 0; border-radius: 12px; background: #1A1414; border: 1px solid rgba(244, 237, 228, .08); }
+.ms .mn { --w: 96px; --h: 28px; padding: 0 10px; }
+@container (max-width: 112px) { .ms .mn { gap: 4px; padding: 0 6px; } .ms .clk { font-size: 10px; } }
+/* A story: the mascot leaves the notch's icon slot and acts it out. The actor
+   is made by site.js, sits in the slot and is gone when the story ends. */
+.ms.is-story .pi > svg { visibility: hidden; }
+.st-actor { position: absolute; z-index: 3; overflow: visible; pointer-events: none; }
+.st-z { position: absolute; z-index: 4; font: 700 11px var(--font); color: #F4EDE4; pointer-events: none; }
+.ms-big { position: absolute; left: 50%; bottom: 10px; width: 76px; height: 76px; translate: -50% 0; overflow: visible; }
+html:not([data-mascot="falk"], [data-mascot="octo"]) .ms[data-m="cat"],
+html[data-mascot="falk"] .ms[data-m="falk"], html[data-mascot="octo"] .ms[data-m="octo"] { outline: 2px solid #F4EDE4; outline-offset: 2px; }
+@media (max-width: 23.99em) {
+  .play-card[data-card="mascots"] .play-pic { height: auto; }
+  .trio { grid-template-columns: minmax(0, 1fr); height: auto; }
+  .ms { height: 104px; }
+  .ms-big { width: 60px; height: 60px; bottom: 8px; }
+}
 /* susun */
 .mn-susun { justify-content: center; font-family: var(--font); font-size: 12px; }
 .play-pic .win { position: absolute; border-radius: 6px; background: rgba(30, 24, 21, .85); border: 1px solid rgba(244, 237, 228, .16); transition: left .5s cubic-bezier(.3, 1.2, .5, 1), top .5s cubic-bezier(.3, 1.2, .5, 1), width .5s cubic-bezier(.3, 1.2, .5, 1), height .5s cubic-bezier(.3, 1.2, .5, 1); }
@@ -723,11 +934,14 @@ html[data-theme="light"] .screen { box-shadow: 0 30px 80px -30px rgba(40, 24, 16
 .frozen { position: absolute; inset: 0; background: rgba(10, 8, 8, .45); }
 .sel { position: absolute; left: 12%; top: 22%; width: 76%; height: 54%; border: 1.5px dashed rgba(244, 237, 228, .7); background: radial-gradient(90% 90% at 20% 110%, #5A2638 0, transparent 60%), #1A1414; }
 .js .sel { touch-action: none; }
-.sel::before { content: "640 x 360"; position: absolute; left: 0; top: -20px; padding: 2px 6px; border-radius: 4px; background: #17120F; color: #F4EDE4; font: 10px var(--mono); }
+.sel[data-dim="360 x 640"]::before { content: "360 x 640"; }
+.sel::before { content: "640 x 360"; white-space: nowrap; position: absolute; left: 0; top: -20px; padding: 2px 6px; border-radius: 4px; background: #17120F; color: #F4EDE4; font: 10px var(--mono); }
 .draw-cv { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .tools { position: absolute; left: 50%; bottom: 8px; translate: -50% 0; z-index: 2; display: flex; gap: 4px; padding: 4px; border: 1px solid var(--scr-edge); border-radius: 12px; background: #17120F; }
 .tools button { min-width: 44px; height: 36px; padding: 0 10px; border: 0; border-radius: 8px; background: transparent; color: #A89A8B; font: inherit; font-size: .8125rem; cursor: pointer; }
-.tools button[aria-pressed="true"] { background: rgba(226, 104, 60, .22); color: #F4EDE4; }
+/* The pressed tool: the tint, the brighter label and a 1 px terracotta ring
+   (3:1 against the bar; the tint alone is 1.35:1). */
+.tools button[aria-pressed="true"] { background: rgba(226, 104, 60, .22); color: #F4EDE4; box-shadow: inset 0 0 0 1px #E2683C; }
 .tools button:hover { color: #F4EDE4; }
 /* copy */
 .play-card[data-card="copy"] .play-pic { display: grid; place-items: center; padding: 30px 24px 20px; }
@@ -798,8 +1012,9 @@ main > .tint-panel:last-child { margin-bottom: calc(-1 * clamp(4rem, 10vw, 8rem)
 .js .reveal:not(.is-in) { opacity: 0; transform: translateY(16px); }
 .js .reveal { transition: opacity .5s ease-out, transform .5s ease-out; }
 @media (min-width: 60em) {
-  .js .play-card.reveal:nth-child(3n + 2) { transition-delay: 60ms; }
-  .js .play-card.reveal:nth-child(3n + 3) { transition-delay: 120ms; }
+  /* Sign is child 1 and spans the row, so the rows of three are children 2-4 and 5-7. */
+  .js .play-card.reveal:nth-child(3n + 3) { transition-delay: 60ms; }
+  .js .play-card.reveal:nth-child(3n + 4) { transition-delay: 120ms; }
 }
 .js.reveal-off .reveal, .js.reveal-off .reveal:not(.is-in) { opacity: 1; transform: none; }
 @media (prefers-reduced-motion: reduce) {
@@ -891,9 +1106,9 @@ main > .tint-panel:last-child { margin-bottom: calc(-1 * clamp(4rem, 10vw, 8rem)
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
   .notch, .nf, .notch-panel { transition: none; }
-  .eq i, .paw, .dots::after, .cat.purr, .play-card.is-on .dance-cat { animation: none !important; }
+  .paw, .dots::after, .cat.purr { animation: none !important; }
   .dots::after { content: "..."; }
-  .cat .ear, .cat .eye, .bubble, .mn, .play-pic .win, .bp-pg, .walk-bubble, .mn-peek .pe i { transition: none; }
+  .cat .ear, .cat .eye, .cat .crest, .bubble, .mn, .play-pic .win, .bp-pg, .walk-bubble, .mn-peek .pe i { transition: none; }
   .walk-cat svg, .zz { animation: none !important; }
   .walk-pos.is-asleep .zz { opacity: .9; }
   .marquee-row { transform: none !important; will-change: auto; }
@@ -917,17 +1132,22 @@ main .btn { padding-block: 0; }
   .hero .actions .btn-primary, .install-dl .btn { width: 100%; }
   .install-dl .btn { display: flex; }
   .hero-cmd { margin-top: 16px; }
+  .picks { flex-direction: column; align-items: center; }
   .more { margin-top: 32px; }
   .gcal h3, .privacy-short h3, .install h3 { margin: 32px 0 12px; }
   .scopes dt:first-child { margin-top: 0; }
-  .coats { gap: 0; }
-  .coat-chip { width: 44px; height: 44px; }
-  .coat-chip i { inset: 9px; }
-  .coat-chip[aria-pressed="true"]::after { inset: 4px; }
-  /* 44 px buttons in a bar with 2 px padding, 4 px up: the bar's top edge stays
-     where it was (136 px in the 190 px picture), so it covers no more of the
-     selection than before. */
+  .footer-brand a { display: inline-block; padding-block: 0; min-height: 44px; line-height: 44px; vertical-align: middle; }
+}
+/* Draw tools: 44 px buttons on phones and with a touch screen. The bar uses
+   2 px padding and sits 4 px up, so its top edge stays where it was (136 px in
+   the 190 px picture) and it covers no more of the selection than before. */
+@media (max-width: 39.99em), (pointer: coarse) {
   .tools { bottom: 4px; padding: 2px; }
   .tools button { height: 44px; }
-  .footer-brand a { display: inline-block; padding-block: 0; min-height: 44px; line-height: 44px; vertical-align: middle; }
+}
+/* Five tools fit a 238 px picture (280 px windows): 2 px gaps and 6 px
+   padding make each one 44 px wide, the bar 234. */
+@media (max-width: 23.49em) {
+  .tools { gap: 2px; }
+  .tools button { padding: 0 6px; }
 }
