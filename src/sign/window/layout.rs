@@ -4,6 +4,7 @@
 
 use crate::i18n::Key;
 use crate::sign::geom;
+use crate::sign::style::{Family, Tint};
 use crate::sign::{Item, Quarter};
 use crate::ui::geometry::Rect;
 
@@ -39,6 +40,15 @@ const FLOAT_H: f32 = 32.0;
 const FLOAT_PAD: f32 = 4.0;
 const FLOAT_ITEM_PAD: f32 = 9.0;
 const FLOAT_GAP: f32 = 10.0;
+/// Between the format groups of the item bar (face, B I U, colours, actions).
+const FORMAT_GAP: f32 = 9.0;
+/// Between the two rows of a wrapped item bar.
+const ROW_GAP: f32 = 2.0;
+const SWATCH_W: f32 = 26.0;
+/// The chevron after the face name, with the space before it.
+const CHEVRON_W: f32 = 14.0;
+const FONT_ROW: f32 = 32.0;
+const FONT_MENU_W: f32 = 200.0;
 const HANDLE: f32 = 8.0;
 const HANDLE_HIT: f32 = 16.0;
 const MENU_ROW: f32 = 36.0;
@@ -109,6 +119,14 @@ pub enum Hit {
     AddDate,
     AllPages,
     Remove,
+    /// The face button, which opens the font menu.
+    Family,
+    Bold,
+    Italic,
+    Underline,
+    Tint(Tint),
+    /// A row of the font menu.
+    PickFamily(Family),
     // The saved-signature picker.
     PickMark(usize),
     PickNew,
@@ -181,6 +199,11 @@ pub struct Labels(pub Vec<(Hit, f32)>);
 
 impl Labels {
     pub fn w(&self, hit: Hit) -> f32 {
+        if hit == Hit::Family {
+            // The widest face name, so the button keeps its size when the
+            // face changes.
+            return Family::ALL.iter().map(|f| self.w(Hit::PickFamily(*f))).fold(0.0, f32::max);
+        }
         let hit = if hit == Hit::NotNow { Hit::Cancel } else { hit };
         self.0.iter().find(|(h, _)| *h == hit).map_or(0.0, |(_, w)| *w)
     }
@@ -463,14 +486,56 @@ impl Popover {
     }
 }
 
+/// Which group of the item bar a button belongs to; a wider gap separates
+/// groups.
+fn bar_group(hit: Hit) -> u8 {
+    match hit {
+        Hit::Family => 0,
+        Hit::Bold | Hit::Italic | Hit::Underline => 1,
+        Hit::Tint(_) => 2,
+        _ => 3,
+    }
+}
+
+fn bar_item_w(hit: Hit, labels: &Labels, ui: f32) -> f32 {
+    match hit {
+        Hit::Family => labels.w(hit) + (CHEVRON_W + 2.0 * FLOAT_ITEM_PAD) * ui,
+        Hit::Bold | Hit::Italic | Hit::Underline => FLOAT_H * ui,
+        Hit::Tint(_) => SWATCH_W * ui,
+        _ => labels.w(hit) + 2.0 * FLOAT_ITEM_PAD * ui,
+    }
+}
+
+/// Width of `hits` side by side with their gaps.
+fn bar_row_w(hits: &[Hit], labels: &Labels, ui: f32) -> f32 {
+    let mut w = 0.0;
+    for (i, hit) in hits.iter().enumerate() {
+        if i > 0 {
+            w += if bar_group(hits[i - 1]) == bar_group(*hit) { 2.0 * ui } else { FORMAT_GAP * ui };
+        }
+        w += bar_item_w(*hit, labels, ui);
+    }
+    w
+}
+
 /// The bar over a selected item (under it when there is no room above),
-/// kept inside the stage.
+/// kept inside the stage. Format buttons come first in `hits`; when the bar
+/// is wider than the stage it wraps into two rows, the format row on top.
 pub fn float_bar(item: Rect, stage: Rect, hits: &[Hit], labels: &Labels, ui: f32) -> Popover {
     let pad = FLOAT_PAD * ui;
     let h = FLOAT_H * ui;
-    let widths: Vec<f32> = hits.iter().map(|hit| labels.w(*hit) + 2.0 * FLOAT_ITEM_PAD * ui).collect();
-    let w = widths.iter().sum::<f32>() + pad * 2.0 + 2.0 * ui * (hits.len().saturating_sub(1)) as f32;
-    let ph = h + 2.0 * pad;
+    let split = hits.iter().position(|hit| bar_group(*hit) == 3).unwrap_or(hits.len());
+    let (format, actions) = hits.split_at(split);
+    let one = bar_row_w(hits, labels, ui);
+    let room = stage.w - 8.0 * ui - 2.0 * pad;
+    let wrapped = !format.is_empty() && !actions.is_empty() && one > room;
+    let rows: Vec<&[Hit]> = if wrapped { vec![format, actions] } else { vec![hits] };
+    let w = if wrapped {
+        bar_row_w(format, labels, ui).max(bar_row_w(actions, labels, ui))
+    } else {
+        one
+    } + pad * 2.0;
+    let ph = h * rows.len() as f32 + ROW_GAP * ui * (rows.len() - 1) as f32 + 2.0 * pad;
     let above = item.y - FLOAT_GAP * ui - ph;
     let y = if above >= stage.y + 4.0 * ui {
         above
@@ -480,12 +545,47 @@ pub fn float_bar(item: Rect, stage: Rect, hits: &[Hit], labels: &Labels, ui: f32
     let x = item.x.min(stage.right() - w - 4.0 * ui).max(stage.x + 4.0 * ui);
     let panel = Rect { x, y, w, h: ph };
     let mut items = Vec::new();
-    let mut bx = x + pad;
-    for (hit, bw) in hits.iter().zip(widths) {
-        items.push((*hit, Rect { x: bx, y: y + pad, w: bw, h }));
-        bx += bw + 2.0 * ui;
+    for (r, row) in rows.iter().enumerate() {
+        let ry = y + pad + r as f32 * (h + ROW_GAP * ui);
+        let mut bx = x + pad;
+        for (i, hit) in row.iter().enumerate() {
+            if i > 0 {
+                bx += if bar_group(row[i - 1]) == bar_group(*hit) { 2.0 * ui } else { FORMAT_GAP * ui };
+            }
+            let bw = bar_item_w(*hit, labels, ui);
+            items.push((*hit, Rect { x: bx, y: ry, w: bw, h }));
+            bx += bw;
+        }
     }
     Popover { panel, items }
+}
+
+/// The font menu: one row per face, on the side of the item bar away from the
+/// item (above a bar that sits above the item, below one that sits under it),
+/// kept inside the stage. When that side has no room it opens on the other.
+pub fn font_menu(family_button: Rect, bar: Rect, item: Rect, stage: Rect, ui: f32) -> Popover {
+    let pad = POP_PAD * ui / 2.0;
+    let (w, row) = (FONT_MENU_W * ui, FONT_ROW * ui);
+    let h = Family::ALL.len() as f32 * row + 2.0 * pad;
+    let gap = 4.0 * ui;
+    let x = family_button.x.min(stage.right() - w - 4.0 * ui).max(stage.x + 4.0 * ui);
+    let (up, down) = (bar.y - gap - h, bar.bottom() + gap);
+    let bar_above = bar.y + bar.h / 2.0 < item.y + item.h / 2.0;
+    let (first, second) = if bar_above { (up, down) } else { (down, up) };
+    let fits = |y: f32| y >= stage.y + 4.0 * ui && y + h <= stage.bottom() - 4.0 * ui;
+    let y = if fits(first) {
+        first
+    } else if fits(second) {
+        second
+    } else {
+        first.min(stage.bottom() - h).max(stage.y)
+    };
+    let items = Family::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (Hit::PickFamily(*f), Rect { x: x + pad, y: y + pad + i as f32 * row, w: w - 2.0 * pad, h: row }))
+        .collect();
+    Popover { panel: Rect { x, y, w, h }, items }
 }
 
 /// The tools that did not fit, as a menu under the "…" button, kept inside
@@ -661,13 +761,24 @@ mod tests {
     /// Label widths of the Indonesian copy at about 7 px a character, which
     /// is what 13 px DM Sans measures.
     fn labels(ui: f32) -> Labels {
-        Labels(
-            LABELLED
-                .iter()
-                .map(|h| (*h, text(Lang::Id, label_key(*h).unwrap()).chars().count() as f32 * 7.0 * ui))
-                .collect(),
-        )
+        let mut all: Vec<(Hit, f32)> = LABELLED
+            .iter()
+            .map(|h| (*h, text(Lang::Id, label_key(*h).unwrap()).chars().count() as f32 * 7.0 * ui))
+            .collect();
+        // The face names, drawn in their own face (about 7 px a character).
+        all.extend(Family::ALL.iter().map(|f| (Hit::PickFamily(*f), f.face().chars().count() as f32 * 7.0 * ui)));
+        Labels(all)
     }
+
+    const FORMAT: [Hit; 7] = [
+        Hit::Family,
+        Hit::Bold,
+        Hit::Italic,
+        Hit::Underline,
+        Hit::Tint(Tint::Black),
+        Hit::Tint(Tint::Blue),
+        Hit::Tint(Tint::Red),
+    ];
 
     fn spec(cw: f32, ch: f32, ui: f32) -> Spec {
         Spec { cw, ch, ui, banner: false, footer: Footer::Normal { formats: false }, stage: StageMode::Page }
@@ -923,6 +1034,94 @@ mod tests {
         let bar = float_bar(right, stage, &hits, &lab, 1.0);
         assert!(bar.panel.right() <= stage.right());
         assert_eq!(bar.items.len(), 4);
+    }
+
+    fn y_of(bar: &Popover, hit: Hit) -> f32 {
+        bar.items.iter().find(|(h, _)| *h == hit).expect("a button").1.y
+    }
+
+    #[test]
+    fn bar_wraps_when_narrow() {
+        let lab = labels(1.0);
+        let mut hits = FORMAT.to_vec();
+        hits.extend([Hit::Smaller, Hit::Bigger, Hit::Remove]);
+        let item = Rect { x: 200.0, y: 400.0, w: 150.0, h: 20.0 };
+        // 360 px: two rows, the format buttons on the upper one.
+        let narrow = Rect { x: 132.0, y: 88.0, w: 360.0, h: 616.0 };
+        let bar = float_bar(item, narrow, &hits, &lab, 1.0);
+        let top = y_of(&bar, Hit::Family);
+        for h in FORMAT {
+            assert_eq!(y_of(&bar, h), top, "{h:?}");
+        }
+        for h in [Hit::Smaller, Hit::Bigger, Hit::Remove] {
+            assert!(y_of(&bar, h) > top, "{h:?}");
+        }
+        assert!(inside(bar.panel, narrow, 0.0), "{:?}", bar.panel);
+        for (h, r) in &bar.items {
+            assert!(inside(*r, bar.panel, 0.0) && inside(*r, narrow, 0.0), "{h:?} {r:?}");
+        }
+        // 968 px: everything on one row.
+        let wide = Rect { x: 132.0, y: 88.0, w: 968.0, h: 616.0 };
+        let bar = float_bar(item, wide, &hits, &lab, 1.0);
+        for (h, r) in &bar.items {
+            assert_eq!(r.y, top_of(&bar), "{h:?}");
+        }
+        assert!(inside(bar.panel, wide, 0.0));
+        // The buttons keep their order, left to right, and do not overlap.
+        for w in bar.items.windows(2) {
+            assert!(w[0].1.right() <= w[1].1.x + 0.01);
+        }
+        // The same at 2x.
+        let lab2 = labels(2.0);
+        let narrow2 = Rect { x: 264.0, y: 176.0, w: 720.0, h: 1232.0 };
+        let bar = float_bar(Rect { x: 400.0, y: 800.0, w: 300.0, h: 40.0 }, narrow2, &hits, &lab2, 2.0);
+        assert!(inside(bar.panel, narrow2, 0.0));
+        assert!(y_of(&bar, Hit::Remove) > y_of(&bar, Hit::Family));
+    }
+
+    fn top_of(bar: &Popover) -> f32 {
+        bar.items[0].1.y
+    }
+
+    #[test]
+    fn font_menu_opens_away_from_item() {
+        let stage = Rect { x: 132.0, y: 88.0, w: 968.0, h: 616.0 };
+        let lab = labels(1.0);
+        let mut hits = FORMAT.to_vec();
+        hits.extend([Hit::Smaller, Hit::Bigger, Hit::Remove]);
+        let rows = |m: &Popover| m.items.iter().map(|(h, _)| *h).collect::<Vec<_>>();
+        let want: Vec<Hit> = Family::ALL.iter().map(|f| Hit::PickFamily(*f)).collect();
+        // The bar above the item: the menu goes above the bar.
+        let item = Rect { x: 600.0, y: 400.0, w: 150.0, h: 20.0 };
+        let bar = float_bar(item, stage, &hits, &lab, 1.0);
+        assert!(bar.panel.bottom() <= item.y);
+        let fam = bar.items.iter().find(|(h, _)| *h == Hit::Family).unwrap().1;
+        let menu = font_menu(fam, bar.panel, item, stage, 1.0);
+        assert!(menu.panel.bottom() <= bar.panel.y, "{:?} over {:?}", menu.panel, bar.panel);
+        assert!(inside(menu.panel, stage, 0.0));
+        assert_eq!(rows(&menu), want);
+        for (_, r) in &menu.items {
+            assert!(inside(*r, menu.panel, 0.0));
+        }
+        // The bar under the item (item at the top of the stage): the menu
+        // goes under the bar.
+        let top = Rect { x: 600.0, y: 95.0, w: 150.0, h: 20.0 };
+        let bar = float_bar(top, stage, &hits, &lab, 1.0);
+        assert!(bar.panel.y >= top.bottom());
+        let fam = bar.items.iter().find(|(h, _)| *h == Hit::Family).unwrap().1;
+        let menu = font_menu(fam, bar.panel, top, stage, 1.0);
+        assert!(menu.panel.y >= bar.panel.bottom(), "{:?} under {:?}", menu.panel, bar.panel);
+        assert!(inside(menu.panel, stage, 0.0));
+        assert_eq!(rows(&menu), want);
+        // At the right edge it is pulled in.
+        let right = Rect { x: 1060.0, y: 400.0, w: 30.0, h: 20.0 };
+        let bar = float_bar(right, stage, &hits, &lab, 1.0);
+        let fam = bar.items.iter().find(|(h, _)| *h == Hit::Family).unwrap().1;
+        assert!(inside(font_menu(fam, bar.panel, right, stage, 1.0).panel, stage, 0.0));
+        // Hit testing: a row is found, the panel background is inert.
+        let (h, r) = menu.items[1];
+        assert_eq!(menu.hit(r.x + 2.0, r.y + 2.0), Some(h));
+        assert_eq!(menu.hit(menu.panel.x + 0.5, menu.panel.y + 0.5), Some(Hit::Inert));
     }
 
     #[test]

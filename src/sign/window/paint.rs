@@ -17,7 +17,8 @@ use windows::Win32::Graphics::Direct2D::{
     ID2D1Bitmap, ID2D1Factory, ID2D1RenderTarget, ID2D1SolidColorBrush, ID2D1StrokeStyle,
 };
 use windows::Win32::Graphics::DirectWrite::{
-    DWRITE_FONT_WEIGHT, DWRITE_TEXT_METRICS, DWRITE_TEXT_RANGE, DWRITE_WORD_WRAPPING_NO_WRAP,
+    DWRITE_FONT_WEIGHT, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER,
+    DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_METRICS, DWRITE_TEXT_RANGE, DWRITE_WORD_WRAPPING_NO_WRAP,
 };
 use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, InvalidateRect, PAINTSTRUCT};
 use windows_numerics::{Matrix3x2, Vector2};
@@ -30,7 +31,7 @@ use super::window::{
 use crate::i18n::{Key, tr};
 use crate::shot_edit::gfx::{Align, bitmap, color, rect_f};
 use crate::shot_edit::icons::{fill, fill_round};
-use crate::sign::style::TextStyle;
+use crate::sign::style::{Family, TextStyle};
 use crate::sign::{ItemKind, Mark, Quarter, raster, text_draw};
 use crate::theme;
 use crate::ui::geometry::Rect;
@@ -595,26 +596,21 @@ fn draw(w: &mut Win) -> windows::core::Result<()> {
     }
 
     // The item bar and popovers sit over everything else.
+    let style = window::selected_style(w);
+    let tint = window::selected_tint(w);
     if let Some(v) = view(w).filter(|_| ready) {
         if let Some(bar) = float_bar(w, &v) {
             draw_popover_panel(&rt, &brush, &bar.panel, &p, ui);
+            for pair in bar.items.windows(2) {
+                // A thin line stands in the wider gap between two groups.
+                let (a, b) = (pair[0].1, pair[1].1);
+                if a.y == b.y && b.x - a.right() > 5.0 * ui {
+                    let x = (a.right() + b.x) / 2.0 - 0.5;
+                    fill(&rt, &brush, Rect { x, y: a.y + a.h * 0.25, w: 1.0, h: a.h * 0.5 }, border, ba.max(0.2));
+                }
+            }
             for (hit, r) in &bar.items {
-                if w.hover == Some(*hit) {
-                    fill_round(&rt, &brush, *r, 7.0 * ui, p.hover, 1.0);
-                }
-                if let Some(k) = layout::label_key(*hit) {
-                    w.gfx.text_in(
-                        &rt,
-                        &brush,
-                        tr(k),
-                        (r.x, r.y, r.w, r.h),
-                        12.5 * ui,
-                        400,
-                        p.text,
-                        1.0,
-                        Align::Center,
-                    );
-                }
+                draw_bar_item(w, &rt, &brush, *hit, *r, style, tint);
             }
         }
     }
@@ -654,6 +650,27 @@ fn draw(w: &mut Win) -> windows::core::Result<()> {
                         1.0,
                         Align::Center,
                     );
+                }
+                (Hit::PickFamily(f), _) => {
+                    let current = style.is_some_and(|st| st.family == f);
+                    if current {
+                        let (sel, sa) = rgba(p.selection);
+                        fill_round(&rt, &brush, *r, 7.0 * ui, sel, sa);
+                    } else if hot {
+                        fill_round(&rt, &brush, *r, 7.0 * ui, p.hover, 1.0);
+                    }
+                    let own = TextStyle { family: f, ..Default::default() };
+                    let tx = r.x + 10.0 * ui;
+                    face_text(w, &rt, &brush, f.face(), &own, (tx, r.y, r.w - 40.0 * ui, r.h), 14.0 * ui, p.text, Align::Left);
+                    if current {
+                        let (cx, cy) = (r.right() - 18.0 * ui, r.y + r.h / 2.0);
+                        let at = |dx: f32, dy: f32| Vector2::new(cx + dx * ui, cy + dy * ui);
+                        brush_set(&brush, p.accent, 1.0);
+                        unsafe {
+                            rt.DrawLine(at(-4.5, 0.5), at(-1.5, 3.5), &brush, 1.8 * ui, &w.gfx.round);
+                            rt.DrawLine(at(-1.5, 3.5), at(4.5, -3.5), &brush, 1.8 * ui, &w.gfx.round);
+                        }
+                    }
                 }
                 (h, _) => {
                     if hot {
@@ -708,6 +725,133 @@ fn draw(w: &mut Win) -> windows::core::Result<()> {
         );
     }
     unsafe { rt.EndDraw(None, None) }
+}
+
+/// `s` in `st`'s face on one line, centred vertically in the box.
+#[allow(clippy::too_many_arguments)]
+fn face_text(
+    w: &Win,
+    rt: &ID2D1RenderTarget,
+    brush: &ID2D1SolidColorBrush,
+    s: &str,
+    st: &TextStyle,
+    (x, y, bw, bh): (f32, f32, f32, f32),
+    size: f32,
+    rgb: u32,
+    align: Align,
+) {
+    let Some(format) = text_draw::format(&w.gfx.dwrite, st, size) else { return };
+    let wide: Vec<u16> = s.encode_utf16().collect();
+    unsafe {
+        let Ok(layout) = w.gfx.dwrite.CreateTextLayout(&wide, &format, bw.max(1.0), bh.max(1.0)) else { return };
+        let _ = layout.SetTextAlignment(match align {
+            Align::Center => DWRITE_TEXT_ALIGNMENT_CENTER,
+            _ => DWRITE_TEXT_ALIGNMENT_LEADING,
+        });
+        let _ = layout.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        brush.SetColor(&color(rgb, 1.0));
+        rt.DrawTextLayout(
+            Vector2::new(x, y),
+            &layout,
+            brush,
+            windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_CLIP,
+        );
+    }
+}
+
+/// One button of the item bar. The face button shows the current face in
+/// that face; B, I and U show their state with the accent tint the tools row
+/// uses for its armed tool; a colour is a filled circle, ringed when it is the
+/// item's colour.
+fn draw_bar_item(
+    w: &Win,
+    rt: &ID2D1RenderTarget,
+    brush: &ID2D1SolidColorBrush,
+    hit: Hit,
+    r: Rect,
+    style: Option<TextStyle>,
+    tint: Option<crate::sign::style::Tint>,
+) {
+    let (p, ui) = (w.p, ui_of(w));
+    let on = match hit {
+        Hit::Bold => style.is_some_and(|s| s.bold),
+        Hit::Italic => style.is_some_and(|s| s.italic),
+        Hit::Underline => style.is_some_and(|s| s.underline),
+        Hit::Family => w.pop == Some(Pop::Fonts),
+        _ => false,
+    };
+    if on {
+        let (sel, sa) = rgba(p.selection);
+        fill_round(rt, brush, r, 7.0 * ui, sel, sa);
+        // The accent only outlines the state: some accents are too light to
+        // carry the letter itself.
+        brush_set(brush, p.accent, 1.0);
+        stroke_round(rt, brush, inflate(r, -0.5 * ui), 7.0 * ui, 1.0 * ui);
+    } else if w.hover == Some(hit) {
+        fill_round(rt, brush, r, 7.0 * ui, p.hover, 1.0);
+    }
+    let ink = p.text;
+    let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
+    match hit {
+        Hit::Family => {
+            let face = style.map_or(Family::Sans, |s| s.family);
+            let own = TextStyle { family: face, ..Default::default() };
+            let pad = 9.0 * ui;
+            let name_w = r.w - pad - 14.0 * ui - pad;
+            face_text(w, rt, brush, face.face(), &own, (r.x + pad, r.y, name_w.max(1.0), r.h), window::FACE_TEXT * ui, p.text, Align::Left);
+            // The chevron after the name: this opens a menu.
+            let (qx, qy) = (r.right() - pad - 4.0 * ui, cy);
+            let at = |dx: f32, dy: f32| Vector2::new(qx + dx * ui, qy + dy * ui);
+            brush_set(brush, p.secondary, 1.0);
+            unsafe {
+                rt.DrawLine(at(-3.5, -1.5), at(0.0, 2.0), brush, 1.5 * ui, &w.gfx.round);
+                rt.DrawLine(at(0.0, 2.0), at(3.5, -1.5), brush, 1.5 * ui, &w.gfx.round);
+            }
+        }
+        Hit::Bold | Hit::Italic | Hit::Underline => {
+            let (letter, st) = match hit {
+                Hit::Bold => ("B", TextStyle { bold: true, ..Default::default() }),
+                Hit::Italic => ("I", TextStyle { family: Family::Serif, italic: true, ..Default::default() }),
+                _ => ("U", TextStyle::default()),
+            };
+            let size = 14.0 * ui;
+            face_text(w, rt, brush, letter, &st, (r.x, r.y, r.w, r.h), size, ink, Align::Center);
+            if hit == Hit::Underline {
+                let half = text_draw::width(&w.gfx.dwrite, "U", &st, size) / 2.0;
+                brush_set(brush, ink, 1.0);
+                unsafe {
+                    rt.DrawLine(
+                        Vector2::new(cx - half, cy + 0.42 * size),
+                        Vector2::new(cx + half, cy + 0.42 * size),
+                        brush,
+                        1.3 * ui,
+                        None,
+                    );
+                }
+            }
+        }
+        Hit::Tint(t) => {
+            let dot = D2D1_ELLIPSE { point: Vector2::new(cx, cy), radiusX: 7.5 * ui, radiusY: 7.5 * ui };
+            unsafe {
+                brush_set(brush, t.rgb(), 1.0);
+                rt.FillEllipse(&dot, brush);
+                // The dark ink would vanish into the bar: every colour gets a
+                // fine outline.
+                brush_set(brush, p.secondary, 0.9);
+                rt.DrawEllipse(&dot, brush, 1.2 * ui, None);
+                if tint == Some(t) {
+                    let ring = D2D1_ELLIPSE { radiusX: 11.0 * ui, radiusY: 11.0 * ui, ..dot };
+                    brush_set(brush, p.accent, 1.0);
+                    rt.DrawEllipse(&ring, brush, 2.0 * ui, None);
+                }
+            }
+        }
+        _ => {
+            if let Some(k) = layout::label_key(hit) {
+                w.gfx.text_in(rt, brush, tr(k), (r.x, r.y, r.w, r.h), 12.5 * ui, 400, p.text, 1.0, Align::Center);
+            }
+        }
+    }
 }
 
 fn layout_icon(hit: Hit) -> Option<Icon> {

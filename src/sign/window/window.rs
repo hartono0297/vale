@@ -159,6 +159,8 @@ pub(super) enum Drag {
 pub(super) enum Pop {
     More,
     Picker { initials: bool },
+    /// The face menu under the selected item's format bar.
+    Fonts,
 }
 
 pub(super) struct Shot {
@@ -768,16 +770,23 @@ fn try_open(owner: HWND, src: Source, demo: bool) -> windows::core::Result<()> {
     Ok(())
 }
 
+/// Size of the face names in the item bar and the face menu, in DIPs.
+pub(super) const FACE_TEXT: f32 = 12.5;
+
 pub(super) fn measure_labels(gfx: &Gfx, ui: f32) -> Labels {
-    Labels(
-        layout::LABELLED
-            .iter()
-            .filter_map(|h| {
-                let k = layout::label_key(*h)?;
-                Some((*h, gfx.measure(tr(k), UI_TEXT * ui, paint::weight_of(*h)).0))
-            })
-            .collect(),
-    )
+    let mut all: Vec<(Hit, f32)> = layout::LABELLED
+        .iter()
+        .filter_map(|h| {
+            let k = layout::label_key(*h)?;
+            Some((*h, gfx.measure(tr(k), UI_TEXT * ui, paint::weight_of(*h)).0))
+        })
+        .collect();
+    // Each face name in its own face.
+    all.extend(style::Family::ALL.iter().map(|f| {
+        let st = style::TextStyle { family: *f, ..Default::default() };
+        (Hit::PickFamily(*f), text_draw::width(&gfx.dwrite, f.face(), &st, FACE_TEXT * ui).ceil())
+    }));
+    Labels(all)
 }
 
 /// Dark or light title bar in the window's colours, rounded corners.
@@ -1224,7 +1233,16 @@ pub(super) fn page_items(w: &Win, v: &View) -> Vec<(usize, Rect)> {
 }
 
 pub(super) fn float_hits(kind: &ItemKind) -> Vec<Hit> {
-    let mut hits = vec![Hit::Smaller, Hit::Bigger];
+    let mut hits = Vec::new();
+    match kind {
+        ItemKind::Text(..) | ItemKind::Date(..) => {
+            hits.extend([Hit::Family, Hit::Bold, Hit::Italic, Hit::Underline]);
+            hits.extend(style::Tint::ALL.map(Hit::Tint));
+        }
+        ItemKind::Check(_) => hits.extend(style::Tint::ALL.map(Hit::Tint)),
+        _ => {}
+    }
+    hits.extend([Hit::Smaller, Hit::Bigger]);
     match kind {
         ItemKind::Signature(_) => hits.push(Hit::AddDate),
         ItemKind::Initials(_) => hits.push(Hit::AllPages),
@@ -1254,6 +1272,13 @@ pub(super) fn popover(w: &Win) -> Option<Popover> {
             let anchor = w.layout.rect_of(tool).or_else(|| w.layout.rect_of(Hit::More))?;
             let n = super::saved_count(initials, w.demo);
             Some(layout::picker(anchor, n, cw, ui))
+        }
+        Pop::Fonts => {
+            let v = view(w)?;
+            let bar = float_bar(w, &v)?;
+            let it = shown_item(w, &v, w.selected?)?;
+            let family = bar.items.iter().find(|(h, _)| *h == Hit::Family)?.1;
+            Some(layout::font_menu(family, bar.panel, v.item_rect(&it), w.layout.stage, ui))
         }
     }
 }
@@ -1486,6 +1511,7 @@ fn go_to(w: &mut Win, page: usize) {
     }
     if page != w.cur {
         w.selected = None;
+        close_stale_fonts(w);
     }
     w.cur = page;
     let rows = rail(w);
@@ -1700,6 +1726,35 @@ fn act(hwnd: HWND, hit: Hit, kb: bool) {
         Hit::Smaller | Hit::Bigger if ready => {
             with(hwnd, |w| scale_selected(w, if hit == Hit::Bigger { STEP } else { 1.0 / STEP }));
         }
+        Hit::Family if ready => {
+            with(hwnd, |w| {
+                w.pop = if w.pop == Some(Pop::Fonts) { None } else { Some(Pop::Fonts) };
+                if kb && w.pop.is_some() {
+                    w.focus = selected_style(w).map(|st| Hit::PickFamily(st.family));
+                }
+            });
+        }
+        Hit::Bold | Hit::Italic | Hit::Underline if ready => {
+            with(hwnd, |w| {
+                w.pop = None;
+                toggle_selected(w, hit);
+            });
+        }
+        Hit::Tint(t) if ready => {
+            with(hwnd, |w| {
+                w.pop = None;
+                tint_selected(w, t);
+            });
+        }
+        Hit::PickFamily(f) if ready => {
+            with(hwnd, |w| {
+                w.pop = None;
+                restyle_selected(w, |st| st.family = f);
+                if kb {
+                    w.focus = Some(Hit::Family);
+                }
+            });
+        }
         Hit::AddDate if ready => with(hwnd, add_date_under).unwrap_or(()),
         Hit::AllPages if ready => {
             with(hwnd, |w| {
@@ -1738,7 +1793,124 @@ fn act(hwnd: HWND, hit: Hit, kb: bool) {
         }
         _ => {}
     }
-    with(hwnd, relayout);
+    with(hwnd, |w| {
+        close_stale_fonts(w);
+        relayout(w);
+    });
+    invalidate(hwnd);
+}
+
+/// The face menu belongs to the selected item: it goes when nothing is
+/// selected any more.
+fn close_stale_fonts(w: &mut Win) {
+    if w.pop == Some(Pop::Fonts) && w.selected.is_none() {
+        w.pop = None;
+    }
+}
+
+/// The text style of the selected Text or Date.
+pub(super) fn selected_style(w: &Win) -> Option<style::TextStyle> {
+    match &w.doc.as_ref()?.session.items.get(w.selected?)?.kind {
+        ItemKind::Text(_, st) | ItemKind::Date(_, st) => Some(*st),
+        _ => None,
+    }
+}
+
+/// The colour of the selected Text, Date or Check.
+pub(super) fn selected_tint(w: &Win) -> Option<style::Tint> {
+    match &w.doc.as_ref()?.session.items.get(w.selected?)?.kind {
+        ItemKind::Text(_, st) | ItemKind::Date(_, st) => Some(st.tint),
+        ItemKind::Check(t) => Some(*t),
+        _ => None,
+    }
+}
+
+/// Applies `f` to the style of the selected Text or Date as one undo step.
+/// A change of face, weight or slant measures the text again: the box keeps
+/// its height and its left edge in its own upright frame, takes the measured
+/// width (plus the 2 pt the editor adds) and is pulled back onto the page.
+/// Underline and colour leave the size alone. Other kinds ignore it. The
+/// style becomes the one new Text and Date items start from.
+pub(super) fn restyle_selected(w: &mut Win, f: impl FnOnce(&mut style::TextStyle)) {
+    let Some(i) = w.selected else { return };
+    let Some(v) = view(w) else { return };
+    let Some(old) = w.doc.as_ref().and_then(|d| d.session.items.get(i)).cloned() else { return };
+    let (s, was, date) = match &old.kind {
+        ItemKind::Text(s, st) => (s.clone(), *st, false),
+        ItemKind::Date(s, st) => (s.clone(), *st, true),
+        _ => return,
+    };
+    let mut st = was;
+    f(&mut st);
+    style::set_last_text(st);
+    if st == was {
+        return;
+    }
+    let nw = if was.changes_width(&st) {
+        text_draw::width(&w.gfx.dwrite, &s, &st, old.h * TEXT_FILL) + 2.0
+    } else {
+        old.w
+    };
+    let kind = if date { ItemKind::Date(s, st) } else { ItemKind::Text(s, st) };
+    let Some(d) = &mut w.doc else { return };
+    d.session.restyle(i, kind, nw);
+    if let Some(it) = d.session.items.get_mut(i) {
+        // The width grows from the left edge of the upright frame, which is
+        // the item's origin: for a half or three quarter turn that corner
+        // moves with the width.
+        let grown = it.w - old.w;
+        match it.turn {
+            Quarter::R180 => it.x -= grown,
+            Quarter::R270 => it.y -= grown,
+            _ => {}
+        }
+        let (bw, bh) = geom::occupied(it);
+        (it.x, it.y) = layout::clamp_into(it.x, it.y, bw, bh, v.g.w, v.g.h);
+    }
+}
+
+/// A colour for the selected item: a Check's own (as one undo step), or the
+/// style of a Text or Date.
+pub(super) fn tint_selected(w: &mut Win, t: style::Tint) {
+    let Some(i) = w.selected else { return };
+    let Some(d) = &mut w.doc else { return };
+    let Some(it) = d.session.items.get(i) else { return };
+    match it.kind {
+        ItemKind::Check(old) => {
+            style::set_last_check(t);
+            if old != t {
+                let width = it.w;
+                d.session.restyle(i, ItemKind::Check(t), width);
+            }
+        }
+        ItemKind::Text(..) | ItemKind::Date(..) => restyle_selected(w, |st| st.tint = t),
+        _ => {}
+    }
+}
+
+fn toggle_selected(w: &mut Win, hit: Hit) {
+    restyle_selected(w, |st| match hit {
+        Hit::Bold => st.bold = !st.bold,
+        Hit::Italic => st.italic = !st.italic,
+        Hit::Underline => st.underline = !st.underline,
+        _ => {}
+    });
+}
+
+/// Ctrl+B, Ctrl+I and Ctrl+U on the selected item, when no text is being
+/// typed.
+fn toggle_by_key(hwnd: HWND, vk: u16) {
+    with(hwnd, |w| {
+        if w.text.is_some() {
+            return;
+        }
+        let hit = match vk {
+            0x42 => Hit::Bold,
+            0x49 => Hit::Italic,
+            _ => Hit::Underline,
+        };
+        toggle_selected(w, hit);
+    });
     invalidate(hwnd);
 }
 
@@ -1787,6 +1959,7 @@ fn remove_selected(hwnd: HWND) {
         if let Some(d) = &mut w.doc {
             d.session.remove_item(i);
         }
+        close_stale_fonts(w);
     });
 }
 
@@ -1821,6 +1994,7 @@ fn undo_redo(hwnd: HWND, redo: bool) {
             w.asked = None;
             want_render(w);
         }
+        close_stale_fonts(w);
     });
     invalidate(hwnd);
 }
@@ -2536,7 +2710,7 @@ fn on_key(hwnd: HWND, vk: u16) {
         act(hwnd, if ask == Ask::Discard { Hit::Keep } else { Hit::NotNow }, true);
         return;
     }
-    let edit_key = (ctrl && matches!(vk, 0x53 | 0x59 | 0x5A))
+    let edit_key = (ctrl && matches!(vk, 0x53 | 0x59 | 0x5A | 0x42 | 0x49 | 0x55))
         || [VK_DELETE.0, VK_BACK.0, VK_PRIOR.0, VK_NEXT.0, VK_LEFT.0, VK_RIGHT.0, VK_UP.0, VK_DOWN.0].contains(&vk);
     if edit_key && !editing {
         return;
@@ -2571,6 +2745,7 @@ fn on_key(hwnd: HWND, vk: u16) {
         0x5A if ctrl && shift => undo_redo(hwnd, true),
         0x5A if ctrl => undo_redo(hwnd, false),
         0x59 if ctrl => undo_redo(hwnd, true),
+        0x42 | 0x49 | 0x55 if ctrl => toggle_by_key(hwnd, vk),
         v if v == VK_DELETE.0 || v == VK_BACK.0 => {
             remove_selected(hwnd);
             invalidate(hwnd);
@@ -3034,6 +3209,114 @@ mod tests {
         let px_after = text_edit::font_px(new);
         assert!(px_after as f32 >= px_before as f32 * 1.6, "{px_before} -> {px_after}");
         finish_text(hwnd, false);
+
+        format_controls_behave(hwnd);
+    }
+
+    /// The format controls of the item bar, on the open window.
+    fn format_controls_behave(hwnd: HWND) {
+        use style::{Family, TextStyle, Tint};
+        let _lock = style::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        with(hwnd, |w| {
+            w.pop = None;
+            w.selected = None;
+        });
+        let page_w = with(hwnd, |w| view(w).map(|v| v.g.w)).flatten().expect("a page");
+        let add = |kind: ItemKind, x: f32, w_pt: f32| {
+            with(hwnd, |w| {
+                let page = w.cur;
+                let d = w.doc.as_mut().expect("open");
+                let i = d.session.add(Item { kind, page, x, y: 100.0, w: w_pt, h: 14.0, turn: Quarter::R0 });
+                w.selected = Some(i);
+                i
+            })
+            .expect("added")
+        };
+        let item = |hwnd, i: usize| with(hwnd, |w| w.doc.as_ref().map(|d| d.session.items[i].clone())).flatten().expect("item");
+
+        // The bar for each kind: format first, then the actions.
+        let t = TextStyle::default();
+        let text = ItemKind::Text("Halo dunia semuanya".into(), t);
+        let all_tints = [Hit::Tint(Tint::Black), Hit::Tint(Tint::Blue), Hit::Tint(Tint::Red)];
+        let mut want = vec![Hit::Family, Hit::Bold, Hit::Italic, Hit::Underline];
+        want.extend(all_tints);
+        want.extend([Hit::Smaller, Hit::Bigger, Hit::Remove]);
+        assert_eq!(float_hits(&text), want);
+        assert_eq!(float_hits(&ItemKind::Date("1 Mei 2026".into(), t)), want);
+        let mut check = all_tints.to_vec();
+        check.extend([Hit::Smaller, Hit::Bigger, Hit::Remove]);
+        assert_eq!(float_hits(&ItemKind::Check(Tint::Black)), check);
+
+        // A text at the right edge made bold serif: the width follows the
+        // measure, the height stays, the box stays on the page, and one undo
+        // brings everything back.
+        let i = add(text.clone(), page_w - 40.0, 38.0);
+        let before = item(hwnd, i);
+        let steps = undo_steps(hwnd);
+        with(hwnd, |w| restyle_selected(w, |s| {
+            s.bold = true;
+            s.family = Family::Serif;
+        }));
+        let after = item(hwnd, i);
+        let st = TextStyle { family: Family::Serif, bold: true, ..t };
+        let measured = with(hwnd, |w| text_draw::width(&w.gfx.dwrite, "Halo dunia semuanya", &st, 14.0 * TEXT_FILL)).unwrap();
+        assert!((after.w - (measured + 2.0)).abs() < 0.01, "{} vs {}", after.w, measured + 2.0);
+        assert_eq!(after.h, before.h);
+        assert!(after.x >= 0.0 && after.x + after.w <= page_w + 0.01, "{} {}", after.x, after.w);
+        assert!(matches!(&after.kind, ItemKind::Text(_, s) if *s == st));
+        assert_eq!(undo_steps(hwnd), steps + 1);
+        with(hwnd, |w| {
+            w.doc.as_mut().expect("open").session.undo();
+        });
+        let undone = item(hwnd, i);
+        assert_eq!((undone.x, undone.w, undone.h), (before.x, before.w, before.h));
+        assert_eq!(undone.kind, before.kind);
+        with(hwnd, |w| {
+            w.doc.as_mut().expect("open").session.redo();
+        });
+
+        // Underline and colour never change the size.
+        let sized = item(hwnd, i);
+        with(hwnd, |w| restyle_selected(w, |s| s.underline = true));
+        with(hwnd, |w| tint_selected(w, Tint::Red));
+        let now = item(hwnd, i);
+        assert_eq!((now.w, now.h, now.x), (sized.w, sized.h, sized.x));
+        assert!(matches!(&now.kind, ItemKind::Text(_, s) if s.underline && s.tint == Tint::Red && s.bold));
+
+        // The last-used style follows the changes: Text and Date share one;
+        // a Check has its own colour.
+        with(hwnd, |w| restyle_selected(w, |s| s.italic = true));
+        assert!(style::last_text().italic && style::last_text().bold);
+        let before_text = style::last_text();
+        let c = add(ItemKind::Check(Tint::Black), 60.0, 14.0);
+        with(hwnd, |w| tint_selected(w, Tint::Red));
+        assert_eq!(item(hwnd, c).kind, ItemKind::Check(Tint::Red));
+        assert_eq!(style::last_check(), Tint::Red);
+        assert_eq!(style::last_text(), before_text, "a check's colour leaves the text style alone");
+        // Other kinds ignore the text controls.
+        with(hwnd, |w| restyle_selected(w, |s| s.bold = !s.bold));
+        assert_eq!(item(hwnd, c).kind, ItemKind::Check(Tint::Red));
+
+        // Ctrl+B on a selected text toggles bold; the face menu opens from
+        // its button and a pick sets the face.
+        with(hwnd, |w| w.selected = Some(i));
+        let bold = |hwnd| matches!(item(hwnd, i).kind, ItemKind::Text(_, s) if s.bold);
+        let was = bold(hwnd);
+        toggle_by_key(hwnd, 0x42);
+        assert_eq!(bold(hwnd), !was);
+        act(hwnd, Hit::Family, false);
+        assert_eq!(with(hwnd, |w| w.pop), Some(Some(Pop::Fonts)));
+        assert!(with(hwnd, |w| popover(w).map(|p| p.items.len())).flatten() == Some(3));
+        act(hwnd, Hit::PickFamily(Family::Mono), false);
+        assert_eq!(with(hwnd, |w| w.pop), Some(None));
+        assert!(matches!(item(hwnd, i).kind, ItemKind::Text(_, s) if s.family == Family::Mono));
+        with(hwnd, paint::paint);
+        // Esc closes the open menu before anything else.
+        act(hwnd, Hit::Family, false);
+        on_key(hwnd, VK_ESCAPE.0);
+        assert_eq!(with(hwnd, |w| (w.pop, w.selected)), Some((None, Some(i))));
+        with(hwnd, |w| w.selected = None);
+        with(hwnd, |w| w.pop = None);
     }
 
     #[test]
