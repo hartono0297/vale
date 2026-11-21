@@ -27,7 +27,7 @@ pilihan 1") and the **gurita duduk** (sitting octopus). Spec:
 ## How it is built
 
 - Config: `mascot` (Cat, Falk, Octopus; default Cat), `falk_color` (Lutino,
-  Grey, WhiteFace), `octopus_color` (Coral, Red, Purple, Blue), lenient, at
+  Grey (shown as Kuning since 2026-11-21), WhiteFace), `octopus_color` (Coral, Red, Purple, Blue), lenient, at
   the end of `Config`, island-owned. `cat_color` and `cat_accessory` keep their
   keys; each mascot keeps its own coat, the accessory is shared.
 - `theme::Coat` (`from_parts`, `of`, `all_of`) is the one mapping;
@@ -86,12 +86,37 @@ a second wave. Accepted (rare).
 
 The Kucing section is **Maskot** / Mascot (`--settings mascot` too): a
 first row of three still mascot tiles, the coat swatches of the chosen
-mascot (falk swatches show the face colour), the shared accessory tiles,
+mascot (falk swatches show the face colour; Kuning's is that face as a
+centre on a Night ring), the shared accessory tiles,
 all ten, in rows of at most five when they do not fit one row. "Maskot di
 notch", "Ikuti maskot" for the Auto surface. In the light theme every coat
 swatch (the cat's too) has a full `secondary` 1 px edge: the pale coats were
 under 3:1 on the light card. Still mouse-only like the other swatches.
 The Auto swatch keeps its cat icon (follow-up).
+
+## Coat 2 is Kuning, yellow all over (2026-11-21)
+
+The owner said the Grey falk looked bearded: the head egg is drawn in
+`falk_ink(..).body` and the yellow mask in `face`, so a grey band showed under
+the cheeks. After mockups (a yellow head on a grey body was "aneh") the owner
+chose a bird yellow all over, named **Kuning** / **Yellow**. Spec:
+`docs/superpowers/specs/2026-11-21-falk-kuning-design.md`.
+
+- Only `falk_ink(Grey).body` changed (to the face's 0xF2D35A); wings, belly
+  and tail follow from `falk_coat`'s `tone()`, notch `tint` is 0xF2D35A,
+  Auto surface stays Night (Lutino's is Espresso, so the two yellow birds
+  still differ in the notch). Lutino and Muka putih are pinned by tests.
+- The enum value stays `Grey`: it is what every `config.json` stores, and an
+  unknown name falls back to Lutino, so a rename would reset users. Only the
+  label (`Key::FalkColorGrey`) says Kuning; a comment at `FalkColor` says why.
+  `DI_FALK_COLOR=grey` is still the demo name.
+- Settings dot: Kuning's face matches Lutino's at 1.01:1, so its dot is the
+  face at 0.6 of the radius on its Night surface (`falk_dot` in
+  `settings_controls.rs`). On the dark card the Night ring nearly vanishes
+  (about 1.06:1, only the hairline shows), so there it reads as a smaller
+  yellow dot.
+- Jadi muka (Face) cannot tell Lutino from Kuning: the notch fill is the face
+  colour, the same yellow for both (unchanged by this work).
 
 ## Stays the cat
 

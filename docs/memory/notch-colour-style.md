@@ -35,7 +35,7 @@ Pure functions, no drawing.
 
 - `tint(look, robot_on, accent)`: one colour per coat (Terracotta and Calico
   #E2683C, White #F6F1EA, Black #8E7CB8 from its rim, falk Lutino #F6D04A, falk
-  Abu-abu and Muka putih #9A959C, octopus its body colour). With the mascot off it
+  Kuning #F2D35A (was Abu-abu #9A959C until 2026-11-21), Muka putih #9A959C, octopus its body colour). With the mascot off it
   is the accent.
 - `bottom(surface, tint, max_t, accent)`: the surface blended toward the tint by
   the largest `t <= max_t` where cream `CREAM` #F4EDE4 holds 5:1 and the caption
