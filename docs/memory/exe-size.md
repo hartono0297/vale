@@ -490,3 +490,4 @@ checksum checked against `vale.exe.sha256` at release time):
 | v5.5.6 (e9d0c59) | 5,016,064 (+8,704: mascot plays on the hour, info button) |
 | v5.5.7 (9271d1c) | 5,017,088 (+1,024: transcript CPU retry, Face notch and lyric fixes) |
 | v5.6.0 (684f272) | 6,072,320 (+1,055,232: document signing with lopdf and Windows.Data.Pdf, text formatting, screenshot rotate in the editor and in place) |
+| v5.6.1 (3fda6a7) | 6,072,320 (+0: falk Grey coat becomes Kuning, colour data only) |
