@@ -23,9 +23,9 @@ fn copy_item(i: &Item) -> Item {
     let kind = match &i.kind {
         ItemKind::Signature(m) => ItemKind::Signature(m.clone()),
         ItemKind::Initials(m) => ItemKind::Initials(m.clone()),
-        ItemKind::Date(s) => ItemKind::Date(s.clone()),
-        ItemKind::Text(s) => ItemKind::Text(s.clone()),
-        ItemKind::Check => ItemKind::Check,
+        ItemKind::Date(s, st) => ItemKind::Date(s.clone(), *st),
+        ItemKind::Text(s, st) => ItemKind::Text(s.clone(), *st),
+        ItemKind::Check(t) => ItemKind::Check(*t),
     };
     Item { kind, page: i.page, x: i.x, y: i.y, w: i.w, h: i.h, turn: i.turn }
 }
@@ -75,6 +75,21 @@ impl Session {
         self.checkpoint();
         self.items[i].x += dx;
         self.items[i].y += dy;
+    }
+
+    /// Replace an item's kind and width in one undo step; width is clamped
+    /// like `resize_item`. Out of range does nothing.
+    pub fn restyle(&mut self, i: usize, kind: ItemKind, w: f32) {
+        let Some(it) = self.items.get(i) else { return };
+        let max = self
+            .pages
+            .get(it.page)
+            .map(|p| p.geom.w.min(p.geom.h))
+            .unwrap_or(f32::MAX)
+            .max(MIN_SIDE);
+        self.checkpoint();
+        self.items[i].kind = kind;
+        self.items[i].w = w.clamp(MIN_SIDE, max);
     }
 
     /// Marks keep their aspect (driven by `w`); other items take `w` and `h`
@@ -249,7 +264,7 @@ mod tests {
     fn has_changes_only_with_something_to_save() {
         let mut s = three();
         assert!(!s.has_changes());
-        let i = s.add(item(ItemKind::Check, 0, 10.0, 10.0, 20.0, 20.0));
+        let i = s.add(item(ItemKind::Check(Default::default()), 0, 10.0, 10.0, 20.0, 20.0));
         assert!(s.has_changes());
         s.remove_item(i);
         assert!(s.dirty() && !s.has_changes(), "added then removed: nothing to save");
@@ -285,7 +300,7 @@ mod tests {
     #[test]
     fn rotate_turns_items_with_content() {
         let mut s = three();
-        s.add(item(ItemKind::Check, 0, 10.0, 20.0, 30.0, 30.0));
+        s.add(item(ItemKind::Check(Default::default()), 0, 10.0, 20.0, 30.0, 30.0));
         s.rotate_page(0);
         assert_eq!((s.items[0].x, s.items[0].y, s.items[0].turn), (10.0, 20.0, Quarter::R0));
         assert_eq!(s.pages[0].extra, Quarter::R90);
@@ -302,8 +317,8 @@ mod tests {
     #[test]
     fn delete_removes_items_of_that_page() {
         let mut s = three();
-        s.add(item(ItemKind::Check, 0, 1.0, 1.0, 20.0, 20.0));
-        s.add(item(ItemKind::Check, 1, 1.0, 1.0, 20.0, 20.0));
+        s.add(item(ItemKind::Check(Default::default()), 0, 1.0, 1.0, 20.0, 20.0));
+        s.add(item(ItemKind::Check(Default::default()), 1, 1.0, 1.0, 20.0, 20.0));
         assert_eq!(s.delete_page(0), Ok(()));
         assert_eq!(s.items.len(), 1);
         assert_eq!(s.items[0].page, 1);
@@ -315,7 +330,7 @@ mod tests {
     fn undo_redo_restores_snapshot() {
         let mut s = three();
         assert!(!s.dirty());
-        let i = s.add(item(ItemKind::Check, 0, 10.0, 10.0, 20.0, 20.0));
+        let i = s.add(item(ItemKind::Check(Default::default()), 0, 10.0, 10.0, 20.0, 20.0));
         s.move_item(i, 5.0, 7.0);
         assert!(s.dirty());
         assert_eq!((s.items[0].x, s.items[0].y), (15.0, 17.0));
@@ -379,8 +394,38 @@ mod tests {
         assert_eq!((s.items[0].w, s.items[0].h), (16.0, 8.0));
         s.resize_item(i, 5000.0, 5000.0);
         assert_eq!((s.items[0].w, s.items[0].h), (612.0, 306.0));
-        let t = s.add(item(ItemKind::Text("a".into()), 0, 0.0, 0.0, 100.0, 20.0));
+        let t = s.add(item(ItemKind::Text("a".into(), Default::default()), 0, 0.0, 0.0, 100.0, 20.0));
         s.resize_item(t, 3.0, 5000.0);
         assert_eq!((s.items[t].w, s.items[t].h), (8.0, 612.0));
+    }
+
+    #[test]
+    fn restyle_is_one_undo_step() {
+        use crate::sign::style::{Family, TextStyle};
+        let mut s = three();
+        let old = ItemKind::Text("a".into(), TextStyle::default());
+        let t = s.add(item(old.clone(), 0, 0.0, 0.0, 100.0, 20.0));
+        let new = ItemKind::Text("a".into(), TextStyle { family: Family::Serif, bold: true, ..Default::default() });
+        s.restyle(t, new.clone(), 120.0);
+        assert_eq!(s.items[t].kind, new);
+        assert_eq!(s.items[t].w, 120.0);
+        assert!(s.undo());
+        assert_eq!(s.items[t].kind, old);
+        assert_eq!(s.items[t].w, 100.0);
+        // Add is the second undo step; restyle must have taken only one.
+        assert!(s.undo());
+        assert!(s.items.is_empty());
+        assert!(!s.undo());
+    }
+
+    #[test]
+    fn restyle_clamps_width() {
+        use crate::sign::style::TextStyle;
+        let mut s = three();
+        let k = ItemKind::Text("a".into(), TextStyle::default());
+        let t = s.add(item(k.clone(), 0, 0.0, 0.0, 100.0, 20.0));
+        s.restyle(t, k, 1.0e6);
+        assert_eq!(s.items[t].w, 612.0);
+        s.restyle(99, ItemKind::Check(crate::sign::style::Tint::Black), 5.0);
     }
 }

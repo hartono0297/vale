@@ -6,16 +6,13 @@ use std::os::windows::fs::OpenOptionsExt;
 use std::path::Path;
 
 use lopdf::{Dictionary, Document, Object, Stream};
-use windows::Win32::Graphics::Direct2D::Common::{D2D_RECT_F, D2D1_COLOR_F};
+use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
 use windows::Win32::Graphics::Direct2D::{
     D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, D2D1_CAP_STYLE_ROUND, D2D1_DASH_STYLE_SOLID,
-    D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_LINE_JOIN_ROUND, D2D1_STROKE_STYLE_PROPERTIES,
+    D2D1_LINE_JOIN_ROUND, D2D1_STROKE_STYLE_PROPERTIES,
     D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE, ID2D1Factory, ID2D1RenderTarget,
 };
-use windows::Win32::Graphics::DirectWrite::{
-    DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_NORMAL,
-    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, IDWriteFactory,
-};
+use windows::Win32::Graphics::DirectWrite::IDWriteFactory;
 use windows::Win32::Graphics::Imaging::{
     CLSID_WICImagingFactory, GUID_ContainerFormatJpeg, GUID_WICPixelFormat24bppBGR,
     GUID_WICPixelFormat32bppBGRA, GUID_WICPixelFormat32bppPBGRA, IWICBitmapSource,
@@ -28,7 +25,7 @@ use windows::Win32::System::Com::{
 };
 use windows::Win32::System::Variant::{VARIANT, VT_R4};
 use windows::Win32::UI::Shell::SHCreateMemStream;
-use windows::core::{Interface, PWSTR, w};
+use windows::core::{Interface, PWSTR};
 use windows_numerics::{Matrix3x2, Vector2};
 
 use crate::phone::thumb::{MAX_BYTES, oriented_source};
@@ -36,14 +33,13 @@ use crate::phone::thumb::{MAX_BYTES, oriented_source};
 use super::geom::{PageGeom, item_view_rect};
 use super::raster;
 use super::session::Page;
-use super::{Item, ItemKind, Mark, Quarter};
+use super::style::Tint;
+use super::{Item, ItemKind, Mark, Quarter, text_draw};
 
 /// An image's page space is its pixels at 0.75 points each.
 const PT_PER_PX: f32 = 0.75;
 /// JPEG quality (0 to 1).
 const JPEG_QUALITY: f32 = 0.92;
-/// Text and dates fill this much of the item's height.
-const TEXT_FILL: f32 = 0.8;
 /// The most pixels an image may have to be signed: the renderer refuses more
 /// at open, so a save never meets an image it cannot compose.
 pub const MAX_PIXELS: u64 = 64_000_000;
@@ -64,11 +60,6 @@ pub enum ImageFormat {
 /// rotated by the source.
 pub fn image_geom(w_px: u32, h_px: u32) -> PageGeom {
     PageGeom { w: w_px as f32 * PT_PER_PX, h: h_px as f32 * PT_PER_PX, base: Quarter::R0 }
-}
-
-/// Ink blue `#1F3A8A`.
-fn ink() -> D2D1_COLOR_F {
-    D2D1_COLOR_F { r: 31.0 / 255.0, g: 58.0 / 255.0, b: 138.0 / 255.0, a: 1.0 }
 }
 
 /// Straight RGBA mark as premultiplied BGRA.
@@ -121,48 +112,33 @@ fn draw_item(
                     );
                 }
             }
-            ItemKind::Text(s) | ItemKind::Date(s) => draw_text(rt, dwrite, s, bw, bh),
-            ItemKind::Check => draw_check(rt, d2d, bw, bh),
+            ItemKind::Text(s, st) | ItemKind::Date(s, st) => draw_text(rt, dwrite, s, st, bw, bh),
+            ItemKind::Check(tint) => draw_check(rt, d2d, *tint, bw, bh),
         }
         rt.SetTransform(&Matrix3x2::identity());
     }
 }
 
-unsafe fn draw_text(rt: &ID2D1RenderTarget, dwrite: &IDWriteFactory, s: &str, bw: f32, bh: f32) {
+unsafe fn draw_text(
+    rt: &ID2D1RenderTarget,
+    dwrite: &IDWriteFactory,
+    s: &str,
+    st: &super::style::TextStyle,
+    bw: f32,
+    bh: f32,
+) {
     unsafe {
-        let wide: Vec<u16> = s.encode_utf16().collect();
-        let Ok(format) = dwrite.CreateTextFormat(
-            w!("Arial"),
-            None,
-            DWRITE_FONT_WEIGHT_NORMAL,
-            DWRITE_FONT_STYLE_NORMAL,
-            DWRITE_FONT_STRETCH_NORMAL,
-            bh * TEXT_FILL,
-            w!("en-us"),
-        ) else {
-            return;
-        };
-        let _ = format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
-        let _ = format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-        let Ok(layout) = dwrite.CreateTextLayout(&wide, &format, bw, bh) else {
-            return;
-        };
-        let Ok(brush) = rt.CreateSolidColorBrush(&ink(), None) else {
+        let Ok(brush) = rt.CreateSolidColorBrush(&text_draw::tint_color(st.tint), None) else {
             return;
         };
         rt.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
-        rt.DrawTextLayout(
-            Vector2::new(-bw / 2.0, -bh / 2.0),
-            &layout,
-            &brush,
-            D2D1_DRAW_TEXT_OPTIONS_NONE,
-        );
+        text_draw::draw(rt, dwrite, &brush, s, st, (-bw / 2.0, -bh / 2.0, bw, bh));
     }
 }
 
-unsafe fn draw_check(rt: &ID2D1RenderTarget, d2d: &ID2D1Factory, bw: f32, bh: f32) {
+unsafe fn draw_check(rt: &ID2D1RenderTarget, d2d: &ID2D1Factory, tint: Tint, bw: f32, bh: f32) {
     unsafe {
-        let Ok(brush) = rt.CreateSolidColorBrush(&ink(), None) else {
+        let Ok(brush) = rt.CreateSolidColorBrush(&text_draw::tint_color(tint), None) else {
             return;
         };
         let Ok(style) = d2d.CreateStrokeStyle(
@@ -482,6 +458,7 @@ mod tests {
     use crate::sign::geom::{item_view_rect, page_to_view};
     use std::sync::Arc;
     use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
+    use windows::core::w;
 
     struct Com(bool);
     impl Com {
@@ -684,8 +661,8 @@ mod tests {
     fn text_and_check_draw_ink() {
         let _com = Com::new();
         let g = image_geom(400, 300);
-        let t = Item { kind: ItemKind::Text("MMMM".into()), page: 0, x: 20.0, y: 150.0, w: 100.0, h: 30.0, turn: Quarter::R0 };
-        let c = Item { kind: ItemKind::Check, page: 0, x: 200.0, y: 150.0, w: 30.0, h: 30.0, turn: Quarter::R0 };
+        let t = Item { kind: ItemKind::Text("MMMM".into(), Default::default()), page: 0, x: 20.0, y: 150.0, w: 100.0, h: 30.0, turn: Quarter::R0 };
+        let c = Item { kind: ItemKind::Check(Default::default()), page: 0, x: 200.0, y: 150.0, w: 30.0, h: 30.0, turn: Quarter::R0 };
         let out = compose(&white(400, 300), 400, 300, &page(g, Quarter::R0), &[t.clone(), c.clone()], &no_text).expect("composed");
         for it in [&t, &c] {
             let (rx, ry, rw, rh) = item_view_rect(it, g, Quarter::R0, 4.0 / 3.0);
@@ -698,6 +675,29 @@ mod tests {
                 }
             }
             assert!(dark > 20, "{:?} drew {dark} dark pixels", it.kind);
+        }
+    }
+
+    #[test]
+    fn items_land_in_their_colours() {
+        use crate::sign::style::{Family, TextStyle};
+        let _com = Com::new();
+        let g = image_geom(400, 300);
+        let st = TextStyle { family: Family::Sans, bold: true, tint: Tint::Red, ..Default::default() };
+        let t = Item { kind: ItemKind::Text("MMMM".into(), st), page: 0, x: 20.0, y: 150.0, w: 100.0, h: 30.0, turn: Quarter::R0 };
+        let c = Item { kind: ItemKind::Check(Tint::Blue), page: 0, x: 200.0, y: 150.0, w: 30.0, h: 30.0, turn: Quarter::R0 };
+        let out = compose(&white(400, 300), 400, 300, &page(g, Quarter::R0), &[t.clone(), c.clone()], &no_text).expect("composed");
+        // BGRA: (tint, [b, g, r]).
+        for (it, want) in [(&t, [0x1B, 0x1B, 0xA6]), (&c, [0x8A, 0x3A, 0x1F])] {
+            let (rx, ry, rw, rh) = item_view_rect(it, g, Quarter::R0, 4.0 / 3.0);
+            let mut hit = false;
+            for y in ry as u32..(ry + rh) as u32 {
+                for x in rx as u32..(rx + rw) as u32 {
+                    let p = px(&out, x, y);
+                    hit |= (0..3).all(|k| p[k].abs_diff(want[k]) < 12);
+                }
+            }
+            assert!(hit, "{:?} has no pixel in its colour", it.kind);
         }
     }
 

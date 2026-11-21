@@ -35,7 +35,7 @@ use windows::Win32::UI::HiDpi::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, ReleaseCapture, SetCapture, SetFocus, VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN,
-    VK_ESCAPE, VK_LEFT, VK_NEXT, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE, VK_TAB, VK_UP,
+    VK_ESCAPE, VK_LEFT, VK_MENU, VK_NEXT, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE, VK_TAB, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_DBLCLKS, CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetCursorPos,
@@ -52,7 +52,7 @@ use windows::core::{Error, HSTRING, PCWSTR, w};
 use super::layout::{
     self, Corner, Footer, Hit, Labels, Layout, Popover, RailRow, Scene, Spec, StageMode, Tool,
 };
-use super::text_edit::{self, EDIT_CANCEL, EDIT_COMMIT, EDIT_TAB, Field, WM_SIGN_EDIT};
+use super::text_edit::{self, EDIT_BOLD, EDIT_CANCEL, EDIT_ITALIC, EDIT_UNDERLINE, EDIT_COMMIT, EDIT_TAB, Field, WM_SIGN_EDIT};
 use super::{Report, maker, paint};
 use crate::i18n::{Key, Lang, lang, tr};
 use crate::shot_edit::gfx::{Gfx, Target};
@@ -61,7 +61,7 @@ use crate::sign::image_out::{self, ImageFormat};
 use crate::sign::pdf_write::{self, OpenError, Opened, SaveError};
 use crate::sign::render::{Done, Job, Pixels, Renderer};
 use crate::sign::session::{Page, Session};
-use crate::sign::{Item, ItemKind, Kind, Mark, Quarter, Source, names, office, winansi};
+use crate::sign::{Item, ItemKind, Kind, Mark, Quarter, Source, names, office, style, text_draw, winansi};
 use crate::theme::{self, WindowPalette};
 use crate::ui::geometry::Rect;
 
@@ -107,8 +107,7 @@ const INITIALS_BOX: (f32, f32) = (48.0, 24.0);
 const DATE_SIZE: (f32, f32) = (110.0, 14.0);
 const TEXT_H: f32 = 14.0;
 const CHECK_SIZE: f32 = 14.0;
-/// Text fills this share of its item's height.
-pub(super) const TEXT_FILL: f32 = 0.8;
+pub(super) use crate::sign::text_draw::TEXT_FILL;
 /// The gap between a signature and the date put under it.
 const DATE_GAP: f32 = 3.0;
 /// Lebih kecil / Lebih besar.
@@ -160,6 +159,8 @@ pub(super) enum Drag {
 pub(super) enum Pop {
     More,
     Picker { initials: bool },
+    /// The face menu under the selected item's format bar.
+    Fonts,
 }
 
 pub(super) struct Shot {
@@ -288,7 +289,9 @@ pub(super) struct Win {
     pub rail_scroll: f32,
     /// The Teks EDIT and the item it edits (`None`: a new one at the page
     /// point).
-    pub text: Option<(Field, Option<usize>, (f32, f32))>,
+    /// The Teks EDIT, the item it edits, where it sits on the page, and the
+    /// pending style (kept out of the session until it is committed).
+    pub text: Option<(Field, Option<usize>, (f32, f32), style::TextStyle)>,
     pub password: Option<Field>,
     pending: Option<Arc<Vec<u8>>>,
     pub maker: Option<HWND>,
@@ -769,16 +772,23 @@ fn try_open(owner: HWND, src: Source, demo: bool) -> windows::core::Result<()> {
     Ok(())
 }
 
+/// Size of the face names in the item bar and the face menu, in DIPs.
+pub(super) const FACE_TEXT: f32 = 12.5;
+
 pub(super) fn measure_labels(gfx: &Gfx, ui: f32) -> Labels {
-    Labels(
-        layout::LABELLED
-            .iter()
-            .filter_map(|h| {
-                let k = layout::label_key(*h)?;
-                Some((*h, gfx.measure(tr(k), UI_TEXT * ui, paint::weight_of(*h)).0))
-            })
-            .collect(),
-    )
+    let mut all: Vec<(Hit, f32)> = layout::LABELLED
+        .iter()
+        .filter_map(|h| {
+            let k = layout::label_key(*h)?;
+            Some((*h, gfx.measure(tr(k), UI_TEXT * ui, paint::weight_of(*h)).0))
+        })
+        .collect();
+    // Each face name in its own face.
+    all.extend(style::Family::ALL.iter().map(|f| {
+        let st = style::TextStyle { family: *f, ..Default::default() };
+        (Hit::PickFamily(*f), text_draw::width(&gfx.dwrite, f.face(), &st, FACE_TEXT * ui).ceil())
+    }));
+    Labels(all)
 }
 
 /// Dark or light title bar in the window's colours, rounded corners.
@@ -1058,6 +1068,10 @@ fn make_password(hwnd: HWND, initial: &str) -> Option<HWND> {
         back: p.field,
         password: true,
         commit_on_blur: false,
+        bold: false,
+        italic: false,
+        underline: false,
+        format_keys: false,
     };
     let Some(made) = text_edit::create(hwnd, &spec) else {
         eprintln!("vale: the password field could not be made");
@@ -1225,7 +1239,16 @@ pub(super) fn page_items(w: &Win, v: &View) -> Vec<(usize, Rect)> {
 }
 
 pub(super) fn float_hits(kind: &ItemKind) -> Vec<Hit> {
-    let mut hits = vec![Hit::Smaller, Hit::Bigger];
+    let mut hits = Vec::new();
+    match kind {
+        ItemKind::Text(..) | ItemKind::Date(..) => {
+            hits.extend([Hit::Family, Hit::Bold, Hit::Italic, Hit::Underline]);
+            hits.extend(style::Tint::ALL.map(Hit::Tint));
+        }
+        ItemKind::Check(_) => hits.extend(style::Tint::ALL.map(Hit::Tint)),
+        _ => {}
+    }
+    hits.extend([Hit::Smaller, Hit::Bigger]);
     match kind {
         ItemKind::Signature(_) => hits.push(Hit::AddDate),
         ItemKind::Initials(_) => hits.push(Hit::AllPages),
@@ -1255,6 +1278,13 @@ pub(super) fn popover(w: &Win) -> Option<Popover> {
             let anchor = w.layout.rect_of(tool).or_else(|| w.layout.rect_of(Hit::More))?;
             let n = super::saved_count(initials, w.demo);
             Some(layout::picker(anchor, n, cw, ui))
+        }
+        Pop::Fonts => {
+            let v = view(w)?;
+            let bar = float_bar(w, &v)?;
+            let it = shown_item(w, &v, w.selected?)?;
+            let family = bar.items.iter().find(|(h, _)| *h == Hit::Family)?.1;
+            Some(layout::font_menu(family, bar.panel, v.item_rect(&it), w.layout.stage, ui))
         }
     }
 }
@@ -1487,6 +1517,7 @@ fn go_to(w: &mut Win, page: usize) {
     }
     if page != w.cur {
         w.selected = None;
+        close_stale_fonts(w);
     }
     w.cur = page;
     let rows = rail(w);
@@ -1521,8 +1552,8 @@ fn place(w: &mut Win, v: &View, tool: Tool, mark: Option<Arc<Mark>>, at: (f32, f
             let s = fit_mark(&m, INITIALS_BOX.0, INITIALS_BOX.1);
             (ItemKind::Initials(m), s)
         }
-        (Tool::Date, _) => (ItemKind::Date(today()), DATE_SIZE),
-        (Tool::Check, _) => (ItemKind::Check, (CHECK_SIZE, CHECK_SIZE)),
+        (Tool::Date, _) => (ItemKind::Date(today(), style::last_text()), DATE_SIZE),
+        (Tool::Check, _) => (ItemKind::Check(style::last_check()), (CHECK_SIZE, CHECK_SIZE)),
         _ => return,
     };
     let turn = geom::upright_turn(v.g, v.extra);
@@ -1701,6 +1732,38 @@ fn act(hwnd: HWND, hit: Hit, kb: bool) {
         Hit::Smaller | Hit::Bigger if ready => {
             with(hwnd, |w| scale_selected(w, if hit == Hit::Bigger { STEP } else { 1.0 / STEP }));
         }
+        Hit::Family if ready => {
+            with(hwnd, |w| {
+                w.pop = if w.pop == Some(Pop::Fonts) { None } else { Some(Pop::Fonts) };
+                if kb && w.pop.is_some() {
+                    w.focus = selected_style(w).map(|st| Hit::PickFamily(st.family));
+                }
+            });
+        }
+        Hit::Bold | Hit::Italic | Hit::Underline if ready => {
+            with(hwnd, |w| {
+                w.pop = None;
+                toggle_selected(w, hit);
+            });
+        }
+        Hit::Tint(t) if ready => {
+            with(hwnd, |w| {
+                w.pop = None;
+                tint_selected(w, t);
+            });
+        }
+        Hit::PickFamily(f) if ready => {
+            with(hwnd, |w| {
+                if w.pop != Some(Pop::Fonts) {
+                    return;
+                }
+                w.pop = None;
+                restyle_selected(w, |st| st.family = f);
+                if kb {
+                    w.focus = Some(Hit::Family);
+                }
+            });
+        }
         Hit::AddDate if ready => with(hwnd, add_date_under).unwrap_or(()),
         Hit::AllPages if ready => {
             with(hwnd, |w| {
@@ -1739,7 +1802,131 @@ fn act(hwnd: HWND, hit: Hit, kb: bool) {
         }
         _ => {}
     }
-    with(hwnd, relayout);
+    with(hwnd, |w| {
+        close_stale_fonts(w);
+        relayout(w);
+    });
+    invalidate(hwnd);
+}
+
+/// The face menu belongs to the selected item: it goes when nothing is
+/// selected any more.
+fn close_stale_fonts(w: &mut Win) {
+    if w.pop == Some(Pop::Fonts) && w.selected.is_none() {
+        w.pop = None;
+    }
+}
+
+/// The text style of the selected Text or Date.
+pub(super) fn selected_style(w: &Win) -> Option<style::TextStyle> {
+    match &w.doc.as_ref()?.session.items.get(w.selected?)?.kind {
+        ItemKind::Text(_, st) | ItemKind::Date(_, st) => Some(*st),
+        _ => None,
+    }
+}
+
+/// The colour of the selected Text, Date or Check.
+pub(super) fn selected_tint(w: &Win) -> Option<style::Tint> {
+    match &w.doc.as_ref()?.session.items.get(w.selected?)?.kind {
+        ItemKind::Text(_, st) | ItemKind::Date(_, st) => Some(st.tint),
+        ItemKind::Check(t) => Some(*t),
+        _ => None,
+    }
+}
+
+/// After a width change from `old_w`: keeps the left edge of the upright
+/// frame in place. It is the item's origin for no or a quarter turn, and
+/// moves with the width for a half or three quarter turn.
+fn keep_upright_left(it: &mut Item, old_w: f32) {
+    let grown = it.w - old_w;
+    match it.turn {
+        Quarter::R180 => it.x -= grown,
+        Quarter::R270 => it.y -= grown,
+        _ => {}
+    }
+}
+
+/// Applies `f` to the style of the selected Text or Date as one undo step.
+/// A change of face, weight or slant measures the text again: the box keeps
+/// its height and its left edge in its own upright frame, takes the measured
+/// width (plus the 2 pt the editor adds) and is pulled back onto the page.
+/// Underline and colour leave the size alone. Other kinds ignore it. The
+/// style becomes the one new Text and Date items start from.
+pub(super) fn restyle_selected(w: &mut Win, f: impl FnOnce(&mut style::TextStyle)) {
+    let Some(i) = w.selected else { return };
+    let Some(v) = view(w) else { return };
+    let Some(old) = w.doc.as_ref().and_then(|d| d.session.items.get(i)).cloned() else { return };
+    let (s, was, date) = match &old.kind {
+        ItemKind::Text(s, st) => (s.clone(), *st, false),
+        ItemKind::Date(s, st) => (s.clone(), *st, true),
+        _ => return,
+    };
+    let mut st = was;
+    f(&mut st);
+    style::set_last_text(st);
+    if st == was {
+        return;
+    }
+    let nw = if was.changes_width(&st) {
+        text_draw::width(&w.gfx.dwrite, &s, &st, old.h * TEXT_FILL) + 2.0
+    } else {
+        old.w
+    };
+    let kind = if date { ItemKind::Date(s, st) } else { ItemKind::Text(s, st) };
+    let Some(d) = &mut w.doc else { return };
+    d.session.restyle(i, kind, nw);
+    if let Some(it) = d.session.items.get_mut(i) {
+        // The width grows from the left edge of the upright frame, which is
+        // the item's origin: for a half or three quarter turn that corner
+        // moves with the width.
+        keep_upright_left(it, old.w);
+        let (bw, bh) = geom::occupied(it);
+        (it.x, it.y) = layout::clamp_into(it.x, it.y, bw, bh, v.g.w, v.g.h);
+    }
+}
+
+/// A colour for the selected item: a Check's own (as one undo step), or the
+/// style of a Text or Date.
+pub(super) fn tint_selected(w: &mut Win, t: style::Tint) {
+    let Some(i) = w.selected else { return };
+    let Some(d) = &mut w.doc else { return };
+    let Some(it) = d.session.items.get(i) else { return };
+    match it.kind {
+        ItemKind::Check(old) => {
+            style::set_last_check(t);
+            if old != t {
+                let width = it.w;
+                d.session.restyle(i, ItemKind::Check(t), width);
+            }
+        }
+        ItemKind::Text(..) | ItemKind::Date(..) => restyle_selected(w, |st| st.tint = t),
+        _ => {}
+    }
+}
+
+fn toggle_selected(w: &mut Win, hit: Hit) {
+    restyle_selected(w, |st| match hit {
+        Hit::Bold => st.bold = !st.bold,
+        Hit::Italic => st.italic = !st.italic,
+        Hit::Underline => st.underline = !st.underline,
+        _ => {}
+    });
+}
+
+/// Ctrl+B, Ctrl+I and Ctrl+U on the selected item, when no text is being
+/// typed.
+fn toggle_by_key(hwnd: HWND, vk: u16) {
+    with(hwnd, |w| {
+        if w.text.is_some() {
+            return;
+        }
+        let hit = match vk {
+            0x42 => Hit::Bold,
+            0x49 => Hit::Italic,
+            _ => Hit::Underline,
+        };
+        toggle_selected(w, hit);
+    });
     invalidate(hwnd);
 }
 
@@ -1769,7 +1956,7 @@ fn add_date_under(w: &mut Win) {
     let Some(sig) = d.session.items.get(i).cloned() else { return };
     let (x, y) = layout::below(&sig, DATE_SIZE.0, DATE_SIZE.1, DATE_GAP);
     let mut it = Item {
-        kind: ItemKind::Date(today()),
+        kind: ItemKind::Date(today(), style::last_text()),
         page: sig.page,
         x,
         y,
@@ -1788,6 +1975,7 @@ fn remove_selected(hwnd: HWND) {
         if let Some(d) = &mut w.doc {
             d.session.remove_item(i);
         }
+        close_stale_fonts(w);
     });
 }
 
@@ -1822,6 +2010,7 @@ fn undo_redo(hwnd: HWND, redo: bool) {
             w.asked = None;
             want_render(w);
         }
+        close_stale_fonts(w);
     });
     invalidate(hwnd);
 }
@@ -1847,49 +2036,62 @@ fn nudge_selected(hwnd: HWND, dx: f32, dy: f32) {
 
 /// Opens the Teks EDIT at client point `at` (new), or over item `index`.
 fn begin_text(hwnd: HWND, at: (f32, f32), index: Option<usize>) {
-    open_text(hwnd, at, index, None, true);
+    open_text(hwnd, at, index, None, true, None);
 }
 
 /// The Teks EDIT at client point `at` (new) or over item `index`, holding
 /// `typed` when given (else the item's text, or nothing). Returns its HWND.
-fn open_text(hwnd: HWND, at: (f32, f32), index: Option<usize>, typed: Option<String>, focus: bool) -> Option<HWND> {
+fn open_text(
+    hwnd: HWND,
+    at: (f32, f32),
+    index: Option<usize>,
+    typed: Option<String>,
+    focus: bool,
+    pending: Option<style::TextStyle>,
+) -> Option<HWND> {
     commit_text(hwnd);
     let plan = with(hwnd, |w| {
         let v = view(w)?;
-        let (initial, h_pt, rect) = match index.and_then(|i| w.doc.as_ref()?.session.items.get(i)) {
+        let (initial, h_pt, rect, st) = match index.and_then(|i| w.doc.as_ref()?.session.items.get(i)) {
             Some(it) => {
-                let ItemKind::Text(s) = &it.kind else { return None };
-                (s.clone(), it.h, v.item_rect(it))
+                let ItemKind::Text(s, st) = &it.kind else { return None };
+                (s.clone(), it.h, v.item_rect(it), *st)
             }
             None => {
                 let h = TEXT_H * v.scale;
-                (String::new(), TEXT_H, Rect { x: at.0, y: at.1 - h / 2.0, w: 0.0, h })
+                (String::new(), TEXT_H, Rect { x: at.0, y: at.1 - h / 2.0, w: 0.0, h }, style::last_text())
             }
         };
         w.armed = None;
         w.selected = None;
-        Some((initial, h_pt * v.scale, rect, v.to_page(at.0, at.1), ui_of(w)))
+        Some((initial, h_pt * v.scale, rect, v.to_page(at.0, at.1), ui_of(w), st))
     })
     .flatten();
-    let (initial, h_px, rect, page_at, ui) = plan?;
+    let (initial, h_px, rect, page_at, ui, planned) = plan?;
+    let st = pending.unwrap_or(planned);
+    let face = HSTRING::from(st.family.face());
     let initial = typed.unwrap_or(initial);
     let px = (h_px * TEXT_FILL).max(8.0 * ui);
     let spec = text_edit::Spec {
         rect: (rect.x as i32, rect.y as i32, (rect.w + px * 4.0).max(160.0 * ui) as i32, (px * 1.5) as i32),
         initial: &initial,
         px,
-        face: w!("Arial"),
-        color: paint::INK,
+        face: PCWSTR(face.as_ptr()),
+        color: st.tint.rgb(),
         back: 0xFFFFFF,
         password: false,
         commit_on_blur: true,
+        bold: st.bold,
+        italic: st.italic,
+        underline: st.underline,
+        format_keys: true,
     };
     let f = text_edit::create(hwnd, &spec)?;
     let edit = f.edit;
     let mut slot = Some(f);
     with(hwnd, |w| {
         if let Some(f) = slot.take() {
-            w.text = Some((f, index, page_at));
+            w.text = Some((f, index, page_at, st));
             say(w, Key::SignTextHint, Tone::Hint);
         }
     });
@@ -1908,7 +2110,7 @@ fn open_text(hwnd: HWND, at: (f32, f32), index: Option<usize>, typed: Option<Str
 /// The Teks EDIT made again where its text sits on the page as shown now
 /// (after a scale change): same text, same caret, the focus kept.
 fn rebuild_text(hwnd: HWND) {
-    let Some(Some((f, index, page_at))) = with(hwnd, |w| w.text.take()) else { return };
+    let Some(Some((f, index, page_at, st))) = with(hwnd, |w| w.text.take()) else { return };
     let typed = text_edit::text(f.edit);
     let caret = text_edit::selection(f.edit);
     let had_focus = unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetFocus() } == f.edit;
@@ -1922,7 +2124,7 @@ fn rebuild_text(hwnd: HWND) {
     })
     .flatten()
     .unwrap_or_default();
-    if let Some(edit) = open_text(hwnd, at, index, Some(typed), had_focus) {
+    if let Some(edit) = open_text(hwnd, at, index, Some(typed), had_focus, Some(st)) {
         text_edit::select(edit, caret);
     }
 }
@@ -1952,7 +2154,7 @@ fn rescale_fields(hwnd: HWND) {
 /// Grows the Teks EDIT with what is typed.
 fn fit_text(hwnd: HWND) {
     with(hwnd, |w| {
-        let Some((f, _, _)) = &w.text else { return };
+        let Some((f, _, _, st)) = &w.text else { return };
         let ui = ui_of(w);
         let s = text_edit::text(f.edit);
         let mut r = RECT::default();
@@ -1965,10 +2167,28 @@ fn fit_text(hwnd: HWND) {
         }
         let h = r.bottom - r.top;
         let px = h as f32 / 1.5;
-        let tw = paint::arial_width(&w.gfx.dwrite, &format!("{s}MM"), px);
+        let tw = text_draw::width(&w.gfx.dwrite, &format!("{s}MM"), st, px);
         let width = tw.max(160.0 * ui) as i32;
         text_edit::move_to(f.edit, pt.x, pt.y, width, h);
     });
+}
+
+/// Ctrl+B / I / U in the Teks EDIT: the pending style changes and the EDIT
+/// shows it at once. The session is not touched.
+fn toggle_pending(hwnd: HWND, code: usize) {
+    with(hwnd, |w| {
+        let Some((f, _, _, st)) = &mut w.text else { return };
+        match code {
+            EDIT_BOLD => st.bold = !st.bold,
+            EDIT_ITALIC => st.italic = !st.italic,
+            EDIT_UNDERLINE => st.underline = !st.underline,
+            _ => return,
+        }
+        let px = f.px;
+        let face = HSTRING::from(st.family.face());
+        text_edit::restyle(f, PCWSTR(face.as_ptr()), px, st.bold, st.italic, st.underline, st.tint.rgb());
+    });
+    fit_text(hwnd);
 }
 
 fn commit_text(hwnd: HWND) -> bool {
@@ -1976,7 +2196,7 @@ fn commit_text(hwnd: HWND) -> bool {
 }
 
 fn finish_text(hwnd: HWND, keep: bool) -> bool {
-    let Some(Some((f, index, at))) = with(hwnd, |w| w.text.take()) else { return false };
+    let Some(Some((f, index, at, pending))) = with(hwnd, |w| w.text.take()) else { return false };
     let typed = text_edit::text(f.edit).trim().to_owned();
     text_edit::destroy(f);
     with(hwnd, |w| {
@@ -1987,30 +2207,41 @@ fn finish_text(hwnd: HWND, keep: bool) -> bool {
             return;
         }
         let Some(v) = view(w) else { return };
-        let width = |h: f32| paint::arial_width(&w.gfx.dwrite, &typed, h * TEXT_FILL) + 2.0;
+        let width = |h: f32, st: &style::TextStyle| {
+            text_draw::width(&w.gfx.dwrite, &typed, st, h * TEXT_FILL) + 2.0
+        };
         match index {
             Some(i) => {
                 let Some(d) = &mut w.doc else { return };
                 let Some(old) = d.session.items.get(i).cloned() else { return };
-                if matches!(&old.kind, ItemKind::Text(t) if *t == typed) {
+                if matches!(&old.kind, ItemKind::Text(t, st) if *t == typed && *st == pending) {
                     // Nothing changed: no undo step, nothing to save.
                     w.selected = Some(i);
                     return;
                 }
-                let nw = width(old.h).max(8.0);
+                let old_style = match &old.kind {
+                    ItemKind::Text(_, st) => Some(*st),
+                    _ => None,
+                };
+                if old_style != Some(pending) {
+                    style::set_last_text(pending);
+                }
+                let nw = width(old.h, &pending).max(8.0);
                 // One undo step: the resize takes the snapshot, the text
-                // changes with it.
+                // and style change with it.
                 d.session.resize_item(i, nw, old.h);
                 if let Some(it) = d.session.items.get_mut(i) {
-                    it.kind = ItemKind::Text(typed);
+                    it.kind = ItemKind::Text(typed, pending);
+                    keep_upright_left(it, old.w);
                     let (bw, bh) = geom::occupied(it);
                     (it.x, it.y) = layout::clamp_into(it.x, it.y, bw, bh, v.g.w, v.g.h);
                 }
                 w.selected = Some(i);
             }
             None => {
+                style::set_last_text(pending);
                 let turn = geom::upright_turn(v.g, v.extra);
-                let iw = width(TEXT_H).max(8.0);
+                let iw = width(TEXT_H, &pending).max(8.0);
                 // The EDIT's left edge and middle are where the text sits.
                 let (bw, bh) = if matches!(turn, Quarter::R90 | Quarter::R270) { (TEXT_H, iw) } else { (
                     iw,
@@ -2022,7 +2253,7 @@ fn finish_text(hwnd: HWND, keep: bool) -> bool {
                     v.to_page(p.0 + v.page.x + iw * v.scale / 2.0, p.1 + v.page.y)
                 };
                 let (x, y) = layout::clamp_into(cx - bw / 2.0, cy - bh / 2.0, bw, bh, v.g.w, v.g.h);
-                add_item(w, Item { kind: ItemKind::Text(typed), page: w.cur, x, y, w: iw, h: TEXT_H, turn });
+                add_item(w, Item { kind: ItemKind::Text(typed, pending), page: w.cur, x, y, w: iw, h: TEXT_H, turn });
             }
         }
     });
@@ -2145,8 +2376,8 @@ pub(super) fn encodable(items: &[Item]) -> Result<Vec<Item>, Key> {
     items
         .iter()
         .map(|it| match &it.kind {
-            ItemKind::Text(s) | ItemKind::Date(s) if winansi::encode(s).is_none() => {
-                let m = paint::text_mark(s, it.w, it.h).ok_or(Key::SignSaveFailed)?;
+            ItemKind::Text(s, st) | ItemKind::Date(s, st) if winansi::encode(s).is_none() => {
+                let m = paint::text_mark(s, st, it.w, it.h).ok_or(Key::SignSaveFailed)?;
                 Ok(Item { kind: ItemKind::Signature(Arc::new(m)), ..it.clone() })
             }
             _ => Ok(it.clone()),
@@ -2253,7 +2484,13 @@ fn on_escape(hwnd: HWND) {
                 w.focus = None;
                 relayout(w);
             }
-            EscStep::Popover => w.pop = None,
+            EscStep::Popover => {
+                w.pop = None;
+                // Focus left on a menu row would act with no menu showing.
+                if matches!(w.focus, Some(Hit::PickFamily(_))) {
+                    w.focus = Some(Hit::Family);
+                }
+            }
             EscStep::Disarm => {
                 w.armed = None;
                 w.note = None;
@@ -2331,7 +2568,7 @@ fn on_down(hwnd: HWND, lparam: LPARAM, double: bool) {
             }
             Hit::Item(i) if w.armed.is_none() => {
                 let is_text = w.doc.as_ref().and_then(|d| d.session.items.get(i)).is_some_and(|it| {
-                    matches!(it.kind, ItemKind::Text(_))
+                    matches!(it.kind, ItemKind::Text(..))
                 });
                 if double && is_text {
                     return Then::Text((x, y), Some(i));
@@ -2527,7 +2764,7 @@ fn on_key(hwnd: HWND, vk: u16) {
         act(hwnd, if ask == Ask::Discard { Hit::Keep } else { Hit::NotNow }, true);
         return;
     }
-    let edit_key = (ctrl && matches!(vk, 0x53 | 0x59 | 0x5A))
+    let edit_key = (ctrl && matches!(vk, 0x53 | 0x59 | 0x5A | 0x42 | 0x49 | 0x55))
         || [VK_DELETE.0, VK_BACK.0, VK_PRIOR.0, VK_NEXT.0, VK_LEFT.0, VK_RIGHT.0, VK_UP.0, VK_DOWN.0].contains(&vk);
     if edit_key && !editing {
         return;
@@ -2562,6 +2799,7 @@ fn on_key(hwnd: HWND, vk: u16) {
         0x5A if ctrl && shift => undo_redo(hwnd, true),
         0x5A if ctrl => undo_redo(hwnd, false),
         0x59 if ctrl => undo_redo(hwnd, true),
+        0x42 | 0x49 | 0x55 if ctrl && !key_down(VK_MENU.0) => toggle_by_key(hwnd, vk),
         v if v == VK_DELETE.0 || v == VK_BACK.0 => {
             remove_selected(hwnd);
             invalidate(hwnd);
@@ -2745,6 +2983,7 @@ extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
                     EDIT_CANCEL => {
                         finish_text(hwnd, false);
                     }
+                    EDIT_BOLD | EDIT_ITALIC | EDIT_UNDERLINE => toggle_pending(hwnd, wparam.0),
                     _ => {
                         commit_text(hwnd);
                     }
@@ -2933,15 +3172,18 @@ mod tests {
         let t = with(hwnd, |w| {
             let page = w.cur;
             let d = w.doc.as_mut().expect("open");
-            let item = Item { kind: ItemKind::Text("Halo".into()), page, x: 50.0, y: 50.0, w: 30.0, h: 14.0, turn: Quarter::R0 };
+            let item = Item { kind: ItemKind::Text("Halo".into(), Default::default()), page, x: 50.0, y: 50.0, w: 30.0, h: 14.0, turn: Quarter::R0 };
             d.session.add(item)
         })
         .expect("added");
-        let steps = undo_steps(hwnd);
-        begin_text(hwnd, (0.0, 0.0), Some(t));
-        assert!(with(hwnd, |w| w.text.is_some()).unwrap_or(false));
-        assert!(finish_text(hwnd, true));
-        assert_eq!(undo_steps(hwnd), steps, "same text, same document");
+        {
+            let _lock = style::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let steps = undo_steps(hwnd);
+            begin_text(hwnd, (0.0, 0.0), Some(t));
+            assert!(with(hwnd, |w| w.text.is_some()).unwrap_or(false));
+            assert!(finish_text(hwnd, true));
+            assert_eq!(undo_steps(hwnd), steps, "same text, same document");
+        }
 
         // The picker shows the same saved mark on every paint and hit test:
         // the bitmap cache does not grow.
@@ -3025,6 +3267,270 @@ mod tests {
         let px_after = text_edit::font_px(new);
         assert!(px_after as f32 >= px_before as f32 * 1.6, "{px_before} -> {px_after}");
         finish_text(hwnd, false);
+
+        format_controls_behave(hwnd);
+        pending_style_behaves(hwnd);
+    }
+
+    /// Ctrl+B/I/U while typing: the pending style, its commit and Escape.
+    fn pending_style_behaves(hwnd: HWND) {
+        use style::{TextStyle, Tint};
+        let _lock = style::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let set = |edit: HWND, s: &str| unsafe {
+            let h = HSTRING::from(s);
+            let _ = windows::Win32::UI::WindowsAndMessaging::SetWindowTextW(edit, &h);
+        };
+        let pending = |hwnd| with(hwnd, |w| w.text.as_ref().map(|t| t.3)).flatten();
+        let edit = |hwnd| with(hwnd, |w| w.text.as_ref().map(|t| t.0.edit)).flatten().expect("an EDIT");
+        let items = |hwnd| with(hwnd, |w| w.doc.as_ref().map_or(0, |d| d.session.items.len())).unwrap_or(0);
+        let kind = |hwnd, i: usize| with(hwnd, |w| w.doc.as_ref().map(|d| d.session.items[i].kind.clone())).flatten();
+
+        // A new text starts from the last-used style; Ctrl+B/U change only the
+        // pending one and touch no session.
+        let red = TextStyle { tint: Tint::Red, ..Default::default() };
+        style::set_last_text(red);
+        let centre = with(hwnd, |w| view(w).map(|v| (v.page.x + v.page.w / 2.0, v.page.y + v.page.h / 2.0)))
+            .flatten()
+            .expect("page");
+        let (n0, steps) = (items(hwnd), undo_steps(hwnd));
+        begin_text(hwnd, centre, None);
+        assert_eq!(pending(hwnd), Some(red));
+        set(edit(hwnd), "Halo");
+        toggle_pending(hwnd, EDIT_BOLD);
+        toggle_pending(hwnd, EDIT_UNDERLINE);
+        let want = TextStyle { bold: true, underline: true, tint: Tint::Red, ..Default::default() };
+        assert_eq!(pending(hwnd), Some(want));
+        assert_eq!((items(hwnd), undo_steps(hwnd)), (n0, steps), "the session is untouched");
+        toggle_pending(hwnd, EDIT_ITALIC);
+        toggle_pending(hwnd, EDIT_ITALIC);
+        assert_eq!(pending(hwnd), Some(want));
+
+        // Enter: the new item has the pending style and it is the last-used.
+        assert!(finish_text(hwnd, true));
+        assert_eq!(items(hwnd), n0 + 1);
+        assert_eq!(kind(hwnd, n0), Some(ItemKind::Text("Halo".into(), want)));
+        assert_eq!(style::last_text(), want);
+
+        // Editing it again: same text, new style is one undo step; the same
+        // style again is none.
+        let steps = undo_steps(hwnd);
+        begin_text(hwnd, (0.0, 0.0), Some(n0));
+        assert_eq!(pending(hwnd), Some(want));
+        toggle_pending(hwnd, EDIT_BOLD);
+        assert!(finish_text(hwnd, true));
+        let plain_u = TextStyle { bold: false, underline: true, tint: Tint::Red, ..Default::default() };
+        assert_eq!(kind(hwnd, n0), Some(ItemKind::Text("Halo".into(), plain_u)));
+        assert_eq!(undo_steps(hwnd), steps + 1, "one step for the style");
+        assert_eq!(style::last_text(), plain_u);
+        begin_text(hwnd, (0.0, 0.0), Some(n0));
+        assert!(finish_text(hwnd, true));
+        assert_eq!(undo_steps(hwnd), steps + 1, "unchanged: no step");
+
+        // Escape drops the typed text and the pending style; last-used stays.
+        begin_text(hwnd, (0.0, 0.0), Some(n0));
+        set(edit(hwnd), "Lain");
+        toggle_pending(hwnd, EDIT_ITALIC);
+        finish_text(hwnd, false);
+        assert_eq!(kind(hwnd, n0), Some(ItemKind::Text("Halo".into(), plain_u)));
+        assert_eq!(style::last_text(), plain_u);
+        assert_eq!(undo_steps(hwnd), steps + 1);
+
+        // Re-committing an old style leaves the last-used one alone.
+        let blue_serif = TextStyle { family: style::Family::Serif, tint: Tint::Blue, ..Default::default() };
+        let old = with(hwnd, |w| {
+            let page = w.cur;
+            let d = w.doc.as_mut().expect("open");
+            d.session.add(Item { kind: ItemKind::Text("Lama".into(), blue_serif), page, x: 50.0, y: 50.0, w: 30.0, h: 14.0, turn: Quarter::R0 })
+        })
+        .expect("added");
+        style::set_last_text(TextStyle::default());
+        begin_text(hwnd, (0.0, 0.0), Some(old));
+        assert!(finish_text(hwnd, true));
+        assert_eq!(style::last_text(), TextStyle::default(), "nothing changed");
+        begin_text(hwnd, (0.0, 0.0), Some(old));
+        toggle_pending(hwnd, EDIT_BOLD);
+        assert!(finish_text(hwnd, true));
+        assert_eq!(style::last_text(), TextStyle { bold: true, ..blue_serif }, "a format change sets it");
+
+        // A turned item keeps its upright left edge when the text changes.
+        for turn in [Quarter::R180, Quarter::R270] {
+            let k = with(hwnd, |w| {
+                let page = w.cur;
+                let d = w.doc.as_mut().expect("open");
+                d.session.add(Item { kind: ItemKind::Text("Hai".into(), Default::default()), page, x: 150.0, y: 150.0, w: 20.0, h: 14.0, turn })
+            })
+            .expect("added");
+            let it = |hwnd| with(hwnd, |w| w.doc.as_ref().map(|d| d.session.items[k].clone())).flatten().expect("item");
+            let edge = |it: &Item| if turn == Quarter::R180 { it.x + it.w } else { it.y + it.w };
+            let before = it(hwnd);
+            begin_text(hwnd, (0.0, 0.0), Some(k));
+            set(edit(hwnd), "Hai dunia semuanya");
+            assert!(finish_text(hwnd, true));
+            let after = it(hwnd);
+            assert!(after.w > before.w);
+            assert!((edge(&after) - edge(&before)).abs() < 0.01, "{turn:?}");
+            begin_text(hwnd, (0.0, 0.0), Some(k));
+            toggle_pending(hwnd, EDIT_BOLD);
+            assert!(finish_text(hwnd, true));
+            let bold = it(hwnd);
+            assert!((edge(&bold) - edge(&before)).abs() < 0.01, "{turn:?} bold");
+        }
+        style::set_last_text(TextStyle::default());
+    }
+
+    /// The format controls of the item bar, on the open window.
+    fn format_controls_behave(hwnd: HWND) {
+        use style::{Family, TextStyle, Tint};
+        let _lock = style::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        with(hwnd, |w| {
+            w.pop = None;
+            w.selected = None;
+        });
+        let page_w = with(hwnd, |w| view(w).map(|v| v.g.w)).flatten().expect("a page");
+        let add = |kind: ItemKind, x: f32, w_pt: f32| {
+            with(hwnd, |w| {
+                let page = w.cur;
+                let d = w.doc.as_mut().expect("open");
+                let i = d.session.add(Item { kind, page, x, y: 100.0, w: w_pt, h: 14.0, turn: Quarter::R0 });
+                w.selected = Some(i);
+                i
+            })
+            .expect("added")
+        };
+        let item = |hwnd, i: usize| with(hwnd, |w| w.doc.as_ref().map(|d| d.session.items[i].clone())).flatten().expect("item");
+
+        // The bar for each kind: format first, then the actions.
+        let t = TextStyle::default();
+        let text = ItemKind::Text("Halo dunia semuanya".into(), t);
+        let all_tints = [Hit::Tint(Tint::Black), Hit::Tint(Tint::Blue), Hit::Tint(Tint::Red)];
+        let mut want = vec![Hit::Family, Hit::Bold, Hit::Italic, Hit::Underline];
+        want.extend(all_tints);
+        want.extend([Hit::Smaller, Hit::Bigger, Hit::Remove]);
+        assert_eq!(float_hits(&text), want);
+        assert_eq!(float_hits(&ItemKind::Date("1 Mei 2026".into(), t)), want);
+        let mut check = all_tints.to_vec();
+        check.extend([Hit::Smaller, Hit::Bigger, Hit::Remove]);
+        assert_eq!(float_hits(&ItemKind::Check(Tint::Black)), check);
+
+        // A text at the right edge made bold serif: the width follows the
+        // measure, the height stays, the box stays on the page, and one undo
+        // brings everything back.
+        let i = add(text.clone(), page_w - 40.0, 38.0);
+        let before = item(hwnd, i);
+        let steps = undo_steps(hwnd);
+        with(hwnd, |w| restyle_selected(w, |s| {
+            s.bold = true;
+            s.family = Family::Serif;
+        }));
+        let after = item(hwnd, i);
+        let st = TextStyle { family: Family::Serif, bold: true, ..t };
+        let measured = with(hwnd, |w| text_draw::width(&w.gfx.dwrite, "Halo dunia semuanya", &st, 14.0 * TEXT_FILL)).unwrap();
+        assert!((after.w - (measured + 2.0)).abs() < 0.01, "{} vs {}", after.w, measured + 2.0);
+        assert_eq!(after.h, before.h);
+        assert!(after.x >= 0.0 && after.x + after.w <= page_w + 0.01, "{} {}", after.x, after.w);
+        assert!(matches!(&after.kind, ItemKind::Text(_, s) if *s == st));
+        assert_eq!(undo_steps(hwnd), steps + 1);
+        with(hwnd, |w| {
+            w.doc.as_mut().expect("open").session.undo();
+        });
+        let undone = item(hwnd, i);
+        assert_eq!((undone.x, undone.w, undone.h), (before.x, before.w, before.h));
+        assert_eq!(undone.kind, before.kind);
+        with(hwnd, |w| {
+            w.doc.as_mut().expect("open").session.redo();
+        });
+
+        // Underline and colour never change the size.
+        let sized = item(hwnd, i);
+        with(hwnd, |w| restyle_selected(w, |s| s.underline = true));
+        with(hwnd, |w| tint_selected(w, Tint::Red));
+        let now = item(hwnd, i);
+        assert_eq!((now.w, now.h, now.x), (sized.w, sized.h, sized.x));
+        assert!(matches!(&now.kind, ItemKind::Text(_, s) if s.underline && s.tint == Tint::Red && s.bold));
+
+        // The last-used style follows the changes: Text and Date share one;
+        // a Check has its own colour.
+        with(hwnd, |w| restyle_selected(w, |s| s.italic = true));
+        assert!(style::last_text().italic && style::last_text().bold);
+        let before_text = style::last_text();
+        let c = add(ItemKind::Check(Tint::Black), 60.0, 14.0);
+        with(hwnd, |w| tint_selected(w, Tint::Red));
+        assert_eq!(item(hwnd, c).kind, ItemKind::Check(Tint::Red));
+        assert_eq!(style::last_check(), Tint::Red);
+        assert_eq!(style::last_text(), before_text, "a check's colour leaves the text style alone");
+        // Other kinds ignore the text controls.
+        with(hwnd, |w| restyle_selected(w, |s| s.bold = !s.bold));
+        assert_eq!(item(hwnd, c).kind, ItemKind::Check(Tint::Red));
+
+        // Ctrl+B on a selected text toggles bold; the face menu opens from
+        // its button and a pick sets the face.
+        with(hwnd, |w| w.selected = Some(i));
+        let bold = |hwnd| matches!(item(hwnd, i).kind, ItemKind::Text(_, s) if s.bold);
+        let was = bold(hwnd);
+        toggle_by_key(hwnd, 0x42);
+        assert_eq!(bold(hwnd), !was);
+        act(hwnd, Hit::Family, false);
+        assert_eq!(with(hwnd, |w| w.pop), Some(Some(Pop::Fonts)));
+        assert!(with(hwnd, |w| popover(w).map(|p| p.items.len())).flatten() == Some(3));
+        act(hwnd, Hit::PickFamily(Family::Mono), false);
+        assert_eq!(with(hwnd, |w| w.pop), Some(None));
+        assert!(matches!(item(hwnd, i).kind, ItemKind::Text(_, s) if s.family == Family::Mono));
+        with(hwnd, paint::paint);
+        // Esc closes the open menu before anything else.
+        act(hwnd, Hit::Family, false);
+        on_key(hwnd, VK_ESCAPE.0);
+        assert_eq!(with(hwnd, |w| (w.pop, w.selected)), Some((None, Some(i))));
+        // Keyboard: open, Tab to another face, Esc, Enter: nothing changes
+        // and the focus is back on the face button.
+        let face = |hwnd| match item(hwnd, i).kind {
+            ItemKind::Text(_, s) => s.family,
+            k => panic!("{k:?}"),
+        };
+        let was = face(hwnd);
+        act(hwnd, Hit::Family, true);
+        assert!(matches!(with(hwnd, |w| w.focus), Some(Some(Hit::PickFamily(_)))));
+        on_key(hwnd, VK_TAB.0);
+        on_key(hwnd, VK_ESCAPE.0);
+        assert_eq!(with(hwnd, |w| (w.pop, w.focus)), Some((None, Some(Hit::Family))));
+        on_key(hwnd, VK_RETURN.0);
+        assert_eq!(face(hwnd), was);
+        // A stray row hit with no menu does nothing.
+        with(hwnd, |w| w.pop = None);
+        act(hwnd, Hit::PickFamily(Family::Serif), true);
+        assert_eq!(face(hwnd), was);
+        with(hwnd, |w| {
+            w.pop = None;
+            w.focus = None;
+        });
+        with(hwnd, |w| w.selected = None);
+        with(hwnd, |w| w.pop = None);
+
+        // A turned item keeps its upright left edge when the width changes:
+        // the right edge (R180) or the bottom edge (R270) of its box.
+        let words = "Halo dunia semuanya";
+        for turn in [Quarter::R180, Quarter::R270] {
+            for date in [false, true] {
+                let kind = if date {
+                    ItemKind::Date(words.into(), TextStyle::default())
+                } else {
+                    ItemKind::Text(words.into(), TextStyle::default())
+                };
+                let k = with(hwnd, |w| {
+                    let page = w.cur;
+                    let d = w.doc.as_mut().expect("open");
+                    let k = d.session.add(Item { kind, page, x: 150.0, y: 150.0, w: 38.0, h: 14.0, turn });
+                    w.selected = Some(k);
+                    k
+                })
+                .expect("added");
+                let edge = |it: &Item| if turn == Quarter::R180 { it.x + it.w } else { it.y + it.w };
+                let before = item(hwnd, k);
+                toggle_by_key(hwnd, 0x42);
+                let after = item(hwnd, k);
+                assert!(after.w != before.w, "bold changes the width ({turn:?}, date {date})");
+                assert!((edge(&after) - edge(&before)).abs() < 0.01, "{turn:?} date {date}");
+            }
+        }
     }
 
     #[test]
@@ -3043,7 +3549,7 @@ mod tests {
         assert_eq!(l.geoms.len(), 1);
         assert_eq!((l.geoms[0].w, l.geoms[0].h), (30.0, 15.0));
         let mut session = Session::new(l.geoms.clone());
-        session.add(Item { kind: ItemKind::Check, page: 0, x: 2.0, y: 2.0, w: 10.0, h: 10.0, turn: Quarter::R0 });
+        session.add(Item { kind: ItemKind::Check(style::Tint::Blue), page: 0, x: 2.0, y: 2.0, w: 10.0, h: 10.0, turn: Quarter::R0 });
         session.rotate_page(0);
         drop(l);
         let job = SaveJob::Image { path: path.clone(), fmt: ImageFormat::Png };
@@ -3245,10 +3751,22 @@ mod tests {
     }
 
     #[test]
+    fn encodable_keeps_style() {
+        let _com = Com::init();
+        let st = style::TextStyle { bold: true, tint: style::Tint::Red, ..Default::default() };
+        let it = Item { kind: ItemKind::Text("\u{65E5}\u{672C}".into(), st), page: 0, x: 0.0, y: 0.0, w: 80.0, h: 14.0, turn: Quarter::R0 };
+        let out = encodable(&[it]).unwrap();
+        let ItemKind::Signature(m) = &out[0].kind else { panic!("{:?}", out[0].kind) };
+        let solid: Vec<&[u8]> = m.rgba.chunks(4).filter(|p| p[3] > 200).collect();
+        assert!(!solid.is_empty());
+        assert!(solid.iter().all(|p| p[0] > 140 && p[1] < 60 && p[2] < 60), "0xA61B1B ink");
+    }
+
+    #[test]
     fn text_outside_winansi_becomes_a_picture_for_the_pdf() {
         let _com = Com::init();
         let item = |s: &str| Item {
-            kind: ItemKind::Text(s.into()),
+            kind: ItemKind::Text(s.into(), Default::default()),
             page: 0,
             x: 10.0,
             y: 10.0,
@@ -3257,7 +3775,7 @@ mod tests {
             turn: Quarter::R90,
         };
         let out = encodable(&[item("Rp 1.500 \u{2013} Bu Siti"), item("\u{65E5}\u{672C}")]).unwrap();
-        assert!(matches!(&out[0].kind, ItemKind::Text(s) if s.contains('\u{2013}')));
+        assert!(matches!(&out[0].kind, ItemKind::Text(s, _) if s.contains('\u{2013}')));
         match &out[1].kind {
             ItemKind::Signature(m) => {
                 assert!(m.w > 0 && m.h > 0);

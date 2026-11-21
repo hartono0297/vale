@@ -89,7 +89,7 @@ mod tests {
     const ALL: [Quarter; 4] = [Quarter::R0, Quarter::R90, Quarter::R180, Quarter::R270];
 
     fn item(turn: Quarter) -> Item {
-        Item { kind: ItemKind::Check, page: 0, x: 100.0, y: 200.0, w: 150.0, h: 50.0, turn }
+        Item { kind: ItemKind::Check(Default::default()), page: 0, x: 100.0, y: 200.0, w: 150.0, h: 50.0, turn }
     }
 
     #[test]

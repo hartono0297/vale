@@ -11,6 +11,8 @@ pub mod raster;
 pub mod render;
 pub mod session;
 pub mod store;
+pub mod style;
+pub mod text_draw;
 pub mod winansi;
 pub mod window;
 
@@ -105,9 +107,9 @@ pub struct Mark {
 pub enum ItemKind {
     Signature(Arc<Mark>),
     Initials(Arc<Mark>),
-    Date(String),
-    Text(String),
-    Check,
+    Date(String, style::TextStyle),
+    Text(String, style::TextStyle),
+    Check(style::Tint),
 }
 
 /// One thing placed on a page. `x, y` is the lower-left corner in unrotated

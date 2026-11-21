@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Format Teks Tanda Tangan</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&display=swap" rel="stylesheet">
+<style>
+  /* Same Vale Studio palette as tanda-tangan.html: warm paper, warm dark windows, terracotta as the one accent. */
+  :root {
+    --paper: #F1ECE4; --ink: #221A14; --ink2: #6E5F52; --rule: #DDD3C6;
+    --a: #E2683C; --a-ink: #A9461F;
+    --bg: #1E1814; --pop: #2A221C; --tx: #F4EDE4; --tx2: #A89A8B;
+    --b: rgba(244,237,228,.10); --hov: #33291F; --sel: rgba(226,104,60,.18);
+    --k-black: #1C1C1C; --k-blue: #1F3A8A; --k-red: #A61B1B;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--paper); color: var(--ink); font-family: 'DM Sans', system-ui, sans-serif; font-size: 15px; line-height: 1.55; }
+  main { max-width: 1040px; margin: 0 auto; padding: 40px 16px 72px; }
+  h1 { font-weight: 600; font-size: 30px; letter-spacing: -.01em; line-height: 1.2; }
+  h2 { font-weight: 600; font-size: 21px; margin-bottom: 6px; }
+  .lede { color: var(--ink2); max-width: 640px; margin-top: 8px; }
+  section { margin-top: 52px; }
+  .note { color: var(--ink2); font-size: 14px; max-width: 640px; }
+  .row { display: flex; gap: 32px; align-items: flex-start; flex-wrap: wrap; margin-top: 20px; }
+  .row > .side { flex: 1 1 260px; }
+  .row > .side p + p { margin-top: 10px; }
+  .row > .side b { color: var(--ink); }
+
+  /* a slice of the editor stage */
+  .stage { background: #15110E; border-radius: 14px; padding: 92px 24px 28px; flex: 1 1 520px; max-width: 100%; min-width: 0; position: relative; }
+  .sheet { background: #FFFDF9; color: #2A2A2A; border-radius: 2px; padding: 28px 30px 34px; position: relative; font-size: 10.5px; box-shadow: 0 4px 18px rgba(0,0,0,.45); }
+  .ln { height: 5px; background: #E4DED4; border-radius: 2px; margin-bottom: 9px; }
+  .ln.s { width: 60%; }
+  .field { display: flex; gap: 10px; align-items: flex-end; margin-top: 18px; color: #555; }
+  .field .slot { flex: 1; border-bottom: 1px solid #999; height: 26px; position: relative; }
+  .item { position: absolute; left: 4px; bottom: 2px; border: 1.5px solid var(--a); border-radius: 3px; padding: 0 4px; line-height: 1.25; white-space: nowrap; }
+  .item .h { position: absolute; width: 7px; height: 7px; background: #fff; border: 1.5px solid var(--a); border-radius: 2px; }
+  .h.tl { left: -4px; top: -4px; } .h.tr { right: -4px; top: -4px; } .h.bl { left: -4px; bottom: -4px; } .h.br { right: -4px; bottom: -4px; }
+  .t-serif { font-family: 'Times New Roman', Times, serif; }
+  .t-sans { font-family: Arial, Helvetica, sans-serif; }
+  .t-mono { font-family: 'Courier New', Courier, monospace; }
+
+  /* the floating bar, as Vale draws it */
+  .float, .menu { z-index: 2; }
+  .float { position: absolute; background: var(--pop); color: var(--tx); border: 1px solid var(--b); border-radius: 10px; padding: 4px; display: flex; align-items: center; gap: 2px; font-size: 12px; white-space: nowrap; box-shadow: 0 10px 24px rgba(0,0,0,.35); }
+  .float button { font: inherit; color: inherit; background: none; border: 0; padding: 6px 9px; border-radius: 7px; min-width: 30px; cursor: pointer; }
+  .float button:hover { background: var(--hov); }
+  .float button[aria-pressed="true"] { background: var(--sel); color: #FFB596; }
+  .float .fam { display: flex; gap: 6px; align-items: center; }
+  .float .fam svg { width: 9px; height: 9px; color: var(--tx2); }
+  .float .div { width: 1px; align-self: stretch; background: var(--b); margin: 4px 4px; }
+  .float .sw { padding: 6px 5px; min-width: 26px; display: flex; justify-content: center; }
+  .float .sw i { display: block; width: 15px; height: 15px; border-radius: 50%; border: 1.5px solid rgba(244,237,228,.55); }
+  .float .sw[aria-pressed="true"] { background: none; }
+  .float .sw[aria-pressed="true"] i { box-shadow: 0 0 0 2px var(--pop), 0 0 0 4px var(--a); }
+  .menu { position: absolute; background: var(--pop); color: var(--tx); border: 1px solid var(--b); border-radius: 10px; padding: 5px; width: 190px; box-shadow: 0 14px 30px rgba(0,0,0,.4); font-size: 14px; }
+  .menu div { display: flex; justify-content: space-between; align-items: center; padding: 7px 10px; border-radius: 7px; }
+  .menu div.on { background: var(--sel); color: #FFB596; }
+  .menu svg { width: 13px; height: 13px; }
+
+  .kbd { font-size: 12.5px; color: var(--ink2); }
+  kbd { font-family: inherit; font-size: 12px; background: #fff; border: 1px solid var(--rule); border-bottom-width: 2px; border-radius: 5px; padding: 0 5px; color: var(--ink); }
+
+  table { border-collapse: collapse; width: 100%; margin-top: 16px; font-size: 14px; }
+  th, td { text-align: left; vertical-align: top; padding: 11px 14px 11px 0; border-bottom: 1px solid var(--rule); }
+  th { font-weight: 600; font-size: 13px; color: var(--ink2); border-bottom: 2px solid var(--ink); }
+  td:first-child { font-weight: 600; white-space: nowrap; }
+  .wrap { overflow-x: auto; }
+  :focus-visible { outline: 2px solid var(--a); outline-offset: 2px; }
+
+  @media (max-width: 600px) {
+    h1 { font-size: 25px; }
+    .stage { padding: 150px 12px 20px; }
+    .float { flex-wrap: wrap; max-width: calc(100% - 24px); }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Format teks di jendela tanda tangan</h1>
+  <p class="lede">Teks dan tanggal yang ditaruh di dokumen bisa diganti font, tebal, miring, garis bawah, dan warnanya. Di PDF hasilnya tetap teks asli: bisa dicari dan dicopy.</p>
+
+  <section>
+    <h2>Teks yang dipilih</h2>
+    <p class="note">Bar yang sudah muncul di atas item dapat bagian baru di kiri. Kecilkan, Besarkan, dan Hapus tetap di tempatnya.</p>
+    <div class="row">
+      <div class="stage" aria-label="Contoh jendela tanda tangan" style="padding-top:150px">
+        <div class="sheet">
+          <div class="ln"></div><div class="ln"></div><div class="ln s"></div>
+          <div class="field">Nama <div class="slot">
+        <div class="float" style="left:-6px; top:-50px" role="toolbar" aria-label="Format teks">
+
+          <button class="fam t-serif" id="fam" aria-haspopup="true" aria-expanded="true">Times New Roman <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M1.5 3.5 5 7l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button>
+          <span class="div"></span>
+          <button aria-pressed="true" title="Tebal (Ctrl+B)" class="fmt" data-k="b"><b>B</b></button>
+          <button aria-pressed="false" title="Miring (Ctrl+I)" class="fmt" data-k="i"><i style="font-family:Georgia,serif">I</i></button>
+          <button aria-pressed="false" title="Garis bawah (Ctrl+U)" class="fmt" data-k="u"><u>U</u></button>
+          <span class="div"></span>
+          <button class="sw" aria-pressed="true" title="Hitam" data-c="var(--k-black)"><i style="background:var(--k-black)"></i></button>
+          <button class="sw" aria-pressed="false" title="Biru" data-c="var(--k-blue)"><i style="background:var(--k-blue)"></i></button>
+          <button class="sw" aria-pressed="false" title="Merah" data-c="var(--k-red)"><i style="background:var(--k-red)"></i></button>
+          <span class="div"></span>
+          <button>Kecilkan</button><button>Besarkan</button><button>Hapus</button>
+        </div>
+        <div class="menu" id="menu" style="left:-2px; top:-172px" role="menu">
+          <div class="t-sans" role="menuitemradio" aria-checked="false" data-f="t-sans" data-n="Arial">Arial</div>
+          <div class="t-serif on" role="menuitemradio" aria-checked="true" data-f="t-serif" data-n="Times New Roman">Times New Roman <svg viewBox="0 0 14 14" aria-hidden="true"><path d="M2.5 7.5 5.5 10.5 11.5 3.5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></div>
+          <div class="t-mono" role="menuitemradio" aria-checked="false" data-f="t-mono" data-n="Courier New">Courier New</div>
+        </div>
+<span class="item t-serif" id="txt" style="font-size:15px; font-weight:700; color:var(--k-black)">Budi Santoso<i class="h tl"></i><i class="h tr"></i><i class="h bl"></i><i class="h br"></i></span></div></div>
+          <div class="field">Tanggal <div class="slot"><span class="item t-sans" style="font-size:13px; color:var(--k-blue); border-color:transparent; left:4px">21 November 2026</span></div></div>
+          <div style="margin-top:22px"><div class="ln"></div><div class="ln s"></div></div>
+        </div>
+      </div>
+      <div class="side">
+        <p><b>Font:</b> pilihannya Arial, Times New Roman, dan Courier New. Tiap nama di menu ditulis pakai fontnya sendiri. Di PDF jadi Helvetica, Times, dan Courier, font bawaan semua pembaca PDF, jadi nggak ada font yang ditanam dan ukuran exe nggak nambah.</p>
+        <p><b>B, I, U:</b> nyala atau mati per item. Kotaknya ikut melebar atau menyempit, tingginya tetap.</p>
+        <p><b>Warna:</b> hitam, biru (warna tinta yang sekarang), dan merah. Teks dan tanggal baru mulai dari hitam.</p>
+        <p><b>Item berikutnya</b> ikut gaya yang terakhir dipakai, selama Vale masih jalan.</p>
+        <p class="kbd"><kbd>Ctrl</kbd>+<kbd>B</kbd>, <kbd>Ctrl</kbd>+<kbd>I</kbd>, dan <kbd>Ctrl</kbd>+<kbd>U</kbd> jalan waktu item dipilih maupun waktu lagi diketik. Tiap perubahan bisa di-undo satu per satu.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Centang yang dipilih</h2>
+    <p class="note">Centang cuma dapat pilihan warna.</p>
+    <div class="row">
+      <div class="stage" style="padding-top:78px; flex-basis:380px">
+        <div class="float" style="left:24px; top:22px" role="toolbar" aria-label="Warna centang">
+          <button class="sw" aria-pressed="false" title="Hitam"><i style="background:var(--k-black)"></i></button>
+          <button class="sw" aria-pressed="true" title="Biru"><i style="background:var(--k-blue)"></i></button>
+          <button class="sw" aria-pressed="false" title="Merah"><i style="background:var(--k-red)"></i></button>
+          <span class="div"></span>
+          <button>Kecilkan</button><button>Besarkan</button><button>Hapus</button>
+        </div>
+        <div class="sheet" style="padding:22px 26px">
+          <div class="field" style="margin-top:0">
+            <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true" style="border:1.5px solid var(--a); border-radius:3px"><path d="M4.5 12.5 10 18 20 6" fill="none" stroke="var(--k-blue)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Setuju dengan syarat di atas
+          </div>
+          <div class="ln" style="margin-top:14px"></div><div class="ln s"></div>
+        </div>
+      </div>
+      <div class="side"><p>Tanda tangan dan paraf nggak dapat bagian format. Warnanya udah dipilih waktu bikin tanda tangan.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Hasil simpanan</h2>
+    <div class="wrap">
+      <table>
+        <tr><th>Hasil</th><th>Font dan gaya</th><th>Garis bawah</th></tr>
+        <tr><td>PDF</td><td>Teks asli pakai Helvetica, Times, atau Courier (versi tebal, miring, atau keduanya). Bisa dicari dan dicopy.</td><td>Garis tipis di bawah teks, warnanya sama dengan teks.</td></tr>
+        <tr><td>PDF, huruf di luar Latin</td><td>Seperti sekarang: teksnya jadi gambar, tapi sekarang pakai font, gaya, dan warna yang dipilih.</td><td>Ikut tergambar.</td></tr>
+        <tr><td>JPG / PNG</td><td>Digambar persis seperti di layar.</td><td>Ikut tergambar.</td></tr>
+      </table>
+    </div>
+  </section>
+</main>
+<script>
+  // Mockup only: B/I/U, colour and the font menu toggle the sample text.
+  const txt = document.getElementById('txt');
+  const fam = document.getElementById('fam');
+  const menu = document.getElementById('menu');
+  const apply = { b: on => txt.style.fontWeight = on ? '700' : '400', i: on => txt.style.fontStyle = on ? 'italic' : 'normal', u: on => txt.style.textDecoration = on ? 'underline' : 'none' };
+  document.querySelectorAll('.fmt').forEach(btn => btn.addEventListener('click', () => {
+    const on = btn.getAttribute('aria-pressed') !== 'true';
+    btn.setAttribute('aria-pressed', on); apply[btn.dataset.k](on);
+  }));
+  document.querySelectorAll('.stage:first-of-type .sw, section:first-of-type .sw').forEach(btn => btn.addEventListener('click', () => {
+    btn.parentElement.querySelectorAll('.sw').forEach(b => b.setAttribute('aria-pressed', b === btn));
+    if (btn.dataset.c) txt.style.color = btn.dataset.c;
+  }));
+  fam.addEventListener('click', () => {
+    const open = fam.getAttribute('aria-expanded') !== 'true';
+    fam.setAttribute('aria-expanded', open); menu.hidden = !open;
+  });
+  menu.querySelectorAll('div').forEach(row => row.addEventListener('click', () => {
+    menu.querySelectorAll('div').forEach(r => { r.classList.toggle('on', r === row); r.setAttribute('aria-checked', r === row); });
+    txt.className = 'item ' + row.dataset.f;
+    fam.className = 'fam ' + row.dataset.f;
+    fam.firstChild.textContent = row.dataset.n + ' ';
+    menu.hidden = true; fam.setAttribute('aria-expanded', 'false');
+  }));
+</script>
+</body>
+</html>
