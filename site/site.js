@@ -276,7 +276,9 @@
       label: 'Cockatiel', def: 'lutino',
       coats: {
         lutino: { label: 'Lutino', body: '#F1E4A2', face: '#F6D04A', crest: '#F6D04A', cheek: '#EC6B3A', tint: '#F6D04A' },
-        grey: { label: 'Grey', body: '#9A959C', face: '#F2D35A', crest: '#E9CF62', cheek: '#EC6B3A', tint: '#9A959C' },
+        /* Kuning, yellow all over. The key stays grey: it is the stored
+           vale-coat-falk value (the app's config keeps Grey the same way). */
+        grey: { label: 'Yellow', body: '#F2D35A', face: '#F2D35A', crest: '#E9CF62', cheek: '#EC6B3A', tint: '#F2D35A' },
         whiteface: { label: 'White face', body: '#9A959C', face: '#F4EFE6', crest: '#E4DED6', cheek: 'transparent', tint: '#9A959C' }
       }
     },
@@ -1089,7 +1091,8 @@
      cat's head behind it. Reduced motion: no jump, sparks, vibration, meteors
      or constellation; bubbles and eye changes still work.
      The same svg holds the cockatiel and the octopus (html[data-mascot] shows
-     one body, the face is shared), and all of the above works for them too,
+     one body and its eyes: the app's smaller pills for those two, with a
+     smaller glance, see GLANCE), and all of the above works for them too,
      except the ear twitch and the wish, which stay the cat's: with another
      mascot five presses are five pokes. Picking another mascot ends a drag
      (it springs home) and cancels a running wish (the stars fade). */
@@ -1385,6 +1388,17 @@
     var shownEx = null;
     var shownTl = null;
     var shownStage = '';
+    /* The glance per mascot, in svg units: s scales the cat's range (16
+       sideways, 11 down) to the eye width (22.4 / 26 for the app's pills) and
+       down caps the downward move so the pills stay on the face: the
+       cockatiel's bottom (180) at most 182, just past the cheeks' centre line
+       178; the octopus's (168 once lifted 12) at most 176, 8 above the
+       mantle's bottom 184. */
+    var GLANCE = {
+      cat: { s: 1, down: Infinity },
+      falk: { s: 22.4 / 26, down: 2 },
+      octo: { s: 22.4 / 26, down: 8 }
+    };
     var catFx = {
       near: true,
       on: function () { return catFx.near || held || returning; },
@@ -1441,8 +1455,9 @@
         var dy = looking ? -400 : (S.my < 0 ? 0 : S.my - cy);
         var d = Math.hypot(dx, dy) || 1;
         var k = Math.min(1, d / 360);
-        var wantX = (S.mx < 0 && !looking) ? 0 : dx / d * 16 * k;
-        var wantY = (S.my < 0 && !looking) ? 0 : dy / d * (looking ? 18 : 11) * k;
+        var gl = GLANCE[shownMascot] || GLANCE.cat;
+        var wantX = (S.mx < 0 && !looking) ? 0 : dx / d * 16 * k * gl.s;
+        var wantY = (S.my < 0 && !looking) ? 0 : Math.min(dy / d * (looking ? 18 : 11) * k * gl.s, gl.down);
         var wantT = (S.mx < 0 && !looking) ? 0 : dx / d * 6 * k;
         if (snap) {
           ex = wantX; ey = wantY; tl = wantT;
@@ -1455,6 +1470,8 @@
           if (Math.abs(wantX - ex) > 0.03 || Math.abs(wantY - ey) > 0.03 || Math.abs(wantT - tl) > 0.03) busy = true;
           else { ex = wantX; ey = wantY; tl = wantT; }
         }
+        /* Right after a switch from the cat the eased value can still be lower. */
+        if (ey > gl.down) ey = gl.down;
         var es = 'translate(' + ex.toFixed(2) + ' ' + ey.toFixed(2) + ')';
         if (es !== shownEx) { shownEx = es; eyes.setAttribute('transform', es); }
         var ts = 'rotate(' + tl.toFixed(2) + ' 128 230)';
@@ -1482,6 +1499,7 @@
       label();
       dropHold();
       cancelWish();
+      loop.kick(catFx);
     });
 
     loop.gate(wrap, catFx, '100px 0px');

@@ -579,16 +579,22 @@ html[data-theme="light"] .horizon { background: radial-gradient(closest-side, #F
 .cat.is-held .squint { opacity: 1; }
 .cat.purr { animation: purr .12s linear infinite; }
 @keyframes purr { 50% { translate: 1.5px 0; } }
-/* Three bodies, one face. html[data-mascot] (set by site.js; absent without
-   script, so the cat shows) picks the body; the eyes, happy and squint shapes
-   are shared. The cockatiel and the octopus have dark eyes whatever the cat's
-   coat (--eye always holds the cat's), and the octopus's face sits 12 units
-   higher, as in its notch symbols. The crest tilts on hover, the cat's ears perk. */
+/* Three bodies, two sets of eyes. html[data-mascot] (set by site.js; absent
+   without script, so the cat shows) picks the body and the eyes: the cat's
+   (.ey-cat, the logo's 26 x 46) or the app's pills for the cockatiel and the
+   octopus (.ey-pill, 22.4 x 40 at x 84.8 / 148.8, y 140: the 64 grid times 4),
+   with happy and squint marks scaled from the cat's to match. All open eyes
+   sit in #cat-eyes, which the glance moves. The cockatiel and the octopus have
+   dark eyes whatever the cat's coat (--eye always holds the cat's), and the
+   octopus's face sits 12 units higher, as in its notch symbols. The crest
+   tilts on hover, the cat's ears perk. */
 .cat { --eye-dy: 0px; }
 .cat .face { transform: translateY(var(--eye-dy)); }
-.cat .m-falk, .cat .m-octo,
-html[data-mascot="falk"] .cat .m-cat, html[data-mascot="octo"] .cat .m-cat { display: none; }
-html[data-mascot="falk"] .cat .m-falk, html[data-mascot="octo"] .cat .m-octo { display: inline; }
+.cat .m-falk, .cat .m-octo, .cat .ey-pill,
+html[data-mascot="falk"] .cat .m-cat, html[data-mascot="octo"] .cat .m-cat,
+html[data-mascot="falk"] .cat .ey-cat, html[data-mascot="octo"] .cat .ey-cat { display: none; }
+html[data-mascot="falk"] .cat .m-falk, html[data-mascot="octo"] .cat .m-octo,
+html[data-mascot="falk"] .cat .ey-pill, html[data-mascot="octo"] .cat .ey-pill { display: inline; }
 html[data-mascot="falk"] .cat, html[data-mascot="octo"] .cat { --eye: #17120F; }
 html[data-mascot="octo"] .cat { --eye-dy: -12px; }
 .cat .crest { transform-origin: 128px 108px; transition: transform .3s cubic-bezier(.3, 1.6, .5, 1); }
@@ -624,7 +630,11 @@ html[data-mascot="octo"] .cat { --eye-dy: -12px; }
 .coat-chip[data-coat="white"] i { background: #F6F1EA; }
 .coat-chip[data-coat="black"] i { background: #1E1B22; border-color: #75675B; }
 .coat-chip[data-coat="lutino"] i { background: conic-gradient(#F6D04A 0 50%, #EC6B3A 0 75%, #F1E4A2 0); }
-.coat-chip[data-coat="grey"] i { background: conic-gradient(#F2D35A 0 50%, #EC6B3A 0 75%, #9A959C 0); }
+/* Kuning ("Yellow", key grey) is yellow all over like Lutino, so its last
+   quarter is the Night surface #151C2E it keeps in the app's notch where
+   Lutino's is its pale body: 13.2:1 between the two, 11.5 and 5.4 against
+   the yellow and the cheek beside it. */
+.coat-chip[data-coat="grey"] i { background: conic-gradient(#F2D35A 0 50%, #EC6B3A 0 75%, #151C2E 0); }
 .coat-chip[data-coat="whiteface"] i { background: conic-gradient(#F4EFE6 0 50%, #9A959C 0); }
 .coat-chip[data-coat="coral"] i { background: #E87C8E; }
 .coat-chip[data-coat="red"] i { background: #D9505F; }
