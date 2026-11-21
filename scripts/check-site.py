@@ -21,9 +21,9 @@ site/*.html it checks:
     in style.css uses;
   - every table sits in div.table-wrap[role=region][tabindex=0] with a name;
   - .reveal sits only on h2, h3, figure and article.play-card;
-  - the notch dock on index.html has the 14 tabs of Page::ALL, in order, each
+  - the notch dock on index.html has the 15 tabs of Page::ALL, in order, each
     controlling an existing panel;
-  - the story on index.html (ol.story-list) lists the same 14 pages in the
+  - the story on index.html (ol.story-list) lists the same 15 pages in the
     same order (li[data-page]), the playground has exactly six .play-card, and
     the Google Calendar and privacy sections each hold a <details>;
   - no third-party resource is loaded (external http(s) links are listed, not
@@ -42,7 +42,7 @@ SITE = Path(__file__).resolve().parent.parent / "site"
 VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
 TEXT_SUFFIXES = {".html", ".css", ".js", ".md", ".svg", ".json", ".xml", ".webmanifest"}
 EM_DASH = "—"
-DOCK_TABS = ["tab-" + n for n in ("calendar", "pomodoro", "reminders", "notes", "music", "mixer", "clipboard",
+DOCK_TABS = ["tab-" + n for n in ("calendar", "pomodoro", "record", "reminders", "notes", "music", "mixer", "clipboard",
                                   "notifications", "shelf", "system", "devices", "cli", "arrange", "shortcuts")]
 STORY_PAGES = [t[len("tab-"):] for t in DOCK_TABS]  # the story's data-page ids are the dock's page ids
 PLAY_CARDS = 6
@@ -383,7 +383,7 @@ def main():
             elif norm not in face_urls:
                 problem(name, f"line {line}: font preload {href!r} is not used by an @font-face in style.css")
 
-    # The notch dock on index.html: the 14 pages of Page::ALL (src/model.rs), in order.
+    # The notch dock on index.html: the 15 pages of Page::ALL (src/model.rs), in order.
     if "index.html" in pages:
         page = pages["index.html"]
         got = [t for t, _ in page.tabs]
@@ -393,7 +393,7 @@ def main():
             if not panel or panel not in page.ids:
                 problem("index.html", f"tab {tab!r} controls {panel!r}, which is not an id")
 
-    # The story lists the 14 pages of Page::ALL in order, the playground has six cards,
+    # The story lists the 15 pages of Page::ALL in order, the playground has six cards,
     # and the Calendar and privacy sections each hold a <details>.
     if "index.html" in pages:
         page = pages["index.html"]

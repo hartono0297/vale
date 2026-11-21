@@ -1230,7 +1230,7 @@
     loop.add(catFx);
   }
 
-  /* ---------- marquee: the 14 names move sideways with the scroll ---------- */
+  /* ---------- marquee: the 15 names move sideways with the scroll ---------- */
   function initMarquee() {
     var wrapEl = $('.marquee');
     var row = $('#marquee');
@@ -1370,18 +1370,18 @@
     });
   }
 
-  /* ---------- the story: one hover, fourteen pages ----------
+  /* ---------- the story: one hover, fifteen pages ----------
      The wrapper (.story-pin) is about 560vh (420vh on phones) while .is-pin is
      set, and the stage inside it, 100svh tall, sticks to the top. p =
      clamp(-top / (height - svh), 0, 1) of the wrapper. z = clamp(p * 8, 0, 1)
      grows the panel from notch size to full; q = clamp((p - .1) / .9, 0, 1)
-     picks the page, round(q * 13), while the page position fpos eases toward
-     q * 13 and the dock icons magnify as the live notch's dock does
+     picks the page, round(q * (N - 1)), while the page position fpos eases toward
+     q * (N - 1) and the dock icons magnify as the live notch's dock does
      (1 + 0.9 * falloff(d), falloff = .5 (1 + cos(pi d / 2)) within 2 icons).
      .is-pin is set only with motion welcome and a stage that fits 100svh
      (measured with a hidden probe, again once fonts are in and on viewport
      changes, never on innerHeight); otherwise the story is static: the first
-     page on the screen and the 14 names as a readable list.
+     page on the screen and the 15 names as a readable list.
      Scroll position (kept from the old Susun scrub): (1) the first choice is
      made synchronously when this runs, before the browser handles a
      fragment; (2) until the reader scrolls or presses something, and while
