@@ -16,6 +16,23 @@ pub struct Entry {
 /// Newest first. Add the entry for a version before bumping it.
 pub static ENTRIES: &[Entry] = &[
     Entry {
+        version: "5.6.0",
+        id: &[
+            "Tanda tangani dokumen: klik kanan kartu shelf → Tanda tangani (PDF, gambar, Office).",
+            "Tambahkan tanda tangan, paraf, tanggal, teks atau centang. Hasilnya file baru.",
+            "Teks bisa diberi font, tebal, miring, garis bawah dan warna (Ctrl+B, I, U).",
+            "Screenshot bisa diputar di editor: tombol putar atau Ctrl+R.",
+            "Mode Langsung di layar kini memutar potongan di tempat, tanpa membuka editor.",
+        ],
+        en: &[
+            "Sign documents: right-click a shelf card → Sign (PDF, images, Office files).",
+            "Add a signature, initials, date, text or check. You get a new file next to it.",
+            "Text can take a font, bold, italic, underline and colour (Ctrl+B, I, U).",
+            "Screenshots can turn in the editor: the rotate buttons or Ctrl+R.",
+            "On screen mode now turns the picked region in place, without opening the editor.",
+        ],
+    },
+    Entry {
         version: "5.5.7",
         id: &[
             "Transkrip tidak lagi berisi tanda seru saja: hasil GPU yang rusak diulang di CPU.",
