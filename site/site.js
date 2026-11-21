@@ -1871,9 +1871,11 @@
     date.textContent = d.getDate() + ' ' + MONTHS[d.getMonth()] + ' ' + d.getFullYear();
     var rest = btn.textContent;
     var signed = false;
+    btn.setAttribute('aria-pressed', 'false');
     btn.addEventListener('click', function () {
       signed = !signed;
       card.classList.toggle('is-signed', signed);
+      btn.setAttribute('aria-pressed', signed ? 'true' : 'false');
       btn.textContent = signed ? 'Signed' : rest;
       if (signed && notchApi) notchApi.showCopy('sample (signed).pdf', 'Signed');
     });
@@ -1962,6 +1964,7 @@
     var btn = card && $('[data-act="story"]', card);
     if (slots.length !== 3 || !btn) return;
     var SVGNS = 'http://www.w3.org/2000/svg';
+    var running = false;
     var items = slots.map(function (slot) {
       return { slot: slot, mn: $('.mn', slot), eyes: $$('.pe i', slot), on: false, box: null, shown: '' };
     });
@@ -1991,9 +1994,9 @@
       loop.kick(fx);
     }
     items.forEach(function (it) {
-      it.slot.addEventListener('pointerenter', function (e) { if (e.pointerType !== 'touch') setEyes(it, true); });
+      it.slot.addEventListener('pointerenter', function (e) { if (e.pointerType !== 'touch' && !running) setEyes(it, true); });
       it.slot.addEventListener('pointerleave', function (e) { if (e.pointerType !== 'touch') setEyes(it, false); });
-      it.slot.addEventListener('pointerup', function (e) { if (e.pointerType === 'touch') setEyes(it, !it.on); });
+      it.slot.addEventListener('pointerup', function (e) { if (e.pointerType === 'touch' && !running) setEyes(it, !it.on); });
       it.slot.addEventListener('pointermove', function () { if (it.on) loop.kick(fx); }, { passive: true });
     });
     (function blink() {
@@ -2039,7 +2042,8 @@
     var STORIES = {
       cat: function (it, motion) {
         var n = rel(it.slot, it.mn);
-        var c = rel(it.slot, $('.clk', it.slot));
+        var clk = $('.clk', it.slot);
+        var c = clk ? rel(it.slot, clk) : { r: n.r - 12 };
         var a = actor('cat-sleep', 22, false);
         put(a, c.r - 15, n.t + (n.h - 22) / 2);
         var z = doc.createElement('span');
@@ -2076,7 +2080,6 @@
       }
     };
     var nodes = [];
-    var running = false;
     function startStory(i) {
       var it = items[i];
       it.slot.classList.add('is-story');
@@ -2189,11 +2192,18 @@
     var ctx = cv.getContext('2d');
     if (!ctx) return;
     /* The selection box inside the picture, as fractions (matches .sel in style.css). */
-    var X0 = 0.12;
-    var Y0 = 0.22;
-    var X1 = 0.88;
-    var Y1 = 0.76;
     var turns = 0;
+    /* Strokes are kept as (u, v) inside the selection box, so Turn can map
+       them with (u, v) to (1 - v, u). The box is landscape at rest and a
+       portrait one (about 360:640) after an odd number of turns, ending
+       above the tools bar. */
+    var LAND = [0.12, 0.22, 0.88, 0.76];
+    var PORT = [0.41, 0.12, 0.59, 0.70];
+    function box() { return turns % 2 ? PORT : LAND; }
+    function toPic(p) {
+      var b = box();
+      return [b[0] + p[0] * (b[2] - b[0]), b[1] + p[1] * (b[3] - b[1])];
+    }
     var tool = 'pen';
     var strokes = [];
     var current = null;
@@ -2208,7 +2218,8 @@
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
       var list = current ? strokes.concat([current]) : strokes;
-      list.forEach(function (s) {
+      list.forEach(function (st) {
+        var s = { type: st.type, pts: st.pts.map(toPic) };
         if (s.type === 'box') {
           var a = s.pts[0];
           var b = s.pts[s.pts.length - 1];
@@ -2247,7 +2258,10 @@
     loop.add(fx);
     function point(e) {
       var r = pic.getBoundingClientRect();
-      return [clamp((e.clientX - r.left) / Math.max(r.width, 1), X0, X1), clamp((e.clientY - r.top) / Math.max(r.height, 1), Y0, Y1)];
+      var b = box();
+      var fx = (e.clientX - r.left) / Math.max(r.width, 1);
+      var fy = (e.clientY - r.top) / Math.max(r.height, 1);
+      return [clamp((fx - b[0]) / (b[2] - b[0]), 0, 1), clamp((fy - b[1]) / (b[3] - b[1]), 0, 1)];
     }
     sel.addEventListener('pointerdown', function (e) {
       if (e.pointerType === 'mouse' && e.button !== 0) return;
@@ -2283,24 +2297,19 @@
     });
 
     /* Turn: a quarter, strokes and selection together. The strokes and the
-       selection are fractions of the picture, so a clockwise quarter maps
-       (x, y) to (1 - y, x) and the other way (y, 1 - x); the selection's
-       width and height label swap. */
+       selection turn together: the strokes are (u, v) inside the box, a
+       clockwise quarter maps them to (1 - v, u), the other way (v, 1 - u);
+       the box changes between landscape and portrait and the label swaps. */
     function mapPt(p, dir) { return dir > 0 ? [1 - p[1], p[0]] : [p[1], 1 - p[0]]; }
     function turn(dir) {
       if (current) end();
       strokes.forEach(function (s) { s.pts = s.pts.map(function (p) { return mapPt(p, dir); }); });
-      var a = mapPt([X0, Y0], dir);
-      var b = mapPt([X1, Y1], dir);
-      X0 = Math.min(a[0], b[0]);
-      X1 = Math.max(a[0], b[0]);
-      Y0 = Math.min(a[1], b[1]);
-      Y1 = Math.max(a[1], b[1]);
       turns += dir;
-      sel.style.left = (X0 * 100) + '%';
-      sel.style.top = (Y0 * 100) + '%';
-      sel.style.width = ((X1 - X0) * 100) + '%';
-      sel.style.height = ((Y1 - Y0) * 100) + '%';
+      var b = box();
+      sel.style.left = (b[0] * 100) + '%';
+      sel.style.top = (b[1] * 100) + '%';
+      sel.style.width = ((b[2] - b[0]) * 100) + '%';
+      sel.style.height = ((b[3] - b[1]) * 100) + '%';
       if (turns % 2) sel.setAttribute('data-dim', '360 x 640'); else sel.removeAttribute('data-dim');
       redraw();
       if (!reduce.matches && sel.animate) {

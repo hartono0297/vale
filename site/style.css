@@ -899,7 +899,7 @@ html[data-mascot="falk"] .ms[data-m="falk"], html[data-mascot="octo"] .ms[data-m
 .sel { position: absolute; left: 12%; top: 22%; width: 76%; height: 54%; border: 1.5px dashed rgba(244, 237, 228, .7); background: radial-gradient(90% 90% at 20% 110%, #5A2638 0, transparent 60%), #1A1414; }
 .js .sel { touch-action: none; }
 .sel[data-dim="360 x 640"]::before { content: "360 x 640"; }
-.sel::before { content: "640 x 360"; position: absolute; left: 0; top: -20px; padding: 2px 6px; border-radius: 4px; background: #17120F; color: #F4EDE4; font: 10px var(--mono); }
+.sel::before { content: "640 x 360"; white-space: nowrap; position: absolute; left: 0; top: -20px; padding: 2px 6px; border-radius: 4px; background: #17120F; color: #F4EDE4; font: 10px var(--mono); }
 .draw-cv { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .tools { position: absolute; left: 50%; bottom: 8px; translate: -50% 0; z-index: 2; display: flex; gap: 4px; padding: 4px; border: 1px solid var(--scr-edge); border-radius: 12px; background: #17120F; }
 .tools button { min-width: 44px; height: 36px; padding: 0 10px; border: 0; border-radius: 8px; background: transparent; color: #A89A8B; font: inherit; font-size: .8125rem; cursor: pointer; }
