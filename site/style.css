@@ -532,6 +532,8 @@ h3 { font-size: clamp(1.25rem, 1.1rem + .6vw, 1.5rem); letter-spacing: -.015em; 
 /* A running demo keeps its button focusable (aria-disabled, not disabled), so a
    keyboard user keeps their place; it looks the same as a disabled one. */
 .btn-s:disabled, .btn-s[aria-disabled="true"] { opacity: .6; cursor: default; }
+/* A pressed toggle (Sign) is filled like the pressed picks; its label stays. */
+.btn-s[aria-pressed="true"] { border-color: var(--text); background: var(--text); color: var(--bg); }
 .actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin: 2.25rem 0 0; }
 
 /* ---------- hero ----------
@@ -613,6 +615,7 @@ html[data-mascot="octo"] .cat { --eye-dy: -12px; }
 .coats { display: flex; gap: 0; justify-content: center; margin: 0 0 1.5rem; }
 .coat-chip { position: relative; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 50%; background: transparent; cursor: pointer; }
 .coat-chip i { position: absolute; inset: 9px; border-radius: 50%; border: 1px solid var(--control); }
+.coat-chip:focus-visible { outline-offset: -3px; }
 .coat-chip[aria-pressed="true"]::after { content: ""; position: absolute; inset: 4px; border-radius: 50%; border: 2px solid var(--text); }
 .coat-chip[data-coat="terracotta"] i { background: #E2683C; }
 .coat-chip[data-coat="calico"] i { background: conic-gradient(#F4EDE4 0 50%, #E2683C 0 75%, #2B2420 0); }
@@ -854,8 +857,10 @@ html[data-mascot="octo"] .paw { fill: var(--oc-body); }
 .ms.is-blink .pe i { transform: scaleY(.15) !important; }
 /* sign: a sample page (cream paper, the signature in pen blue, 5.57 on it)
    and the shelf's context menu with Sign chosen. The .sg-mark parts are what
-   Sign places; without script they show, so the picture reads signed. */
-.sg-page { position: absolute; left: max(7%, 50% - 190px); top: 18px; bottom: -12px; width: min(46%, 230px); padding: 16px 16px 0; border-radius: 6px 6px 0 0; background: #F4EDE4; color: #17120F; }
+   Sign places; without script they show, so the picture reads signed. The
+   menu opens from the page's right edge, so both share the page's box. */
+.play-card[data-card="sign"] .play-pic { --sg-left: max(7%, 50% - 190px); --sg-w: min(46%, 230px); }
+.sg-page { position: absolute; left: var(--sg-left); top: 18px; bottom: -12px; width: var(--sg-w); padding: 16px 16px 0; border-radius: 6px 6px 0 0; background: #F4EDE4; color: #17120F; }
 .sg-title { display: block; overflow: hidden; font-size: 11px; font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
 .sg-text { display: block; height: 52px; margin-top: 8px; background: repeating-linear-gradient(#CFC4B8 0 4px, transparent 4px 11px); }
 .sg-check { position: absolute; left: 16px; bottom: 74px; }
@@ -871,7 +876,7 @@ html[data-mascot="octo"] .paw { fill: var(--oc-body); }
   .js .sg-check { transition-delay: .3s; }
 }
 /* The menu opens over the page's right edge; its shadow is the one thing here that sits above another surface. */
-.sg-menu { position: absolute; left: calc(max(7%, 50% - 190px) + min(46%, 230px) - 24px); top: 46px; display: flex; flex-direction: column; width: min(40%, 168px); padding: 4px; border: 1px solid #3A302A; border-radius: 10px; background: #17120F; box-shadow: 0 8px 24px rgba(0, 0, 0, .45); font-size: 12px; }
+.sg-menu { position: absolute; left: calc(var(--sg-left) + var(--sg-w) - 24px); top: 46px; display: flex; flex-direction: column; width: min(40%, 168px); padding: 4px; border: 1px solid #3A302A; border-radius: 10px; background: #17120F; box-shadow: 0 8px 24px rgba(0, 0, 0, .45); font-size: 12px; }
 .sg-menu span { padding: 6px 10px; border-radius: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sg-menu .on { background: #4A2A1C; }
 .sg-menu .sg-file { margin-bottom: 4px; border-bottom: 1px solid #3A302A; border-radius: 6px 6px 0 0; font: 11px var(--mono); color: #A89A8B; }

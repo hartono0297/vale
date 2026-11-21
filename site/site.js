@@ -1170,7 +1170,8 @@
     })();
 
     /* ----- poke, and the wish after five presses within 2 s ----- */
-    var SAYS = ['mrrp!', 'meow', 'hi!', 'nya~'];
+    /* Poke words, one list per mascot (the cockatiel does not meow). */
+    var SAYS = { cat: ['mrrp!', 'meow', 'hi!', 'nya~'], falk: ['chirp!', 'hi!', 'tweet'], octo: ['blub', 'hi!', 'boop'] };
     var sayAt = 0;
     var presses = [];
     var looking = false;
@@ -1178,7 +1179,7 @@
     var grantTimer = 0;
     var wishEnd = 0; /* the wish's bubbles show until then (Date.now() ms) */
     function wish() {
-      say('make a wish ✨', 3000);
+      say('make a wish', 3000);
       wishEnd = Date.now() + 3000;
       if (reduce.matches || !skyApi) return;
       var r = wrap.getBoundingClientRect();
@@ -1189,7 +1190,7 @@
       clearTimeout(lookTimer);
       clearTimeout(grantTimer);
       lookTimer = setTimeout(function () { looking = false; loop.kick(catFx); }, 6500);
-      grantTimer = setTimeout(function () { say('✨ granted', 1800); }, 5200);
+      grantTimer = setTimeout(function () { say('granted', 1800); }, 5200);
       loop.kick(catFx);
     }
     function cancelWish() {
@@ -1210,7 +1211,8 @@
       presses = presses.filter(function (x) { return now - x < 2000; });
       presses.push(now);
       if (presses.length >= 5 && mascot() === 'cat') { presses = []; wish(); return; }
-      say(SAYS[sayAt++ % SAYS.length]);
+      var words = SAYS[mascot()] || SAYS.cat;
+      say(words[sayAt++ % words.length]);
       animate(cat, [
         { transform: 'none' },
         { transform: 'scale(1.12,.85)', offset: 0.18 },
@@ -1872,14 +1874,12 @@
     if (!btn || !date) return;
     var d = new Date();
     date.textContent = d.getDate() + ' ' + MONTHS[d.getMonth()] + ' ' + d.getFullYear();
-    var rest = btn.textContent;
     var signed = false;
     btn.setAttribute('aria-pressed', 'false');
     btn.addEventListener('click', function () {
       signed = !signed;
       card.classList.toggle('is-signed', signed);
       btn.setAttribute('aria-pressed', signed ? 'true' : 'false');
-      btn.textContent = signed ? 'Signed' : rest;
       if (signed && notchApi) notchApi.showCopy('sample (signed).pdf', 'Signed');
     });
   }
@@ -2093,19 +2093,23 @@
       nodes.forEach(function (n) { if (n.parentNode) n.parentNode.removeChild(n); });
       nodes = [];
     }
+    /* A mini notch in eyes mode (a touch tap) springs back to full width in
+       .45 s (.mn's transition); the stories measure it, so they wait for that. */
+    var EYES_BACK_MS = 480;
     btn.addEventListener('click', function () {
       if (running) return;
       running = true;
       btn.setAttribute('aria-disabled', 'true');
+      var wait = items.some(function (it) { return it.on; }) && !reduce.matches ? EYES_BACK_MS : 0;
       items.forEach(function (it) { setEyes(it, false); });
       items.forEach(function (it, i) {
-        setTimeout(function () { if (i) endStory(i - 1); startStory(i); }, i * STORY_MS);
+        setTimeout(function () { if (i) endStory(i - 1); startStory(i); }, wait + i * STORY_MS);
       });
       setTimeout(function () {
         endStory(items.length - 1);
         running = false;
         btn.removeAttribute('aria-disabled');
-      }, items.length * STORY_MS);
+      }, wait + items.length * STORY_MS);
     });
   }
 
