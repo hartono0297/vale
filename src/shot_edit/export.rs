@@ -487,4 +487,55 @@ mod tests {
         assert_eq!(at(5, 15), [0x4D, 0x48, 0xE5, 255]);
         assert_eq!(at(20, 15), [255, 255, 255, 255]);
     }
+
+    #[test]
+    fn export_of_a_rotated_document_matches_the_rotated_export() {
+        use crate::shot_edit::rotate::{Turn, rotate_doc, rotate_shot, turned};
+        let mut bgra = Vec::new();
+        for _y in 0..40u32 {
+            for x in 0..64u32 {
+                bgra.extend_from_slice(&[(x * 4) as u8, 255 - (x * 4) as u8, 90, 255]);
+            }
+        }
+        let base = Shot { w: 64, h: 40, bgra };
+        let doc = vec![
+            Annotation::Rect {
+                r: FRect::new(8.0, 6.0, 20.0, 12.0),
+                style: Style {
+                    color: 0xE5484D,
+                    width: 3.0,
+                },
+            },
+            Annotation::Pixelate {
+                r: FRect::new(30.0, 4.0, 24.0, 24.0),
+            },
+        ];
+        let mut doc_turned = doc.clone();
+        rotate_doc(&mut doc_turned, Turn::Right, (64.0, 40.0));
+        let inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
+        let plain = render_bgra(&base, &doc);
+        let turned_first = render_bgra(&turned(&base, 1), &doc_turned);
+        if inited {
+            unsafe { CoUninitialize() };
+        }
+        let rendered = Shot {
+            w: 64,
+            h: 40,
+            bgra: plain.expect("plain"),
+        };
+        let expected = rotate_shot(&rendered, Turn::Right);
+        let got = turned_first.expect("turned");
+        assert_eq!((expected.w, expected.h), (40, 64));
+        assert_eq!(got.len(), expected.bgra.len());
+        let differing = got
+            .chunks(4)
+            .zip(expected.bgra.chunks(4))
+            .filter(|(a, b)| a.iter().zip(b.iter()).any(|(x, y)| x.abs_diff(*y) > 8))
+            .count();
+        assert!(
+            differing * 1000 <= got.len() / 4 * 5,
+            "{differing} of {} pixels differ",
+            got.len() / 4
+        );
+    }
 }

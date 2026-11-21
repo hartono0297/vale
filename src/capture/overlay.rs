@@ -525,8 +525,8 @@ fn finish_inline(kind: FinishKind) {
     }
     // A text still being typed is part of the picture.
     edit::commit_text_now();
-    // Only Save and OpenEditor keep the picture; the rest need no crop.
-    let kept = if matches!(kind, FinishKind::Save | FinishKind::OpenEditor) {
+    // Only Save and the editor finishes keep the picture; the rest need no crop.
+    let kept = if kind.keeps_picture() {
         inline_picture()
     } else {
         None
@@ -542,9 +542,7 @@ fn finish_inline(kind: FinishKind) {
     let (kind, kept) = match kept {
         Some(k) => (kind, Some(k)),
         // Nothing to keep (an empty crop): the same as a cancel.
-        None if matches!(kind, FinishKind::Save | FinishKind::OpenEditor) => {
-            (FinishKind::Cancel, None)
-        }
+        None if kind.keeps_picture() => (FinishKind::Cancel, None),
         None => (kind, None),
     };
     let mut editor = None;
@@ -578,7 +576,8 @@ fn finish_inline(kind: FinishKind) {
             }
             // The overlay closes first below, then the editor opens on the
             // crop (and follows its own rules, auto-copy included).
-            FinishKind::OpenEditor => editor = Some((shot, sel, doc)),
+            FinishKind::OpenEditor => editor = Some((shot, sel, doc, None)),
+            FinishKind::OpenEditorTurned(t) => editor = Some((shot, sel, doc, Some(t))),
             _ => {}
         }
     }
@@ -593,8 +592,8 @@ fn finish_inline(kind: FinishKind) {
         }
         // Otherwise detached: nobody waits.
     }
-    if let Some((shot, sel, doc)) = editor {
-        crate::shot_edit::window::open_with(shot, sel.center(), demo, doc);
+    if let Some((shot, sel, doc, turn)) = editor {
+        crate::shot_edit::window::open_turned(shot, sel.center(), demo, doc, turn);
     } else if demo {
         // Nothing else will end the demo's message loop.
         unsafe { PostQuitMessage(0) };

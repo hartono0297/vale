@@ -16,6 +16,7 @@ pub mod export;
 pub mod gfx;
 pub mod icons;
 pub mod paint;
+pub mod rotate;
 pub mod text;
 pub mod window;
 
@@ -456,6 +457,14 @@ fn near_polyline(pts: &[Pt], p: Pt, reach: f32) -> bool {
     }
 }
 
+/// One undo step's state: the annotations and the picture's quarter turns,
+/// so the two always go back together.
+#[derive(Clone, Debug, PartialEq)]
+struct Snap {
+    doc: Vec<Annotation>,
+    turns: u8,
+}
+
 /// The document and the editor's state around it: tool, colour, selection,
 /// undo and redo (whole-document snapshots, taken around each action).
 #[derive(Debug)]
@@ -466,10 +475,12 @@ pub struct Session {
     pub color: u32,
     /// Index into `STROKES`.
     pub stroke: usize,
-    undo: Vec<Vec<Annotation>>,
-    redo: Vec<Vec<Annotation>>,
-    /// The document as it was when the running action began.
-    pending: Option<Vec<Annotation>>,
+    /// Quarter turns of the picture (0..=3, clockwise).
+    turns: u8,
+    undo: Vec<Snap>,
+    redo: Vec<Snap>,
+    /// The state as it was when the running action began.
+    pending: Option<Snap>,
     /// Anything changed since the last save or copy.
     changed: bool,
     /// Counts the changes, so a save that finishes later can tell whether
@@ -485,6 +496,7 @@ impl Default for Session {
             tool: Tool::Select,
             color: COLORS[0],
             stroke: 1,
+            turns: 0,
             undo: Vec::new(),
             redo: Vec::new(),
             pending: None,
@@ -515,8 +527,33 @@ impl Session {
     /// undo step.
     pub fn begin(&mut self) {
         if self.pending.is_none() {
-            self.pending = Some(self.doc.clone());
+            self.pending = Some(self.snap());
         }
+    }
+
+    fn snap(&self) -> Snap {
+        Snap {
+            doc: self.doc.clone(),
+            turns: self.turns,
+        }
+    }
+
+    /// Quarter turns of the picture, 0..=3.
+    pub fn turns(&self) -> u8 {
+        self.turns
+    }
+
+    /// Turns the picture and its annotations a quarter (one undo step).
+    /// `size` is the picture as currently shown. The selection stays.
+    pub fn rotate(&mut self, turn: rotate::Turn, size: (u32, u32)) -> bool {
+        self.begin();
+        rotate::rotate_doc(&mut self.doc, turn, (size.0 as f32, size.1 as f32));
+        self.turns = match turn {
+            rotate::Turn::Right => (self.turns + 1) % 4,
+            rotate::Turn::Left => (self.turns + 3) % 4,
+        };
+        self.end();
+        true
     }
 
     /// Ends the action. An action that changed nothing leaves no step.
@@ -525,7 +562,7 @@ impl Session {
         let Some(before) = self.pending.take() else {
             return false;
         };
-        if before == self.doc {
+        if before.doc == self.doc && before.turns == self.turns {
             return false;
         }
         self.undo.push(before);
@@ -622,7 +659,9 @@ impl Session {
         let Some(before) = self.undo.pop() else {
             return false;
         };
-        self.redo.push(std::mem::replace(&mut self.doc, before));
+        let now = self.snap();
+        self.restore(before);
+        self.redo.push(now);
         self.selected = None;
         self.touch();
         true
@@ -632,7 +671,9 @@ impl Session {
         let Some(after) = self.redo.pop() else {
             return false;
         };
-        self.undo.push(std::mem::replace(&mut self.doc, after));
+        let now = self.snap();
+        self.restore(after);
+        self.undo.push(now);
         self.selected = None;
         self.touch();
         true
@@ -666,6 +707,11 @@ impl Session {
         if self.revision == revision {
             self.changed = false;
         }
+    }
+
+    fn restore(&mut self, snap: Snap) {
+        self.doc = snap.doc;
+        self.turns = snap.turns;
     }
 
     fn touch(&mut self) {
@@ -915,6 +961,69 @@ mod tests {
             b: Pt::new(b.0, b.1),
             style: RED,
         }
+    }
+
+    use rotate::Turn;
+
+    #[test]
+    fn a_rotation_is_one_undo_step() {
+        let mut s = Session::with_doc(vec![rect(10.0, 5.0, 20.0, 10.0)]);
+        let original = s.doc.clone();
+        assert!(s.rotate(Turn::Right, (100, 40)));
+        assert_eq!(s.turns(), 1);
+        assert!(s.can_undo());
+        assert_ne!(s.doc, original);
+        assert!(s.undo());
+        assert_eq!(s.turns(), 0);
+        assert_eq!(s.doc, original);
+        assert!(!s.can_undo());
+    }
+
+    #[test]
+    fn undo_of_a_rotation_turns_doc_and_picture_back_together() {
+        let mut s = Session::with_doc(vec![rect(10.0, 5.0, 20.0, 10.0)]);
+        let original = s.doc.clone();
+        s.rotate(Turn::Right, (100, 40));
+        s.add(arrow((1.0, 1.0), (30.0, 60.0)));
+        let turned_len = s.doc.len();
+        assert!(s.undo());
+        assert_eq!(s.doc.len(), turned_len - 1);
+        assert_eq!(s.turns(), 1);
+        assert!(s.undo());
+        assert_eq!(s.turns(), 0);
+        assert_eq!(s.doc, original);
+        assert!(s.redo() && s.redo());
+        assert_eq!(s.turns(), 1);
+        assert_eq!(s.doc.len(), turned_len);
+    }
+
+    #[test]
+    fn rotate_bumps_the_revision_and_marks_dirty() {
+        let mut s = Session::with_doc(vec![rect(10.0, 5.0, 20.0, 10.0)]);
+        let old = s.revision();
+        s.rotate(Turn::Left, (100, 40));
+        assert!(s.revision() > old);
+        assert!(s.dirty());
+        s.mark_clean_at(old);
+        assert!(s.dirty());
+    }
+
+    #[test]
+    fn left_after_right_is_two_steps_back_to_zero() {
+        let mut s = Session::with_doc(vec![rect(10.0, 5.0, 20.0, 10.0)]);
+        s.rotate(Turn::Right, (100, 40));
+        s.rotate(Turn::Left, (40, 100));
+        assert_eq!(s.turns(), 0);
+        assert!(s.undo() && s.undo());
+        assert!(!s.undo());
+    }
+
+    #[test]
+    fn rotation_keeps_the_selection() {
+        let mut s = Session::with_doc(vec![rect(10.0, 5.0, 20.0, 10.0)]);
+        s.selected = Some(0);
+        s.rotate(Turn::Right, (100, 40));
+        assert_eq!(s.selected, Some(0));
     }
 
     #[test]

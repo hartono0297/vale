@@ -13,6 +13,7 @@
 use super::Rect;
 use crate::i18n::{Key, tr};
 use crate::shot_edit::Tool;
+use crate::shot_edit::rotate::Turn;
 
 // ---- the buttons ----
 
@@ -24,6 +25,8 @@ pub enum Btn {
     Stroke(usize),
     Undo,
     Redo,
+    /// Open the editor with the selection turned right.
+    Rotate,
     Copy,
     Save,
     OpenEditor,
@@ -67,6 +70,7 @@ pub fn tip(btn: Btn) -> Option<String> {
         Btn::Stroke(_) => tr(Key::EditStroke).to_owned(),
         Btn::Undo => format!("{} (Ctrl+Z)", tr(Key::EditUndo)),
         Btn::Redo => format!("{} (Ctrl+Y)", tr(Key::EditRedo)),
+        Btn::Rotate => format!("{} (Ctrl+R)", tr(Key::InlineRotate)),
         Btn::Copy => format!("{} (Ctrl+C)", tr(Key::EditCopy)),
         Btn::Save => format!("{} (Ctrl+S)", tr(Key::EditSave)),
         Btn::OpenEditor => tr(Key::InlineOpenEditor).to_owned(),
@@ -139,7 +143,7 @@ impl Panel {
     }
 }
 
-/// The strip's buttons in groups: tools, colours, strokes, undo and redo.
+/// The strip's buttons in groups: tools, colours, strokes, undo and redo, rotate.
 fn strip_groups() -> Vec<Vec<Btn>> {
     vec![
         STRIP_TOOLS.iter().map(|t| Btn::Tool(*t)).collect(),
@@ -150,6 +154,7 @@ fn strip_groups() -> Vec<Vec<Btn>> {
             .map(Btn::Stroke)
             .collect(),
         vec![Btn::Undo, Btn::Redo],
+        vec![Btn::Rotate],
     ]
 }
 
@@ -644,6 +649,8 @@ pub enum InlineKey {
     Keep,
     Undo,
     Redo,
+    /// Ctrl+R / Ctrl+Shift+R: open the editor turned right / left.
+    Rotate(Turn),
     /// Delete the selected annotation.
     Delete,
     Tool(Tool),
@@ -693,6 +700,7 @@ fn key_action(vk: u16, ctrl: bool, shift: bool, alt: bool, ctx: KeyCtx) -> Inlin
             0x5A if shift => InlineKey::Redo,
             0x5A => InlineKey::Undo,
             0x59 => InlineKey::Redo,
+            0x52 => InlineKey::Rotate(if shift { Turn::Left } else { Turn::Right }),
             _ => InlineKey::Ignore,
         };
     }
@@ -756,6 +764,19 @@ pub enum FinishKind {
     /// The confirm bar's "Buang".
     Discard,
     OpenEditor,
+    /// Rotate: the editor opens with the picture already turned.
+    OpenEditorTurned(Turn),
+}
+
+impl FinishKind {
+    /// Whether the frozen picture is kept for the finish (to save it or hand
+    /// it to the editor) instead of being dropped with the overlay.
+    pub fn keeps_picture(self) -> bool {
+        matches!(
+            self,
+            FinishKind::Save | FinishKind::OpenEditor | FinishKind::OpenEditorTurned(_)
+        )
+    }
 }
 
 /// Whether ending as `kind` puts the picture on the clipboard: Copy always,
@@ -766,9 +787,11 @@ pub fn finish_copies(kind: FinishKind, auto_copy: bool) -> bool {
     match kind {
         FinishKind::Copy => true,
         FinishKind::Save => auto_copy,
-        FinishKind::Cancel | FinishKind::Close | FinishKind::Discard | FinishKind::OpenEditor => {
-            false
-        }
+        FinishKind::Cancel
+        | FinishKind::Close
+        | FinishKind::Discard
+        | FinishKind::OpenEditor
+        | FinishKind::OpenEditorTurned(_) => false,
     }
 }
 
@@ -850,17 +873,18 @@ mod tests {
     // ---- the strip and the bar ----
 
     #[test]
-    fn the_strip_holds_nineteen_buttons_in_order_in_one_column() {
+    fn the_strip_holds_twenty_buttons_in_order_in_one_column() {
         for ui in [1.0, 1.25, 1.5, 2.0] {
             let p = strip_layout(ui, 100_000);
             let order: Vec<Btn> = p.items.iter().map(|(b, _)| *b).collect();
-            assert_eq!(order.len(), 8 + 6 + 3 + 2);
+            assert_eq!(order.len(), 20);
             let tools: Vec<Btn> = STRIP_TOOLS.iter().map(|t| Btn::Tool(*t)).collect();
             assert_eq!(&order[..8], tools.as_slice());
             assert_eq!(order[8], Btn::Color(0));
             assert_eq!(order[13], Btn::Color(5));
             assert_eq!(order[14], Btn::Stroke(0));
-            assert_eq!(&order[17..], [Btn::Undo, Btn::Redo]);
+            assert_eq!(&order[17..19], [Btn::Undo, Btn::Redo]);
+            assert_eq!(order[19], Btn::Rotate);
             // One column: the same x, strictly going down, nothing touching.
             let xs: Vec<i32> = p.items.iter().map(|(_, r)| r.x).collect();
             assert!(xs.windows(2).all(|w| w[0] == w[1]), "{ui}");
@@ -871,7 +895,7 @@ mod tests {
                 assert!(inside(*r, p.rect), "{b:?} {r:?} in {:?}", p.rect);
                 assert!(r.w >= 20 && r.h >= 20, "{b:?} is a button");
             }
-            assert_eq!(p.seps.len(), 3, "three groups apart");
+            assert_eq!(p.seps.len(), 4, "four groups apart");
             for sep in &p.seps {
                 assert!(inside(*sep, p.rect));
                 assert!(p.items.iter().all(|(_, r)| !overlaps(*r, *sep)), "{sep:?}");
@@ -905,7 +929,7 @@ mod tests {
         assert_eq!(fits, one);
         // Absurdly low: still every button once, no empty column.
         let tiny = strip_layout(1.0, 10);
-        assert_eq!(tiny.items.len(), 19);
+        assert_eq!(tiny.items.len(), 20);
         assert!(tiny.items.iter().all(|(_, r)| r.w > 0));
     }
 
@@ -1414,6 +1438,33 @@ mod tests {
     };
 
     #[test]
+    fn ctrl_r_rotates_right_and_ctrl_shift_r_left() {
+        assert_eq!(key(0x52, true, false, NONE), InlineKey::Rotate(Turn::Right));
+        assert_eq!(key(0x52, true, true, NONE), InlineKey::Rotate(Turn::Left));
+        for ctx in [
+            KeyCtx {
+                editing_text: true,
+                ..NONE
+            },
+            KeyCtx {
+                dragging: true,
+                ..NONE
+            },
+            KeyCtx {
+                confirm: true,
+                ..NONE
+            },
+        ] {
+            assert!(!matches!(key(0x52, true, false, ctx), InlineKey::Rotate(_)));
+        }
+        let rep = KeyCtx {
+            repeat: true,
+            ..NONE
+        };
+        assert_eq!(key(0x52, true, false, rep), InlineKey::Ignore);
+    }
+
+    #[test]
     fn a_held_key_finishes_or_answers_only_once() {
         let rep = KeyCtx {
             repeat: true,
@@ -1612,6 +1663,42 @@ mod tests {
                 assert!(!finish_copies(kind, auto), "{kind:?}");
             }
         }
+    }
+
+    #[test]
+    fn open_editor_turned_keeps_the_picture_like_open_editor() {
+        for kind in [
+            FinishKind::Save,
+            FinishKind::OpenEditor,
+            FinishKind::OpenEditorTurned(Turn::Left),
+            FinishKind::OpenEditorTurned(Turn::Right),
+        ] {
+            assert!(kind.keeps_picture(), "{kind:?}");
+        }
+        for kind in [
+            FinishKind::Copy,
+            FinishKind::Cancel,
+            FinishKind::Close,
+            FinishKind::Discard,
+        ] {
+            assert!(!kind.keeps_picture(), "{kind:?}");
+        }
+        for auto in [false, true] {
+            assert!(!finish_copies(
+                FinishKind::OpenEditorTurned(Turn::Right),
+                auto
+            ));
+        }
+    }
+
+    #[test]
+    fn rotate_tip_names_its_shortcut() {
+        crate::i18n::set_lang(crate::i18n::Lang::En);
+        assert_eq!(
+            tip(Btn::Rotate).as_deref(),
+            Some("Rotate right, open in editor (Ctrl+R)")
+        );
+        crate::i18n::set_lang(crate::i18n::Lang::Id);
     }
 
     #[test]

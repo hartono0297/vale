@@ -97,7 +97,8 @@ Vale.
   inline bar, never a system dialog: Enter = Discard, Esc = Keep, every other
   key is ignored while it is up. The X button and Alt+F4 go through
   `WM_CLOSE` -> `request_close` too (no `WM_SYSCOMMAND` handler). Paint order
-  matters here: [[shot-editor-paint-order]].
+  matters here: [[shot-editor-paint-order]]. The editor can also turn the
+  picture a quarter turn, with the annotations: [[screenshot-rotate]].
 - **Text click rule** (`text_click_action`, pure). A press on the canvas with
   the Text tool while an EDIT is open only commits it: no new EDIT, and the
   focus goes back to the editor window, so Ctrl+C, Ctrl+S, Delete, Esc and
