@@ -17,12 +17,9 @@ use windows::Win32::Graphics::Direct2D::{
     ID2D1Bitmap, ID2D1Factory, ID2D1RenderTarget, ID2D1SolidColorBrush, ID2D1StrokeStyle,
 };
 use windows::Win32::Graphics::DirectWrite::{
-    DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT,
-    DWRITE_FONT_WEIGHT_NORMAL, DWRITE_LINE_METRICS, DWRITE_TEXT_METRICS, DWRITE_TEXT_RANGE,
-    DWRITE_WORD_WRAPPING_NO_WRAP, IDWriteFactory,
+    DWRITE_FONT_WEIGHT, DWRITE_TEXT_METRICS, DWRITE_TEXT_RANGE, DWRITE_WORD_WRAPPING_NO_WRAP,
 };
 use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, InvalidateRect, PAINTSTRUCT};
-use windows::core::w;
 use windows_numerics::{Matrix3x2, Vector2};
 
 use super::layout::{self, Hit, Tool};
@@ -33,7 +30,8 @@ use super::window::{
 use crate::i18n::{Key, tr};
 use crate::shot_edit::gfx::{Align, bitmap, color, rect_f};
 use crate::shot_edit::icons::{fill, fill_round};
-use crate::sign::{ItemKind, Mark, Quarter, raster};
+use crate::sign::style::TextStyle;
+use crate::sign::{ItemKind, Mark, Quarter, raster, text_draw};
 use crate::theme;
 use crate::ui::geometry::Rect;
 
@@ -96,78 +94,10 @@ fn stroke_round(rt: &ID2D1RenderTarget, brush: &ID2D1SolidColorBrush, r: Rect, r
 
 // ---- ink text ----
 
-fn arial(
-    dwrite: &IDWriteFactory,
-    size: f32,
-) -> Option<windows::Win32::Graphics::DirectWrite::IDWriteTextFormat> {
-    unsafe {
-        let f = dwrite
-            .CreateTextFormat(
-                w!("Arial"),
-                None,
-                DWRITE_FONT_WEIGHT_NORMAL,
-                DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_STRETCH_NORMAL,
-                size.max(0.5),
-                w!("en-us"),
-            )
-            .ok()?;
-        let _ = f.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
-        Some(f)
-    }
-}
-
-/// Width of `s` in Arial at `size` (any unit: points in, points out).
-pub(super) fn arial_width(dwrite: &IDWriteFactory, s: &str, size: f32) -> f32 {
-    let wide: Vec<u16> = s.encode_utf16().collect();
-    let Some(f) = arial(dwrite, size) else { return s.chars().count() as f32 * size * 0.55 };
-    unsafe {
-        let Ok(layout) = dwrite.CreateTextLayout(&wide, &f, 1.0e6, size * 4.0) else {
-            return s.chars().count() as f32 * size * 0.55;
-        };
-        let mut m = DWRITE_TEXT_METRICS::default();
-        if layout.GetMetrics(&mut m).is_err() {
-            return s.chars().count() as f32 * size * 0.55;
-        }
-        m.widthIncludingTrailingWhitespace
-    }
-}
-
-/// `s` in Arial filling `TEXT_FILL` of the box height, left aligned, its
-/// baseline a fifth of the height above the bottom: where the PDF writer
-/// puts Helvetica.
-pub(super) fn ink_text(
-    rt: &ID2D1RenderTarget,
-    dwrite: &IDWriteFactory,
-    brush: &ID2D1SolidColorBrush,
-    s: &str,
-    (x, y, _w, h): (f32, f32, f32, f32),
-) {
-    let size = h * window::TEXT_FILL;
-    let Some(f) = arial(dwrite, size) else { return };
-    let wide: Vec<u16> = s.encode_utf16().collect();
-    unsafe {
-        let Ok(layout) = dwrite.CreateTextLayout(&wide, &f, 1.0e6, size * 4.0) else { return };
-        let mut lines = [DWRITE_LINE_METRICS::default()];
-        let mut n = 0u32;
-        let baseline = if layout.GetLineMetrics(Some(&mut lines), &mut n).is_ok() && n > 0 {
-            lines[0].baseline
-        } else {
-            size * 0.905
-        };
-        rt.DrawTextLayout(
-            Vector2::new(x, y + h * 0.8 - baseline),
-            &layout,
-            brush,
-            D2D1_DRAW_TEXT_OPTIONS_NONE,
-        );
-    }
-}
-
 /// `s` drawn as on the page, as a picture the size of a `w_pt` x `h_pt`
 /// box (for text the PDF's standard font cannot write). COM must be
 /// initialised on the calling thread.
-pub(super) fn text_mark(s: &str, w_pt: f32, h_pt: f32) -> Option<Mark> {
+pub(super) fn text_mark(s: &str, st: &TextStyle, w_pt: f32, h_pt: f32) -> Option<Mark> {
     if !(w_pt > 0.0 && h_pt > 0.0) {
         return None;
     }
@@ -176,9 +106,9 @@ pub(super) fn text_mark(s: &str, w_pt: f32, h_pt: f32) -> Option<Mark> {
     let (wp, hp) = ((w_pt * k).round().max(1.0) as u32, (h_pt * k).round().max(1.0) as u32);
     let mut drawn = false;
     let px = raster::offscreen(wp, hp, |rt, _, dwrite| unsafe {
-        let Ok(brush) = rt.CreateSolidColorBrush(&color(INK, 1.0), None) else { return };
+        let Ok(brush) = rt.CreateSolidColorBrush(&text_draw::tint_color(st.tint), None) else { return };
         rt.SetTextAntialiasMode(windows::Win32::Graphics::Direct2D::D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
-        ink_text(rt, dwrite, &brush, s, (0.0, 0.0, wp as f32, hp as f32));
+        text_draw::draw(rt, dwrite, &brush, s, st, (0.0, 0.0, wp as f32, hp as f32));
         drawn = true;
     })?;
     drawn.then(|| raster::to_mark(wp, hp, &px))
@@ -945,14 +875,13 @@ fn draw_items(w: &mut Win, rt: &ID2D1RenderTarget, brush: &ID2D1SolidColorBrush,
                     }
                 }
             }
-            ItemKind::Text(s, _) | ItemKind::Date(s, _) => unsafe {
+            ItemKind::Text(s, st) | ItemKind::Date(s, st) => unsafe {
                 rt.SetTransform(&m);
-                brush_set(brush, INK, 1.0);
-                ink_text(rt, &w.gfx.dwrite, brush, s, (-bw / 2.0, -bh / 2.0, bw, bh));
+                text_draw::draw(rt, &w.gfx.dwrite, brush, s, st, (-bw / 2.0, -bh / 2.0, bw, bh));
             },
-            ItemKind::Check(_) => unsafe {
+            ItemKind::Check(tint) => unsafe {
                 rt.SetTransform(&m);
-                brush_set(brush, INK, 1.0);
+                brush_set(brush, tint.rgb(), 1.0);
                 draw_check(rt, brush, &w.gfx.round, bw, bh);
             },
         }
@@ -1116,5 +1045,33 @@ mod tests {
             assert!(icon_of(h).is_some());
         }
         assert!(icon_of(Hit::Save).is_none());
+    }
+
+    #[test]
+    fn text_mark_uses_style_colour() {
+        use crate::sign::style::{Family, Tint};
+        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
+        let com = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
+        let st = TextStyle { family: Family::Sans, bold: true, underline: true, tint: Tint::Red, ..Default::default() };
+        let m = text_mark("MMMM", &st, 100.0, 20.0).expect("mark");
+        // Text width in mark pixels: 4 px a point, font size 0.8 of the height.
+        let text_w = text_draw::advance_em("MMMM", &st) * 20.0 * text_draw::TEXT_FILL * 4.0;
+        if com {
+            unsafe { CoUninitialize() };
+        }
+        let at = |x: u32, y: u32| &m.rgba[((y * m.w + x) * 4) as usize..][..4];
+        let near = |p: &[u8]| {
+            p[3] > 250
+                && p[0].abs_diff(0xA6) < 10
+                && p[1].abs_diff(0x1B) < 10
+                && p[2].abs_diff(0x1B) < 10
+        };
+        let any = (0..m.h).any(|y| (0..m.w).any(|x| near(at(x, y))));
+        assert!(any, "no red pixels in a {}x{} mark", m.w, m.h);
+        // The underline: a row near the bottom opaque across most of the width.
+        let row = (m.h * 3 / 4..m.h).any(|y| {
+            (0..m.w).filter(|&x| at(x, y)[3] > 200).count() as f32 >= 0.8 * text_w
+        });
+        assert!(row, "no underline row in a {}x{} mark", m.w, m.h);
     }
 }
