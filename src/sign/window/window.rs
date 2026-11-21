@@ -1748,6 +1748,9 @@ fn act(hwnd: HWND, hit: Hit, kb: bool) {
         }
         Hit::PickFamily(f) if ready => {
             with(hwnd, |w| {
+                if w.pop != Some(Pop::Fonts) {
+                    return;
+                }
                 w.pop = None;
                 restyle_selected(w, |st| st.family = f);
                 if kb {
@@ -2436,7 +2439,13 @@ fn on_escape(hwnd: HWND) {
                 w.focus = None;
                 relayout(w);
             }
-            EscStep::Popover => w.pop = None,
+            EscStep::Popover => {
+                w.pop = None;
+                // Focus left on a menu row would act with no menu showing.
+                if matches!(w.focus, Some(Hit::PickFamily(_))) {
+                    w.focus = Some(Hit::Family);
+                }
+            }
             EscStep::Disarm => {
                 w.armed = None;
                 w.note = None;
@@ -3315,6 +3324,28 @@ mod tests {
         act(hwnd, Hit::Family, false);
         on_key(hwnd, VK_ESCAPE.0);
         assert_eq!(with(hwnd, |w| (w.pop, w.selected)), Some((None, Some(i))));
+        // Keyboard: open, Tab to another face, Esc, Enter: nothing changes
+        // and the focus is back on the face button.
+        let face = |hwnd| match item(hwnd, i).kind {
+            ItemKind::Text(_, s) => s.family,
+            k => panic!("{k:?}"),
+        };
+        let was = face(hwnd);
+        act(hwnd, Hit::Family, true);
+        assert!(matches!(with(hwnd, |w| w.focus), Some(Some(Hit::PickFamily(_)))));
+        on_key(hwnd, VK_TAB.0);
+        on_key(hwnd, VK_ESCAPE.0);
+        assert_eq!(with(hwnd, |w| (w.pop, w.focus)), Some((None, Some(Hit::Family))));
+        on_key(hwnd, VK_RETURN.0);
+        assert_eq!(face(hwnd), was);
+        // A stray row hit with no menu does nothing.
+        with(hwnd, |w| w.pop = None);
+        act(hwnd, Hit::PickFamily(Family::Serif), true);
+        assert_eq!(face(hwnd), was);
+        with(hwnd, |w| {
+            w.pop = None;
+            w.focus = None;
+        });
         with(hwnd, |w| w.selected = None);
         with(hwnd, |w| w.pop = None);
     }
