@@ -1,11 +1,13 @@
 ---
 tags: [decision, ci, pages]
-date: 2026-11-01
+date: 2026-11-21
 ---
 
 # GitHub Pages from site/
 
 GitHub Pages can only serve the repo root or `docs/` from a branch, not a folder named `site/`. So `.github/workflows/pages.yml` uses the GitHub Actions source: it uploads `site/` as the artifact and deploys it, with no build step. The owner sets Settings -> Pages -> Source: GitHub Actions once. The workflow runs on pushes to `main` that touch `site/**` or the workflow file, and by hand.
+
+**Two jobs, not one (2026-11-21).** With upload and deploy in one job, `actions/deploy-pages@v4` reported "No artifacts named github-pages were found" 0.4 s after `upload-pages-artifact` had uploaded it, on the first run and on a re-run ([actions/deploy-pages#451](https://github.com/actions/deploy-pages/issues/451)). The workflow now has a `build` job (checkout, `configure-pages@v5`, `upload-pages-artifact@v5` with `path: site`) and a `deploy` job (`needs: build`, the `github-pages` environment, `deploy-pages@v5`); the first run of that shape deployed. Keep the split; if a deploy fails at artifact lookup again, re-run it before changing anything else. Live at https://hartono0297.github.io/vale/.
 
 ## What site/ holds (since the 2026-10-31 rebuild)
 
