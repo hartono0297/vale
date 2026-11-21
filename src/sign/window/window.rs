@@ -61,7 +61,7 @@ use crate::sign::image_out::{self, ImageFormat};
 use crate::sign::pdf_write::{self, OpenError, Opened, SaveError};
 use crate::sign::render::{Done, Job, Pixels, Renderer};
 use crate::sign::session::{Page, Session};
-use crate::sign::{Item, ItemKind, Kind, Mark, Quarter, Source, names, office, style, winansi};
+use crate::sign::{Item, ItemKind, Kind, Mark, Quarter, Source, names, office, style, text_draw, winansi};
 use crate::theme::{self, WindowPalette};
 use crate::ui::geometry::Rect;
 
@@ -107,8 +107,7 @@ const INITIALS_BOX: (f32, f32) = (48.0, 24.0);
 const DATE_SIZE: (f32, f32) = (110.0, 14.0);
 const TEXT_H: f32 = 14.0;
 const CHECK_SIZE: f32 = 14.0;
-/// Text fills this share of its item's height.
-pub(super) const TEXT_FILL: f32 = 0.8;
+pub(super) use crate::sign::text_draw::TEXT_FILL;
 /// The gap between a signature and the date put under it.
 const DATE_GAP: f32 = 3.0;
 /// Lebih kecil / Lebih besar.
@@ -1952,7 +1951,11 @@ fn rescale_fields(hwnd: HWND) {
 /// Grows the Teks EDIT with what is typed.
 fn fit_text(hwnd: HWND) {
     with(hwnd, |w| {
-        let Some((f, _, _)) = &w.text else { return };
+        let Some((f, index, _)) = &w.text else { return };
+        let st = match index.and_then(|i| w.doc.as_ref()?.session.items.get(i)).map(|it| &it.kind) {
+            Some(ItemKind::Text(_, st)) => *st,
+            _ => style::last_text(),
+        };
         let ui = ui_of(w);
         let s = text_edit::text(f.edit);
         let mut r = RECT::default();
@@ -1965,7 +1968,7 @@ fn fit_text(hwnd: HWND) {
         }
         let h = r.bottom - r.top;
         let px = h as f32 / 1.5;
-        let tw = paint::arial_width(&w.gfx.dwrite, &format!("{s}MM"), px);
+        let tw = text_draw::width(&w.gfx.dwrite, &format!("{s}MM"), &st, px);
         let width = tw.max(160.0 * ui) as i32;
         text_edit::move_to(f.edit, pt.x, pt.y, width, h);
     });
@@ -1987,7 +1990,9 @@ fn finish_text(hwnd: HWND, keep: bool) -> bool {
             return;
         }
         let Some(v) = view(w) else { return };
-        let width = |h: f32| paint::arial_width(&w.gfx.dwrite, &typed, h * TEXT_FILL) + 2.0;
+        let width = |h: f32, st: &style::TextStyle| {
+            text_draw::width(&w.gfx.dwrite, &typed, st, h * TEXT_FILL) + 2.0
+        };
         match index {
             Some(i) => {
                 let Some(d) = &mut w.doc else { return };
@@ -2001,7 +2006,7 @@ fn finish_text(hwnd: HWND, keep: bool) -> bool {
                     ItemKind::Text(_, st) => *st,
                     _ => style::last_text(),
                 };
-                let nw = width(old.h).max(8.0);
+                let nw = width(old.h, &old_style).max(8.0);
                 // One undo step: the resize takes the snapshot, the text
                 // changes with it.
                 d.session.resize_item(i, nw, old.h);
@@ -2014,7 +2019,7 @@ fn finish_text(hwnd: HWND, keep: bool) -> bool {
             }
             None => {
                 let turn = geom::upright_turn(v.g, v.extra);
-                let iw = width(TEXT_H).max(8.0);
+                let iw = width(TEXT_H, &style::last_text()).max(8.0);
                 // The EDIT's left edge and middle are where the text sits.
                 let (bw, bh) = if matches!(turn, Quarter::R90 | Quarter::R270) { (TEXT_H, iw) } else { (
                     iw,
@@ -2149,8 +2154,8 @@ pub(super) fn encodable(items: &[Item]) -> Result<Vec<Item>, Key> {
     items
         .iter()
         .map(|it| match &it.kind {
-            ItemKind::Text(s, _) | ItemKind::Date(s, _) if winansi::encode(s).is_none() => {
-                let m = paint::text_mark(s, it.w, it.h).ok_or(Key::SignSaveFailed)?;
+            ItemKind::Text(s, st) | ItemKind::Date(s, st) if winansi::encode(s).is_none() => {
+                let m = paint::text_mark(s, st, it.w, it.h).ok_or(Key::SignSaveFailed)?;
                 Ok(Item { kind: ItemKind::Signature(Arc::new(m)), ..it.clone() })
             }
             _ => Ok(it.clone()),
@@ -3047,7 +3052,7 @@ mod tests {
         assert_eq!(l.geoms.len(), 1);
         assert_eq!((l.geoms[0].w, l.geoms[0].h), (30.0, 15.0));
         let mut session = Session::new(l.geoms.clone());
-        session.add(Item { kind: ItemKind::Check(Default::default()), page: 0, x: 2.0, y: 2.0, w: 10.0, h: 10.0, turn: Quarter::R0 });
+        session.add(Item { kind: ItemKind::Check(style::Tint::Blue), page: 0, x: 2.0, y: 2.0, w: 10.0, h: 10.0, turn: Quarter::R0 });
         session.rotate_page(0);
         drop(l);
         let job = SaveJob::Image { path: path.clone(), fmt: ImageFormat::Png };
