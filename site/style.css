@@ -432,6 +432,8 @@ html[data-notch-style="face"] #notch[data-state="idle"]:not(.is-open) .nf-idle {
 html[data-notch-style="face"] #notch[data-state="idle"]:not(.is-open) .nc { display: none; }
 html[data-notch-style="face"] #notch[data-state="idle"]:not(.is-open) .face-marks { display: block; }
 html[data-notch-style="face"] #notch[data-state="idle"]:not(.is-open) .clock { color: var(--n-ink); }
+/* The cream focus ring would vanish on a light face (1.00 on Calico); the face ink holds 4.5:1 on every fill. */
+html[data-notch-style="face"] #notch[data-state="idle"]:not(.is-open) .notch-face:focus-visible { outline-color: var(--n-ink); }
 /* Calico patches, clipped by the notch like the app's face. */
 html[data-notch-style="face"]:not([data-mascot="falk"], [data-mascot="octo"]) #notch[data-state="idle"]:not(.is-open) .face-patch { display: block; opacity: var(--pa, 0); }
 .face-patch { position: absolute; border-radius: 50%; pointer-events: none; }
