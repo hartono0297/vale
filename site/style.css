@@ -625,6 +625,21 @@ html[data-mascot="octo"] .cat { --eye-dy: -12px; }
 .coat-chip[data-coat="red"] i { background: #D9505F; }
 .coat-chip[data-coat="purple"] i { background: #A98BD6; }
 .coat-chip[data-coat="sea"] i { background: #5FA8C9; }
+/* Short screens (up to 50em tall, such as 375 x 667, 1280 x 800 and 1366 x 768):
+   a smaller mascot and a tighter rhythm between the mascot, the picks, the
+   chips, the headline, its line and Download, so Download is in the first
+   screen. The order stays the same; the 44 px targets stay. */
+@media (max-height: 50em) {
+  .hero { padding-top: 5.25rem; }
+  .cat-wrap { width: clamp(96px, 16vh, 136px); width: clamp(96px, 16svh, 136px); margin-bottom: 0; }
+  .picks { margin-top: 4px; row-gap: 4px; }
+  .pick-set { gap: 2px; }
+  .pick-label { line-height: 1.25; }
+  .coats { margin-bottom: .5rem; }
+  .hero-line { margin-top: .75rem; }
+  .hero .actions { margin-top: 1.25rem; }
+}
+@media (max-height: 50em) and (min-width: 40em) { .coats { margin-bottom: 1rem; } }
 
 /* ---------- marquee ----------
    The 15 page names, moved sideways by scroll (site.js). Static without
