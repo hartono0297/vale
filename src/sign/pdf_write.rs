@@ -1106,7 +1106,7 @@ fn write_page(
                 };
                 c.extend(format!("/{name} Do\n").bytes());
             }
-            ItemKind::Date(s) | ItemKind::Text(s) => {
+            ItemKind::Date(s, _) | ItemKind::Text(s, _) => {
                 let name = match &font_name {
                     Some(n) => n.clone(),
                     None => {
@@ -1134,7 +1134,7 @@ fn write_page(
                 c.extend(winansi::pdf_string(&text));
                 c.extend(b" Tj ET\n");
             }
-            ItemKind::Check => {
+            ItemKind::Check(_) => {
                 let tick = "0.12 w 1 J 1 j 0.18 0.52 m 0.42 0.26 l 0.84 0.8 l S";
                 c.extend(format!("{INK} RG {tick}\n").bytes());
             }
@@ -1516,7 +1516,7 @@ mod tests {
     #[test]
     fn text_item_uses_helvetica_winansi() {
         let o = open(bytes_of(&mut two_pages()), None).unwrap();
-        let it = item(ItemKind::Date("20 November 2026".into()), 0, Quarter::R0);
+        let it = item(ItemKind::Date("20 November 2026".into(), Default::default()), 0, Quarter::R0);
         let doc = load(&save(&o, &pages_of(&o), &[it]).unwrap(), None);
         let fonts = resource(&doc, 1, b"Font");
         let ours = fonts
@@ -1535,7 +1535,7 @@ mod tests {
     #[test]
     fn check_item_is_an_ink_blue_stroke() {
         let o = open(bytes_of(&mut two_pages()), None).unwrap();
-        let check = item(ItemKind::Check, 0, Quarter::R0);
+        let check = item(ItemKind::Check(Default::default()), 0, Quarter::R0);
         let doc = load(&save(&o, &pages_of(&o), &[check]).unwrap(), None);
         let c = content(&doc, 1);
         assert!(c.contains("0.12 0.23 0.54 RG") && c.contains("0.12 w") && c.contains(" S"));
@@ -1656,7 +1656,7 @@ mod tests {
         doc.save_modern(&mut src).unwrap();
         let o = open(src.clone(), None).unwrap();
         assert_eq!(o.geoms.len(), 2);
-        let it = item(ItemKind::Text("Ibu Siti".into()), 1, Quarter::R90);
+        let it = item(ItemKind::Text("Ibu Siti".into(), Default::default()), 1, Quarter::R90);
         let out = save(&o, &pages_of(&o), &[it, sig(0)]).unwrap();
         assert!(out.starts_with(&src));
         let doc = load(&out, None);
@@ -1694,7 +1694,7 @@ mod tests {
         page.set("Rotate", 45);
         let o = open(bytes_of(&mut doc), None).unwrap();
         assert_eq!((o.geoms[0].w, o.geoms[0].h, o.geoms[0].base), (612.0, 792.0, Quarter::R0));
-        let it = item(ItemKind::Text("x".into()), 0, Quarter::R0);
+        let it = item(ItemKind::Text("x".into(), Default::default()), 0, Quarter::R0);
         let mut pages = pages_of(&o);
         pages[0].extra = Quarter::R270;
         let out = load(&save(&o, &pages, &[it, sig(0)]).unwrap(), None);

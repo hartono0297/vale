@@ -949,7 +949,7 @@ mod tests {
     #[test]
     fn a_date_goes_under_its_signature_in_its_own_frame() {
         let sig = |turn| Item {
-            kind: ItemKind::Check,
+            kind: ItemKind::Check(Default::default()),
             page: 0,
             x: 100.0,
             y: 200.0,

@@ -121,8 +121,8 @@ fn draw_item(
                     );
                 }
             }
-            ItemKind::Text(s) | ItemKind::Date(s) => draw_text(rt, dwrite, s, bw, bh),
-            ItemKind::Check => draw_check(rt, d2d, bw, bh),
+            ItemKind::Text(s, _) | ItemKind::Date(s, _) => draw_text(rt, dwrite, s, bw, bh),
+            ItemKind::Check(_) => draw_check(rt, d2d, bw, bh),
         }
         rt.SetTransform(&Matrix3x2::identity());
     }
@@ -684,8 +684,8 @@ mod tests {
     fn text_and_check_draw_ink() {
         let _com = Com::new();
         let g = image_geom(400, 300);
-        let t = Item { kind: ItemKind::Text("MMMM".into()), page: 0, x: 20.0, y: 150.0, w: 100.0, h: 30.0, turn: Quarter::R0 };
-        let c = Item { kind: ItemKind::Check, page: 0, x: 200.0, y: 150.0, w: 30.0, h: 30.0, turn: Quarter::R0 };
+        let t = Item { kind: ItemKind::Text("MMMM".into(), Default::default()), page: 0, x: 20.0, y: 150.0, w: 100.0, h: 30.0, turn: Quarter::R0 };
+        let c = Item { kind: ItemKind::Check(Default::default()), page: 0, x: 200.0, y: 150.0, w: 30.0, h: 30.0, turn: Quarter::R0 };
         let out = compose(&white(400, 300), 400, 300, &page(g, Quarter::R0), &[t.clone(), c.clone()], &no_text).expect("composed");
         for it in [&t, &c] {
             let (rx, ry, rw, rh) = item_view_rect(it, g, Quarter::R0, 4.0 / 3.0);

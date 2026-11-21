@@ -945,12 +945,12 @@ fn draw_items(w: &mut Win, rt: &ID2D1RenderTarget, brush: &ID2D1SolidColorBrush,
                     }
                 }
             }
-            ItemKind::Text(s) | ItemKind::Date(s) => unsafe {
+            ItemKind::Text(s, _) | ItemKind::Date(s, _) => unsafe {
                 rt.SetTransform(&m);
                 brush_set(brush, INK, 1.0);
                 ink_text(rt, &w.gfx.dwrite, brush, s, (-bw / 2.0, -bh / 2.0, bw, bh));
             },
-            ItemKind::Check => unsafe {
+            ItemKind::Check(_) => unsafe {
                 rt.SetTransform(&m);
                 brush_set(brush, INK, 1.0);
                 draw_check(rt, brush, &w.gfx.round, bw, bh);

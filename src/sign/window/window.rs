@@ -61,7 +61,7 @@ use crate::sign::image_out::{self, ImageFormat};
 use crate::sign::pdf_write::{self, OpenError, Opened, SaveError};
 use crate::sign::render::{Done, Job, Pixels, Renderer};
 use crate::sign::session::{Page, Session};
-use crate::sign::{Item, ItemKind, Kind, Mark, Quarter, Source, names, office, winansi};
+use crate::sign::{Item, ItemKind, Kind, Mark, Quarter, Source, names, office, style, winansi};
 use crate::theme::{self, WindowPalette};
 use crate::ui::geometry::Rect;
 
@@ -1521,8 +1521,8 @@ fn place(w: &mut Win, v: &View, tool: Tool, mark: Option<Arc<Mark>>, at: (f32, f
             let s = fit_mark(&m, INITIALS_BOX.0, INITIALS_BOX.1);
             (ItemKind::Initials(m), s)
         }
-        (Tool::Date, _) => (ItemKind::Date(today()), DATE_SIZE),
-        (Tool::Check, _) => (ItemKind::Check, (CHECK_SIZE, CHECK_SIZE)),
+        (Tool::Date, _) => (ItemKind::Date(today(), style::last_text()), DATE_SIZE),
+        (Tool::Check, _) => (ItemKind::Check(style::last_check()), (CHECK_SIZE, CHECK_SIZE)),
         _ => return,
     };
     let turn = geom::upright_turn(v.g, v.extra);
@@ -1769,7 +1769,7 @@ fn add_date_under(w: &mut Win) {
     let Some(sig) = d.session.items.get(i).cloned() else { return };
     let (x, y) = layout::below(&sig, DATE_SIZE.0, DATE_SIZE.1, DATE_GAP);
     let mut it = Item {
-        kind: ItemKind::Date(today()),
+        kind: ItemKind::Date(today(), style::last_text()),
         page: sig.page,
         x,
         y,
@@ -1858,7 +1858,7 @@ fn open_text(hwnd: HWND, at: (f32, f32), index: Option<usize>, typed: Option<Str
         let v = view(w)?;
         let (initial, h_pt, rect) = match index.and_then(|i| w.doc.as_ref()?.session.items.get(i)) {
             Some(it) => {
-                let ItemKind::Text(s) = &it.kind else { return None };
+                let ItemKind::Text(s, _) = &it.kind else { return None };
                 (s.clone(), it.h, v.item_rect(it))
             }
             None => {
@@ -1992,17 +1992,21 @@ fn finish_text(hwnd: HWND, keep: bool) -> bool {
             Some(i) => {
                 let Some(d) = &mut w.doc else { return };
                 let Some(old) = d.session.items.get(i).cloned() else { return };
-                if matches!(&old.kind, ItemKind::Text(t) if *t == typed) {
+                if matches!(&old.kind, ItemKind::Text(t, _) if *t == typed) {
                     // Nothing changed: no undo step, nothing to save.
                     w.selected = Some(i);
                     return;
                 }
+                let old_style = match &old.kind {
+                    ItemKind::Text(_, st) => *st,
+                    _ => style::last_text(),
+                };
                 let nw = width(old.h).max(8.0);
                 // One undo step: the resize takes the snapshot, the text
                 // changes with it.
                 d.session.resize_item(i, nw, old.h);
                 if let Some(it) = d.session.items.get_mut(i) {
-                    it.kind = ItemKind::Text(typed);
+                    it.kind = ItemKind::Text(typed, old_style);
                     let (bw, bh) = geom::occupied(it);
                     (it.x, it.y) = layout::clamp_into(it.x, it.y, bw, bh, v.g.w, v.g.h);
                 }
@@ -2022,7 +2026,7 @@ fn finish_text(hwnd: HWND, keep: bool) -> bool {
                     v.to_page(p.0 + v.page.x + iw * v.scale / 2.0, p.1 + v.page.y)
                 };
                 let (x, y) = layout::clamp_into(cx - bw / 2.0, cy - bh / 2.0, bw, bh, v.g.w, v.g.h);
-                add_item(w, Item { kind: ItemKind::Text(typed), page: w.cur, x, y, w: iw, h: TEXT_H, turn });
+                add_item(w, Item { kind: ItemKind::Text(typed, style::last_text()), page: w.cur, x, y, w: iw, h: TEXT_H, turn });
             }
         }
     });
@@ -2145,7 +2149,7 @@ pub(super) fn encodable(items: &[Item]) -> Result<Vec<Item>, Key> {
     items
         .iter()
         .map(|it| match &it.kind {
-            ItemKind::Text(s) | ItemKind::Date(s) if winansi::encode(s).is_none() => {
+            ItemKind::Text(s, _) | ItemKind::Date(s, _) if winansi::encode(s).is_none() => {
                 let m = paint::text_mark(s, it.w, it.h).ok_or(Key::SignSaveFailed)?;
                 Ok(Item { kind: ItemKind::Signature(Arc::new(m)), ..it.clone() })
             }
@@ -2331,7 +2335,7 @@ fn on_down(hwnd: HWND, lparam: LPARAM, double: bool) {
             }
             Hit::Item(i) if w.armed.is_none() => {
                 let is_text = w.doc.as_ref().and_then(|d| d.session.items.get(i)).is_some_and(|it| {
-                    matches!(it.kind, ItemKind::Text(_))
+                    matches!(it.kind, ItemKind::Text(..))
                 });
                 if double && is_text {
                     return Then::Text((x, y), Some(i));
@@ -2933,7 +2937,7 @@ mod tests {
         let t = with(hwnd, |w| {
             let page = w.cur;
             let d = w.doc.as_mut().expect("open");
-            let item = Item { kind: ItemKind::Text("Halo".into()), page, x: 50.0, y: 50.0, w: 30.0, h: 14.0, turn: Quarter::R0 };
+            let item = Item { kind: ItemKind::Text("Halo".into(), Default::default()), page, x: 50.0, y: 50.0, w: 30.0, h: 14.0, turn: Quarter::R0 };
             d.session.add(item)
         })
         .expect("added");
@@ -3043,7 +3047,7 @@ mod tests {
         assert_eq!(l.geoms.len(), 1);
         assert_eq!((l.geoms[0].w, l.geoms[0].h), (30.0, 15.0));
         let mut session = Session::new(l.geoms.clone());
-        session.add(Item { kind: ItemKind::Check, page: 0, x: 2.0, y: 2.0, w: 10.0, h: 10.0, turn: Quarter::R0 });
+        session.add(Item { kind: ItemKind::Check(Default::default()), page: 0, x: 2.0, y: 2.0, w: 10.0, h: 10.0, turn: Quarter::R0 });
         session.rotate_page(0);
         drop(l);
         let job = SaveJob::Image { path: path.clone(), fmt: ImageFormat::Png };
@@ -3248,7 +3252,7 @@ mod tests {
     fn text_outside_winansi_becomes_a_picture_for_the_pdf() {
         let _com = Com::init();
         let item = |s: &str| Item {
-            kind: ItemKind::Text(s.into()),
+            kind: ItemKind::Text(s.into(), Default::default()),
             page: 0,
             x: 10.0,
             y: 10.0,
@@ -3257,7 +3261,7 @@ mod tests {
             turn: Quarter::R90,
         };
         let out = encodable(&[item("Rp 1.500 \u{2013} Bu Siti"), item("\u{65E5}\u{672C}")]).unwrap();
-        assert!(matches!(&out[0].kind, ItemKind::Text(s) if s.contains('\u{2013}')));
+        assert!(matches!(&out[0].kind, ItemKind::Text(s, _) if s.contains('\u{2013}')));
         match &out[1].kind {
             ItemKind::Signature(m) => {
                 assert!(m.w > 0 && m.h > 0);
