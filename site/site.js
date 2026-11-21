@@ -2194,12 +2194,12 @@
     if (!pic || !cv || !sel || !toolBtns.length) return;
     var ctx = cv.getContext('2d');
     if (!ctx) return;
-    /* The selection box inside the picture, as fractions (matches .sel in style.css). */
     var turns = 0;
     /* Strokes are kept as (u, v) inside the selection box, so Turn can map
-       them with (u, v) to (1 - v, u). The box is landscape at rest and a
-       portrait one (about 360:640) after an odd number of turns, ending
-       above the tools bar. */
+       them with (u, v) to (1 - v, u). The box is given as fractions of the
+       picture (left, top, right, bottom): landscape at rest (LAND matches
+       .sel in style.css) and a portrait one (about 360:640) after an odd
+       number of turns, ending above the tools bar. */
     var LAND = [0.12, 0.22, 0.88, 0.76];
     var PORT = [0.41, 0.12, 0.59, 0.70];
     function box() { return turns % 2 ? PORT : LAND; }
@@ -2239,7 +2239,8 @@
         }
       });
     }
-    /* Strokes are kept as fractions of the picture, so a resize redraws them in place. */
+    /* The canvas follows the picture's size; the strokes are relative to the
+       selection box, so a resize redraws them in place. */
     var fx = {
       on: function () { return false; },
       read: function () { picBox = pic.getBoundingClientRect(); },
@@ -2262,9 +2263,9 @@
     function point(e) {
       var r = pic.getBoundingClientRect();
       var b = box();
-      var fx = (e.clientX - r.left) / Math.max(r.width, 1);
-      var fy = (e.clientY - r.top) / Math.max(r.height, 1);
-      return [clamp((fx - b[0]) / (b[2] - b[0]), 0, 1), clamp((fy - b[1]) / (b[3] - b[1]), 0, 1)];
+      var px = (e.clientX - r.left) / Math.max(r.width, 1);
+      var py = (e.clientY - r.top) / Math.max(r.height, 1);
+      return [clamp((px - b[0]) / (b[2] - b[0]), 0, 1), clamp((py - b[1]) / (b[3] - b[1]), 0, 1)];
     }
     sel.addEventListener('pointerdown', function (e) {
       if (e.pointerType === 'mouse' && e.button !== 0) return;
