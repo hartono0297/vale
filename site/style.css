@@ -582,8 +582,10 @@ html[data-theme="light"] .horizon { background: radial-gradient(closest-side, #F
 /* Three bodies, two sets of eyes. html[data-mascot] (set by site.js; absent
    without script, so the cat shows) picks the body and the eyes: the cat's
    (.ey-cat, the logo's 26 x 46) or the app's pills for the cockatiel and the
-   octopus (.ey-pill, 22.4 x 40 at x 84.8 / 148.8, y 140: the 64 grid times 4),
-   with happy and squint marks scaled from the cat's to match. All open eyes
+   octopus (.ey-pill, 22.4 x 40 at x 84.8 / 148.8, y 140: the 64 grid times 4).
+   Their happy arcs are the app's (the falk-happy sprite); the app has no
+   squint, so theirs is the cat's scaled to the pills, its outer points pulled
+   in 2.4 so the caps clear the cockatiel's cheeks. All open eyes
    sit in #cat-eyes, which the glance moves. The cockatiel and the octopus have
    dark eyes whatever the cat's coat (--eye always holds the cat's), and the
    octopus's face sits 12 units higher, as in its notch symbols. The crest
