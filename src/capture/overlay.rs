@@ -495,17 +495,26 @@ fn finish(choice: Option<Rect>) {
 }
 
 /// The picture the inline selection makes: the crop of the frame and the
-/// annotations moved onto it, as owned values. Reads the state without taking
-/// it, so a failed Copy leaves the overlay as it was. `None` outside the
-/// drawing phase or when the crop is empty.
+/// annotations moved onto it, as owned values. Turned in place, it is the
+/// turned crop the card shows, with the annotations as they are (already in
+/// its px). Reads the state without taking it, so a failed Copy leaves the
+/// overlay as it was. `None` outside the drawing phase or when the crop is
+/// empty.
 fn inline_picture() -> Option<(Rect, crate::capture::Shot, Vec<Annotation>)> {
     with(|s| {
         let Phase::Edit(e) = &s.phase else {
             return None;
         };
         let sel = e.sel;
+        let turns = e.session.turns();
+        let cut = || crop(s.frame.bgra(), s.frame.stride(), s.frame.rect(), sel);
+        if turns != 0 {
+            let shot = edit::lifted_shot(e)
+                .or_else(|| cut().map(|c| crate::shot_edit::rotate::turned(&c, turns)))?;
+            return Some((sel, shot, e.session.doc.clone()));
+        }
         let doc = edit::doc_in_crop(&e.session.doc, sel, s.frame.origin);
-        crop(s.frame.bgra(), s.frame.stride(), s.frame.rect(), sel).map(|shot| (sel, shot, doc))
+        cut().map(|shot| (sel, shot, doc))
     })
     .flatten()
 }
@@ -514,7 +523,7 @@ fn inline_picture() -> Option<(Rect, crate::capture::Shot, Vec<Annotation>)> {
 /// selection is cropped from the frame, the annotations moved onto the crop,
 /// and then an auto-copying Save puts it on the clipboard (on this thread,
 /// before the window goes), Save also writes it on a worker, and OpenEditor
-/// opens the editor on it. Anything else closes with nothing copied. A Copy
+/// opens the editor on it (turned in place: on the turned picture). Anything else closes with nothing copied. A Copy
 /// is never finished here: it goes through `edit::copy`, which touches no
 /// clipboard in the demo and keeps the overlay when the copy fails.
 /// Idempotent like `finish`.
@@ -576,8 +585,7 @@ fn finish_inline(kind: FinishKind) {
             }
             // The overlay closes first below, then the editor opens on the
             // crop (and follows its own rules, auto-copy included).
-            FinishKind::OpenEditor => editor = Some((shot, sel, doc, None)),
-            FinishKind::OpenEditorTurned(t) => editor = Some((shot, sel, doc, Some(t))),
+            FinishKind::OpenEditor => editor = Some((shot, sel, doc)),
             _ => {}
         }
     }
@@ -592,8 +600,8 @@ fn finish_inline(kind: FinishKind) {
         }
         // Otherwise detached: nobody waits.
     }
-    if let Some((shot, sel, doc, turn)) = editor {
-        crate::shot_edit::window::open_turned(shot, sel.center(), demo, doc, turn);
+    if let Some((shot, sel, doc)) = editor {
+        crate::shot_edit::window::open_turned(shot, sel.center(), demo, doc, None);
     } else if demo {
         // Nothing else will end the demo's message loop.
         unsafe { PostQuitMessage(0) };

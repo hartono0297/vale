@@ -1184,7 +1184,6 @@ keys! {
     EditRect => "Kotak", "Rectangle";
     EditLine => "Garis", "Line";
     InlineOpenEditor => "Buka di editor", "Open in editor";
-    InlineRotate => "Putar ke kanan, buka di editor", "Rotate right, open in editor";
     EditArrow => "Panah", "Arrow";
     EditPen => "Pena", "Pen";
     EditMarker => "Stabilo", "Marker";

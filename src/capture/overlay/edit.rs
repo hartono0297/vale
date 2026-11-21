@@ -9,13 +9,20 @@
 //! through the same painter and the same crop as the editor's, so what is
 //! seen is what is copied or saved.
 //!
+//! Turned in place (`session.turns() != 0`), the selection's crop is shown
+//! turned on a lifted card (`Lifted`, `Card`) and the annotations live in
+//! the turned crop's pixels instead, placed on the card by its view. The
+//! selection itself is fixed until it is turned back.
+//!
 //! Nothing runs at idle: no timer and no worker; a redraw happens when
 //! something changed.
+
+use std::sync::Arc;
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Direct2D::{
     D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, D2D1_ELLIPSE,
-    ID2D1RenderTarget, ID2D1SolidColorBrush,
+    ID2D1Bitmap, ID2D1RenderTarget, ID2D1SolidColorBrush,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, ReleaseCapture, SetCapture, SetFocus, VK_CONTROL, VK_MENU, VK_SHIFT,
@@ -31,15 +38,17 @@ use super::{Phase, State, black, invalidate, with};
 use crate::capture::inline::{
     BarLabels, Btn, CopyOutcome, Cursor, EscStep, FinishKind, InlineKey, KeyCtx, Layer,
     PAINT_ORDER, PANEL_GAP, Panel, SelHandle, SelectPress, Side, after_copy, bar_layout,
-    cursor_over, drag_handle, esc_step, grab_offset, inline_key, label_rect, move_sel, place_side,
-    select_press, separate, strip_layout, tip, tooltip_rect, ui_for,
+    card_local, card_press, cursor_on_card, cursor_over, drag_handle, esc_step, grab_offset,
+    has_changes, inline_key, label_rect, move_sel, place_side, select_press, separate,
+    strip_layout, tip, tooltip_rect, turn_shifts, turned_card, ui_for,
 };
-use crate::capture::{Rect, drag_rect, is_click, size_label, win};
+use crate::capture::win::Frozen;
+use crate::capture::{Rect, Shot, crop, drag_rect, is_click, size_label, win};
 use crate::i18n::{Key, tr};
 use crate::shot_edit::gfx::{Align, Gfx, bitmap, color, rect_f};
 use crate::shot_edit::icons::{Glyph, fill_round, glyph, line};
 use crate::shot_edit::paint::{Pix, draw_annotations_clipped, draw_selection};
-use crate::shot_edit::rotate::Turn;
+use crate::shot_edit::rotate::{Turn, turned};
 use crate::shot_edit::text::{
     self, TEXT_COMMIT, TextClick, TextEdit, edit_text, text_click_action, text_msg_is_current,
 };
@@ -84,6 +93,24 @@ pub(super) enum Drag {
     },
 }
 
+/// The selection's crop turned in place, as the card shows it.
+struct Lifted {
+    /// The quarter turns it was made for.
+    turns: u8,
+    shot: Arc<Shot>,
+    /// Made on the current render target; dropped with it.
+    bitmap: Option<ID2D1Bitmap>,
+}
+
+/// Where the turned selection shows: `rect` (virtual px) at `scale`, for a
+/// turned crop of `size` px.
+#[derive(Clone, Copy)]
+struct Card {
+    rect: Rect,
+    scale: f32,
+    size: (u32, u32),
+}
+
 /// The drawing phase's state.
 pub(super) struct Edit {
     /// The selection, virtual-screen px, always inside the frame.
@@ -106,6 +133,8 @@ pub(super) struct Edit {
     strip: Panel,
     bar: Panel,
     pub(super) pix: Pix,
+    /// The turned crop while `session.turns() != 0`.
+    lifted: Option<Lifted>,
 }
 
 impl Edit {
@@ -135,7 +164,56 @@ impl Edit {
                 text: None,
             },
             pix: Pix::default(),
+            lifted: None,
         }
+    }
+
+    /// The card while the selection is turned in place; `None` at 0 turns.
+    fn card(&self) -> Option<Card> {
+        let turns = self.session.turns();
+        if turns == 0 {
+            return None;
+        }
+        let (rect, scale) = turned_card(self.sel, turns, self.monitor, self.ui);
+        let (w, h) = (self.sel.w as u32, self.sel.h as u32);
+        let size = if turns % 2 == 1 { (h, w) } else { (w, h) };
+        Some(Card { rect, scale, size })
+    }
+
+    /// Where the selection shows on screen: itself, or its card.
+    fn shown(&self) -> Rect {
+        self.card().map_or(self.sel, |c| c.rect)
+    }
+
+    /// Annotation px to client px: the identity, or the card's placement
+    /// (`origin` is the frame's top-left).
+    fn view(&self, origin: (i32, i32)) -> View {
+        match self.card() {
+            Some(c) => View {
+                scale: c.scale,
+                ox: (c.rect.x - origin.0) as f32,
+                oy: (c.rect.y - origin.1) as f32,
+            },
+            None => View {
+                scale: 1.0,
+                ox: 0.0,
+                oy: 0.0,
+            },
+        }
+    }
+
+    /// A pointer (virtual px) as an annotation point: frame px, or turned
+    /// crop px through the card.
+    fn doc_pt(&self, env: &Env, p: (i32, i32)) -> Pt {
+        match self.card() {
+            Some(c) => card_local(p, c.rect, c.scale, c.size),
+            None => env.local(p),
+        }
+    }
+
+    /// Display px per annotation px.
+    fn scale(&self) -> f32 {
+        self.card().map_or(1.0, |c| c.scale)
     }
 
     fn button_at(&self, p: (i32, i32)) -> Option<Btn> {
@@ -156,8 +234,9 @@ impl Edit {
         (7.0 * self.ui).round() as i32
     }
 
+    /// In annotation px: a card shown smaller takes a wider reach.
     fn ann_tol(&self) -> f32 {
-        6.0 * self.ui
+        6.0 * self.ui / self.scale()
     }
 }
 
@@ -175,6 +254,8 @@ struct Env<'a> {
     gfx: &'a Gfx,
     /// The frame in virtual px.
     frame: Rect,
+    /// The frame itself (the crop a turn lifts comes from it).
+    frozen: &'a Frozen,
     demo: bool,
 }
 
@@ -203,6 +284,7 @@ fn ed<R>(f: impl FnOnce(&mut Edit, &Env) -> R) -> Option<R> {
         let env = Env {
             gfx,
             frame: frame.rect(),
+            frozen: frame,
             demo: *demo,
         };
         Some(f(e, &env))
@@ -223,8 +305,9 @@ fn measure_labels(gfx: &Gfx, ui: f32) -> BarLabels {
     }
 }
 
-/// Places the strip and the bar around the selection (and takes the DPI of
-/// its monitor, so a selection moved to another one is sized for it).
+/// Places the strip and the bar around the selection, or its card while it
+/// is turned (and takes the DPI of its monitor, so a selection moved to
+/// another one is sized for it).
 fn relayout(e: &mut Edit, gfx: &Gfx) {
     let (monitor, dpi) = win::monitor_at(e.sel.center());
     let ui = ui_for(dpi);
@@ -233,18 +316,20 @@ fn relayout(e: &mut Edit, gfx: &Gfx) {
         e.labels = measure_labels(gfx, ui);
     }
     e.monitor = monitor;
+    // After the monitor and the scale: the card is placed on them.
+    let around = e.shown();
     let gap = (PANEL_GAP * ui).round() as i32;
     let margin = (16.0 * ui).round() as i32;
     let strip = strip_layout(ui, monitor.h - 2 * margin);
     let strip_at = place_side(
-        e.sel,
+        around,
         (strip.rect.w, strip.rect.h),
         monitor,
         Side::Right,
         gap,
     );
     let bar = bar_layout(ui, &e.labels, e.confirm);
-    let bar_at = place_side(e.sel, (bar.rect.w, bar.rect.h), monitor, Side::Below, gap);
+    let bar_at = place_side(around, (bar.rect.w, bar.rect.h), monitor, Side::Below, gap);
     let bar_at = separate(bar_at, strip_at, monitor, gap);
     e.strip = strip.moved_to(strip_at.x, strip_at.y);
     e.bar = bar.moved_to(bar_at.x, bar_at.y);
@@ -274,6 +359,47 @@ pub(super) fn doc_in_crop(doc: &[Annotation], sel: Rect, origin: (i32, i32)) -> 
             a
         })
         .collect()
+}
+
+/// The lifted crop follows `session.turns()` (after a turn, an undo or a
+/// redo): made again for new turns, gone at 0, and the panels move around
+/// the card. The mosaics go too: they were cut from the other picture.
+fn sync_turns(e: &mut Edit, env: &Env) {
+    let turns = e.session.turns();
+    if e.lifted.as_ref().map_or(0, |l| l.turns) == turns {
+        return;
+    }
+    e.pix.clear();
+    e.lifted = (turns != 0)
+        .then(|| {
+            let f = env.frozen;
+            crop(f.bgra(), f.stride(), f.rect(), e.sel)
+        })
+        .flatten()
+        .map(|c| Lifted {
+            turns,
+            shot: Arc::new(turned(&c, turns)),
+            bitmap: None,
+        });
+    relayout(e, env.gfx);
+}
+
+/// Turns the selection a quarter in place: the annotations turn with it in
+/// one undo step (carried between frame px and crop px, see `turn_shifts`).
+fn turn_in_place(e: &mut Edit, env: &Env, turn: Turn) {
+    let origin = (env.frame.x, env.frame.y);
+    let (pre, post, size) = turn_shifts(e.sel, origin, e.session.turns(), turn);
+    e.session.rotate_shifted(turn, size, pre, post);
+    sync_turns(e, env);
+}
+
+/// The turned crop as the card shows it (`None` at 0 turns).
+pub(super) fn lifted_shot(e: &Edit) -> Option<Shot> {
+    let turns = e.session.turns();
+    e.lifted
+        .as_ref()
+        .filter(|l| turns != 0 && l.turns == turns)
+        .map(|l| (*l.shot).clone())
 }
 
 // ---- text ----
@@ -329,12 +455,14 @@ fn begin_text(hwnd: HWND, pos: Pt, index: Option<usize>) {
     commit_text(hwnd);
     struct Plan {
         pos: Pt,
+        client_pos: (f32, f32),
         initial: String,
         size: f32,
+        view_scale: f32,
         color: u32,
         ui: f32,
     }
-    let plan = ed(|e, _| {
+    let plan = ed(|e, env| {
         let (initial, size, color, pos) = match index.and_then(|i| e.session.doc.get(i)) {
             Some(Annotation::Text {
                 text,
@@ -349,20 +477,23 @@ fn begin_text(hwnd: HWND, pos: Pt, index: Option<usize>) {
                 pos,
             ),
         };
+        // The identity, or the card's: the EDIT sits where the text shows.
+        let view = e.view((env.frame.x, env.frame.y));
         Plan {
             pos,
+            client_pos: view.to_view(pos),
             initial,
             size,
+            view_scale: view.scale,
             color,
             ui: e.ui,
         }
     });
     let Some(plan) = plan else { return };
-    // The view is the identity: a text px is a screen px.
-    let px = plan.size.round().max(8.0 * plan.ui);
+    let px = (plan.size * plan.view_scale).round().max(8.0 * plan.ui);
     let Some(mut t) = text::create(
         hwnd,
-        (plan.pos.x, plan.pos.y),
+        plan.client_pos,
         &plan.initial,
         px,
         plan.color,
@@ -390,7 +521,7 @@ fn begin_text(hwnd: HWND, pos: Pt, index: Option<usize>) {
 
 /// Grows the EDIT with its text.
 pub(super) fn fit_edit(hwnd: HWND) {
-    let plan = ed(|e, _| e.text.as_ref().map(|t| (t.edit, t.size, e.ui))).flatten();
+    let plan = ed(|e, _| e.text.as_ref().map(|t| (t.edit, t.size * e.scale(), e.ui))).flatten();
     let Some((edit, px, ui)) = plan else { return };
     text::fit(hwnd, edit, px, ui, |s| {
         ed(|_, env| env.gfx.measure(s, px, 400)).unwrap_or((0.0, 0.0))
@@ -477,8 +608,9 @@ pub(super) fn on_down(hwnd: HWND, lparam: LPARAM, double: bool) {
 
 /// A press on the picture with the current tool.
 fn press(e: &mut Edit, env: &Env, p: (i32, i32), double: bool, edit_was_open: bool) -> Down {
-    let pl = env.local(p);
-    let inside = e.sel.contains(p);
+    let pl = e.doc_pt(env, p);
+    let card = e.card();
+    let inside = e.shown().contains(p);
     match e.session.tool {
         Tool::Select => {
             let tol = e.ann_tol();
@@ -492,14 +624,18 @@ fn press(e: &mut Edit, env: &Env, p: (i32, i32), double: bool, edit_was_open: bo
             // `select_press` takes either only for a press inside the
             // selection: outside it the picture is clipped away.
             let hit = e.session.hit(pl, tol);
-            let press = select_press(
-                e.sel,
-                p,
-                e.handle_tol(),
-                handle.is_some(),
-                hit.is_some(),
-                !e.session.doc.is_empty(),
-            );
+            let press = match card {
+                // Turned: the selection is fixed, only annotations are taken.
+                Some(c) => card_press(c.rect, p, handle.is_some(), hit.is_some()),
+                None => select_press(
+                    e.sel,
+                    p,
+                    e.handle_tol(),
+                    handle.is_some(),
+                    hit.is_some(),
+                    !e.session.doc.is_empty(),
+                ),
+            };
             match press {
                 SelectPress::AnnotationHandle => {
                     let (idx, handle) = handle.expect("said so");
@@ -555,8 +691,9 @@ fn press(e: &mut Edit, env: &Env, p: (i32, i32), double: bool, edit_was_open: bo
             _ => Down::Idle,
         },
         tool => {
-            // A drawing tool starts on a press inside the selection; the
-            // stroke may go on outside it (it is clipped).
+            // A drawing tool starts on a press inside the selection (its
+            // card while turned); the stroke may go on outside it (it is
+            // clipped).
             if !inside {
                 return Down::Idle;
             }
@@ -654,7 +791,7 @@ pub(super) fn on_move(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
         let Some(drag) = e.drag.as_ref() else {
             return changed;
         };
-        let pl = env.local(p);
+        let pl = e.doc_pt(env, p);
         let bounds = env.frame;
         match drag {
             Drag::Draw { idx, from } => {
@@ -778,15 +915,23 @@ fn do_btn(hwnd: HWND, btn: Btn) {
             ed(|e, _| e.session.pick_stroke(i.min(STROKES.len() - 1)));
         }
         Btn::Undo => {
-            ed(|e, _| e.session.undo());
+            ed(|e, env| {
+                e.session.undo();
+                sync_turns(e, env);
+            });
         }
         Btn::Redo => {
-            ed(|e, _| e.session.redo());
+            ed(|e, env| {
+                e.session.redo();
+                sync_turns(e, env);
+            });
         }
         Btn::Copy => copy(),
         Btn::Save => super::finish_inline(FinishKind::Save),
         Btn::OpenEditor => super::finish_inline(FinishKind::OpenEditor),
-        Btn::Rotate => super::finish_inline(FinishKind::OpenEditorTurned(Turn::Right)),
+        Btn::Rotate => {
+            ed(|e, env| turn_in_place(e, env, Turn::Right));
+        }
         Btn::Close => esc(hwnd, FinishKind::Close),
         Btn::Discard => super::finish_inline(FinishKind::Discard),
         Btn::Keep => keep(hwnd),
@@ -889,7 +1034,7 @@ fn key_ctx(e: &Edit) -> KeyCtx {
     KeyCtx {
         editing_text: e.text.is_some(),
         confirm: e.confirm,
-        has_annotations: !e.session.doc.is_empty(),
+        has_annotations: has_changes(!e.session.doc.is_empty(), e.session.turns()),
         dragging: e.drag.is_some(),
         repeat: false,
     }
@@ -943,7 +1088,12 @@ pub(super) fn on_key(hwnd: HWND, vk: u16, repeat: bool) {
         InlineKey::Keep => keep(hwnd),
         InlineKey::Undo => do_btn(hwnd, Btn::Undo),
         InlineKey::Redo => do_btn(hwnd, Btn::Redo),
-        InlineKey::Rotate(t) => super::finish_inline(FinishKind::OpenEditorTurned(t)),
+        InlineKey::Rotate(t) => {
+            // As the button: a text being typed goes into the picture first.
+            commit_text(hwnd);
+            ed(|e, env| turn_in_place(e, env, t));
+            invalidate(hwnd);
+        }
         InlineKey::Delete => {
             ed(|e, _| e.session.delete_selected());
             invalidate(hwnd);
@@ -972,7 +1122,10 @@ pub(super) fn set_cursor() {
         if e.confirm || e.over_panel(p) {
             return Cursor::Arrow;
         }
-        cursor_over(e.sel, p, e.handle_tol(), e.session.tool)
+        match e.card() {
+            Some(c) => cursor_on_card(c.rect, p, e.session.tool),
+            None => cursor_over(e.sel, p, e.handle_tol(), e.session.tool),
+        }
     })
     .unwrap_or(Cursor::Arrow);
     let id: PCWSTR = match shape {
@@ -1193,6 +1346,12 @@ pub(super) fn draw(s: &mut State) -> windows::core::Result<()> {
     if s.target.is_none() {
         s.target = Some(s.gfx.hwnd_target(s.hwnd, (w, h))?);
         s.picture = None;
+        // The card's bitmap belonged to the old target too.
+        if let Phase::Edit(e) = &mut s.phase
+            && let Some(l) = &mut e.lifted
+        {
+            l.bitmap = None;
+        }
     }
     let State {
         target,
@@ -1226,14 +1385,30 @@ pub(super) fn draw(s: &mut State) -> windows::core::Result<()> {
         origin,
     };
     let (full_w, full_h) = (w as f32, h as f32);
-    let sel = p.rect(e.sel);
-    // The part the picture keeps, in whole frame px.
-    let clip = (sel.x as u32, sel.y as u32, sel.w as u32, sel.h as u32);
-    let view = View {
-        scale: 1.0,
-        ox: 0.0,
-        oy: 0.0,
+    let card = e.card();
+    // Turned: the turned crop and its bitmap (made once per target and turn).
+    let lifted = match (card, e.lifted.as_mut()) {
+        (Some(_), Some(l)) => {
+            if l.bitmap.is_none() {
+                l.bitmap = Some(bitmap(rt, l.shot.w, l.shot.h, &l.shot.bgra)?);
+            }
+            l.bitmap.clone().map(|b| (Arc::clone(&l.shot), b))
+        }
+        _ => None,
     };
+    // What stays bright: the selection, or its card while turned.
+    let sel = p.rect(e.shown());
+    // The annotations' picture and the part of it kept (whole px): the
+    // frame and the selection, or the turned crop, all of it (the export's
+    // own mosaic rule, so the card shows what is copied).
+    let (base, clip) = match &lifted {
+        Some((shot, _)) => (&**shot, None),
+        None => (
+            &*frame.shot,
+            Some((sel.x as u32, sel.y as u32, sel.w as u32, sel.h as u32)),
+        ),
+    };
+    let view = e.view(origin);
     unsafe {
         rt.BeginDraw();
     }
@@ -1262,6 +1437,19 @@ pub(super) fn draw(s: &mut State) -> windows::core::Result<()> {
                 dim(0.0, sel.y, sel.x, sel.h);
                 dim(sel.right(), sel.y, full_w - sel.right(), sel.h);
             },
+            Layer::Card => {
+                if let Some((_, b)) = &lifted {
+                    unsafe {
+                        rt.DrawBitmap(
+                            b,
+                            Some(&rect_f(sel.x, sel.y, sel.w, sel.h)),
+                            1.0,
+                            D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+                            None,
+                        );
+                    }
+                }
+            }
             Layer::Annotations => {
                 unsafe {
                     rt.PushAxisAlignedClip(
@@ -1274,12 +1462,12 @@ pub(super) fn draw(s: &mut State) -> windows::core::Result<()> {
                     rt,
                     brush,
                     gfx,
-                    &frame.shot,
+                    base,
                     &e.session.doc,
                     &view,
                     editing,
                     &mut e.pix,
-                    Some(clip),
+                    clip,
                 );
                 if editing.is_none()
                     && let Some(a) = e.session.selected.and_then(|i| e.session.doc.get(i))
@@ -1299,17 +1487,23 @@ pub(super) fn draw(s: &mut State) -> windows::core::Result<()> {
                 rt.DrawRectangle(&b, brush, 1.0, &gfx.dash);
             },
             Layer::Label => {
-                let label = size_label(e.sel);
+                // The size of what is kept: the turned one while turned.
+                let label = match card {
+                    Some(c) => size_label(Rect::new(0, 0, c.size.0 as i32, c.size.1 as i32)),
+                    None => size_label(e.sel),
+                };
                 let lw = gfx.measure(&label, 12.0 * ui, 500).0 + 16.0 * ui;
                 let lh = 22.0 * ui;
                 let at = label_rect(
-                    e.sel,
+                    e.shown(),
                     (lw.ceil() as i32, lh.ceil() as i32),
                     e.monitor,
                     (6.0 * ui).round() as i32,
                 );
                 p.pill(p.rect(at), &label, 12.0 * ui);
             }
+            // Turned, the selection cannot be resized: no handles.
+            Layer::Handles if card.is_some() => {}
             Layer::Handles => {
                 let hs = 3.5 * ui;
                 for handle in SelHandle::ALL {
