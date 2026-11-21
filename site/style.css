@@ -754,6 +754,16 @@ html[data-theme="light"] .screen { box-shadow: 0 30px 80px -30px rgba(40, 24, 16
 .bp-dock { display: flex; align-items: flex-end; justify-content: center; gap: 6px; height: 34px; opacity: var(--z); }
 .bp-dock svg { flex: none; width: 20px; height: 20px; color: var(--scr-2); transform-origin: 50% 100%; transform: scale(var(--s, 1)); }
 .bp-dock svg.on { color: #E2683C; }
+/* Short wide screens (1024 x 600): the pages area is about 121 px, so the Record
+   page (the tallest, 137 px) takes a smaller button and tighter rows to clear
+   the dock row. Phones have their own sizes below. */
+@media (min-width: 40.01em) and (max-height: 40em) {
+  .bp-pg .rec-top { margin-bottom: 4px; }
+  .bp-pg .rec-btn { width: 32px; height: 32px; }
+  .bp-pg .rec-btn::after { inset: 6px; }
+  .bp-pg .rec-sw { padding: 1px 0; }
+  .bp-pg .rr { padding: 4px 0; }
+}
 @media (max-width: 40em) {
   .screen { aspect-ratio: 5 / 4; padding: 5px; border-radius: 14px; }
   .bigpanel { width: 94%; height: 88%; padding: 8px 12px; border-radius: 0 0 18px 18px; }
