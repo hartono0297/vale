@@ -36,9 +36,6 @@ use crate::sign::{ItemKind, Mark, Quarter, raster, text_draw};
 use crate::theme;
 use crate::ui::geometry::Rect;
 
-/// Ink blue `#1F3A8A`, the colour of placed text and checks (as the PDF
-/// writer and the image writer draw them).
-pub(super) const INK: u32 = 0x1F3A8A;
 /// The stage behind the page: a step darker than the window, so the white
 /// page reads as the one lifted object.
 const STAGE_DARK: u32 = 0x15110E;

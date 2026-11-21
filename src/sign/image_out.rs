@@ -25,7 +25,7 @@ use windows::Win32::System::Com::{
 };
 use windows::Win32::System::Variant::{VARIANT, VT_R4};
 use windows::Win32::UI::Shell::SHCreateMemStream;
-use windows::core::{Interface, PWSTR, w};
+use windows::core::{Interface, PWSTR};
 use windows_numerics::{Matrix3x2, Vector2};
 
 use crate::phone::thumb::{MAX_BYTES, oriented_source};
@@ -458,6 +458,7 @@ mod tests {
     use crate::sign::geom::{item_view_rect, page_to_view};
     use std::sync::Arc;
     use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
+    use windows::core::w;
 
     struct Com(bool);
     impl Com {

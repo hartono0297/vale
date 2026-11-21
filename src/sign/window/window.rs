@@ -52,7 +52,7 @@ use windows::core::{Error, HSTRING, PCWSTR, w};
 use super::layout::{
     self, Corner, Footer, Hit, Labels, Layout, Popover, RailRow, Scene, Spec, StageMode, Tool,
 };
-use super::text_edit::{self, EDIT_CANCEL, EDIT_COMMIT, EDIT_TAB, Field, WM_SIGN_EDIT};
+use super::text_edit::{self, EDIT_BOLD, EDIT_CANCEL, EDIT_ITALIC, EDIT_UNDERLINE, EDIT_COMMIT, EDIT_TAB, Field, WM_SIGN_EDIT};
 use super::{Report, maker, paint};
 use crate::i18n::{Key, Lang, lang, tr};
 use crate::shot_edit::gfx::{Gfx, Target};
@@ -289,7 +289,9 @@ pub(super) struct Win {
     pub rail_scroll: f32,
     /// The Teks EDIT and the item it edits (`None`: a new one at the page
     /// point).
-    pub text: Option<(Field, Option<usize>, (f32, f32))>,
+    /// The Teks EDIT, the item it edits, where it sits on the page, and the
+    /// pending style (kept out of the session until it is committed).
+    pub text: Option<(Field, Option<usize>, (f32, f32), style::TextStyle)>,
     pub password: Option<Field>,
     pending: Option<Arc<Vec<u8>>>,
     pub maker: Option<HWND>,
@@ -2027,53 +2029,62 @@ fn nudge_selected(hwnd: HWND, dx: f32, dy: f32) {
 
 /// Opens the Teks EDIT at client point `at` (new), or over item `index`.
 fn begin_text(hwnd: HWND, at: (f32, f32), index: Option<usize>) {
-    open_text(hwnd, at, index, None, true);
+    open_text(hwnd, at, index, None, true, None);
 }
 
 /// The Teks EDIT at client point `at` (new) or over item `index`, holding
 /// `typed` when given (else the item's text, or nothing). Returns its HWND.
-fn open_text(hwnd: HWND, at: (f32, f32), index: Option<usize>, typed: Option<String>, focus: bool) -> Option<HWND> {
+fn open_text(
+    hwnd: HWND,
+    at: (f32, f32),
+    index: Option<usize>,
+    typed: Option<String>,
+    focus: bool,
+    pending: Option<style::TextStyle>,
+) -> Option<HWND> {
     commit_text(hwnd);
     let plan = with(hwnd, |w| {
         let v = view(w)?;
-        let (initial, h_pt, rect) = match index.and_then(|i| w.doc.as_ref()?.session.items.get(i)) {
+        let (initial, h_pt, rect, st) = match index.and_then(|i| w.doc.as_ref()?.session.items.get(i)) {
             Some(it) => {
-                let ItemKind::Text(s, _) = &it.kind else { return None };
-                (s.clone(), it.h, v.item_rect(it))
+                let ItemKind::Text(s, st) = &it.kind else { return None };
+                (s.clone(), it.h, v.item_rect(it), *st)
             }
             None => {
                 let h = TEXT_H * v.scale;
-                (String::new(), TEXT_H, Rect { x: at.0, y: at.1 - h / 2.0, w: 0.0, h })
+                (String::new(), TEXT_H, Rect { x: at.0, y: at.1 - h / 2.0, w: 0.0, h }, style::last_text())
             }
         };
         w.armed = None;
         w.selected = None;
-        Some((initial, h_pt * v.scale, rect, v.to_page(at.0, at.1), ui_of(w)))
+        Some((initial, h_pt * v.scale, rect, v.to_page(at.0, at.1), ui_of(w), st))
     })
     .flatten();
-    let (initial, h_px, rect, page_at, ui) = plan?;
+    let (initial, h_px, rect, page_at, ui, planned) = plan?;
+    let st = pending.unwrap_or(planned);
+    let face = HSTRING::from(st.family.face());
     let initial = typed.unwrap_or(initial);
     let px = (h_px * TEXT_FILL).max(8.0 * ui);
     let spec = text_edit::Spec {
         rect: (rect.x as i32, rect.y as i32, (rect.w + px * 4.0).max(160.0 * ui) as i32, (px * 1.5) as i32),
         initial: &initial,
         px,
-        face: w!("Arial"),
-        color: paint::INK,
+        face: PCWSTR(face.as_ptr()),
+        color: st.tint.rgb(),
         back: 0xFFFFFF,
         password: false,
         commit_on_blur: true,
-        bold: false,
-        italic: false,
-        underline: false,
-        format_keys: false,
+        bold: st.bold,
+        italic: st.italic,
+        underline: st.underline,
+        format_keys: true,
     };
     let f = text_edit::create(hwnd, &spec)?;
     let edit = f.edit;
     let mut slot = Some(f);
     with(hwnd, |w| {
         if let Some(f) = slot.take() {
-            w.text = Some((f, index, page_at));
+            w.text = Some((f, index, page_at, st));
             say(w, Key::SignTextHint, Tone::Hint);
         }
     });
@@ -2092,7 +2103,7 @@ fn open_text(hwnd: HWND, at: (f32, f32), index: Option<usize>, typed: Option<Str
 /// The Teks EDIT made again where its text sits on the page as shown now
 /// (after a scale change): same text, same caret, the focus kept.
 fn rebuild_text(hwnd: HWND) {
-    let Some(Some((f, index, page_at))) = with(hwnd, |w| w.text.take()) else { return };
+    let Some(Some((f, index, page_at, st))) = with(hwnd, |w| w.text.take()) else { return };
     let typed = text_edit::text(f.edit);
     let caret = text_edit::selection(f.edit);
     let had_focus = unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetFocus() } == f.edit;
@@ -2106,7 +2117,7 @@ fn rebuild_text(hwnd: HWND) {
     })
     .flatten()
     .unwrap_or_default();
-    if let Some(edit) = open_text(hwnd, at, index, Some(typed), had_focus) {
+    if let Some(edit) = open_text(hwnd, at, index, Some(typed), had_focus, Some(st)) {
         text_edit::select(edit, caret);
     }
 }
@@ -2136,11 +2147,7 @@ fn rescale_fields(hwnd: HWND) {
 /// Grows the Teks EDIT with what is typed.
 fn fit_text(hwnd: HWND) {
     with(hwnd, |w| {
-        let Some((f, index, _)) = &w.text else { return };
-        let st = match index.and_then(|i| w.doc.as_ref()?.session.items.get(i)).map(|it| &it.kind) {
-            Some(ItemKind::Text(_, st)) => *st,
-            _ => style::last_text(),
-        };
+        let Some((f, _, _, st)) = &w.text else { return };
         let ui = ui_of(w);
         let s = text_edit::text(f.edit);
         let mut r = RECT::default();
@@ -2153,10 +2160,32 @@ fn fit_text(hwnd: HWND) {
         }
         let h = r.bottom - r.top;
         let px = h as f32 / 1.5;
-        let tw = text_draw::width(&w.gfx.dwrite, &format!("{s}MM"), &st, px);
+        let tw = text_draw::width(&w.gfx.dwrite, &format!("{s}MM"), st, px);
         let width = tw.max(160.0 * ui) as i32;
         text_edit::move_to(f.edit, pt.x, pt.y, width, h);
     });
+}
+
+/// Ctrl+B / I / U in the Teks EDIT: the pending style changes and the EDIT
+/// shows it at once. The session is not touched.
+fn toggle_pending(hwnd: HWND, code: usize) {
+    with(hwnd, |w| {
+        let Some((f, _, _, st)) = &mut w.text else { return };
+        match code {
+            EDIT_BOLD => st.bold = !st.bold,
+            EDIT_ITALIC => st.italic = !st.italic,
+            EDIT_UNDERLINE => st.underline = !st.underline,
+            _ => return,
+        }
+        let mut r = RECT::default();
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::GetWindowRect(f.edit, &mut r);
+        }
+        let px = (r.bottom - r.top) as f32 / 1.5;
+        let face = HSTRING::from(st.family.face());
+        text_edit::restyle(f, PCWSTR(face.as_ptr()), px, st.bold, st.italic, st.underline, st.tint.rgb());
+    });
+    fit_text(hwnd);
 }
 
 fn commit_text(hwnd: HWND) -> bool {
@@ -2164,7 +2193,7 @@ fn commit_text(hwnd: HWND) -> bool {
 }
 
 fn finish_text(hwnd: HWND, keep: bool) -> bool {
-    let Some(Some((f, index, at))) = with(hwnd, |w| w.text.take()) else { return false };
+    let Some(Some((f, index, at, pending))) = with(hwnd, |w| w.text.take()) else { return false };
     let typed = text_edit::text(f.edit).trim().to_owned();
     text_edit::destroy(f);
     with(hwnd, |w| {
@@ -2174,6 +2203,7 @@ fn finish_text(hwnd: HWND, keep: bool) -> bool {
         if !keep || typed.is_empty() {
             return;
         }
+        style::set_last_text(pending);
         let Some(v) = view(w) else { return };
         let width = |h: f32, st: &style::TextStyle| {
             text_draw::width(&w.gfx.dwrite, &typed, st, h * TEXT_FILL) + 2.0
@@ -2182,21 +2212,17 @@ fn finish_text(hwnd: HWND, keep: bool) -> bool {
             Some(i) => {
                 let Some(d) = &mut w.doc else { return };
                 let Some(old) = d.session.items.get(i).cloned() else { return };
-                if matches!(&old.kind, ItemKind::Text(t, _) if *t == typed) {
+                if matches!(&old.kind, ItemKind::Text(t, st) if *t == typed && *st == pending) {
                     // Nothing changed: no undo step, nothing to save.
                     w.selected = Some(i);
                     return;
                 }
-                let old_style = match &old.kind {
-                    ItemKind::Text(_, st) => *st,
-                    _ => style::last_text(),
-                };
-                let nw = width(old.h, &old_style).max(8.0);
+                let nw = width(old.h, &pending).max(8.0);
                 // One undo step: the resize takes the snapshot, the text
-                // changes with it.
+                // and style change with it.
                 d.session.resize_item(i, nw, old.h);
                 if let Some(it) = d.session.items.get_mut(i) {
-                    it.kind = ItemKind::Text(typed, old_style);
+                    it.kind = ItemKind::Text(typed, pending);
                     let (bw, bh) = geom::occupied(it);
                     (it.x, it.y) = layout::clamp_into(it.x, it.y, bw, bh, v.g.w, v.g.h);
                 }
@@ -2204,7 +2230,7 @@ fn finish_text(hwnd: HWND, keep: bool) -> bool {
             }
             None => {
                 let turn = geom::upright_turn(v.g, v.extra);
-                let iw = width(TEXT_H, &style::last_text()).max(8.0);
+                let iw = width(TEXT_H, &pending).max(8.0);
                 // The EDIT's left edge and middle are where the text sits.
                 let (bw, bh) = if matches!(turn, Quarter::R90 | Quarter::R270) { (TEXT_H, iw) } else { (
                     iw,
@@ -2216,7 +2242,7 @@ fn finish_text(hwnd: HWND, keep: bool) -> bool {
                     v.to_page(p.0 + v.page.x + iw * v.scale / 2.0, p.1 + v.page.y)
                 };
                 let (x, y) = layout::clamp_into(cx - bw / 2.0, cy - bh / 2.0, bw, bh, v.g.w, v.g.h);
-                add_item(w, Item { kind: ItemKind::Text(typed, style::last_text()), page: w.cur, x, y, w: iw, h: TEXT_H, turn });
+                add_item(w, Item { kind: ItemKind::Text(typed, pending), page: w.cur, x, y, w: iw, h: TEXT_H, turn });
             }
         }
     });
@@ -2946,6 +2972,7 @@ extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
                     EDIT_CANCEL => {
                         finish_text(hwnd, false);
                     }
+                    EDIT_BOLD | EDIT_ITALIC | EDIT_UNDERLINE => toggle_pending(hwnd, wparam.0),
                     _ => {
                         commit_text(hwnd);
                     }
@@ -3228,6 +3255,72 @@ mod tests {
         finish_text(hwnd, false);
 
         format_controls_behave(hwnd);
+        pending_style_behaves(hwnd);
+    }
+
+    /// Ctrl+B/I/U while typing: the pending style, its commit and Escape.
+    fn pending_style_behaves(hwnd: HWND) {
+        use style::{TextStyle, Tint};
+        let _lock = style::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let set = |edit: HWND, s: &str| unsafe {
+            let h = HSTRING::from(s);
+            let _ = windows::Win32::UI::WindowsAndMessaging::SetWindowTextW(edit, &h);
+        };
+        let pending = |hwnd| with(hwnd, |w| w.text.as_ref().map(|t| t.3)).flatten();
+        let edit = |hwnd| with(hwnd, |w| w.text.as_ref().map(|t| t.0.edit)).flatten().expect("an EDIT");
+        let items = |hwnd| with(hwnd, |w| w.doc.as_ref().map_or(0, |d| d.session.items.len())).unwrap_or(0);
+        let kind = |hwnd, i: usize| with(hwnd, |w| w.doc.as_ref().map(|d| d.session.items[i].kind.clone())).flatten();
+
+        // A new text starts from the last-used style; Ctrl+B/U change only the
+        // pending one and touch no session.
+        let red = TextStyle { tint: Tint::Red, ..Default::default() };
+        style::set_last_text(red);
+        let centre = with(hwnd, |w| view(w).map(|v| (v.page.x + v.page.w / 2.0, v.page.y + v.page.h / 2.0)))
+            .flatten()
+            .expect("page");
+        let (n0, steps) = (items(hwnd), undo_steps(hwnd));
+        begin_text(hwnd, centre, None);
+        assert_eq!(pending(hwnd), Some(red));
+        set(edit(hwnd), "Halo");
+        toggle_pending(hwnd, EDIT_BOLD);
+        toggle_pending(hwnd, EDIT_UNDERLINE);
+        let want = TextStyle { bold: true, underline: true, tint: Tint::Red, ..Default::default() };
+        assert_eq!(pending(hwnd), Some(want));
+        assert_eq!((items(hwnd), undo_steps(hwnd)), (n0, steps), "the session is untouched");
+        toggle_pending(hwnd, EDIT_ITALIC);
+        toggle_pending(hwnd, EDIT_ITALIC);
+        assert_eq!(pending(hwnd), Some(want));
+
+        // Enter: the new item has the pending style and it is the last-used.
+        assert!(finish_text(hwnd, true));
+        assert_eq!(items(hwnd), n0 + 1);
+        assert_eq!(kind(hwnd, n0), Some(ItemKind::Text("Halo".into(), want)));
+        assert_eq!(style::last_text(), want);
+
+        // Editing it again: same text, new style is one undo step; the same
+        // style again is none.
+        let steps = undo_steps(hwnd);
+        begin_text(hwnd, (0.0, 0.0), Some(n0));
+        assert_eq!(pending(hwnd), Some(want));
+        toggle_pending(hwnd, EDIT_BOLD);
+        assert!(finish_text(hwnd, true));
+        let plain_u = TextStyle { bold: false, underline: true, tint: Tint::Red, ..Default::default() };
+        assert_eq!(kind(hwnd, n0), Some(ItemKind::Text("Halo".into(), plain_u)));
+        assert_eq!(undo_steps(hwnd), steps + 1, "one step for the style");
+        assert_eq!(style::last_text(), plain_u);
+        begin_text(hwnd, (0.0, 0.0), Some(n0));
+        assert!(finish_text(hwnd, true));
+        assert_eq!(undo_steps(hwnd), steps + 1, "unchanged: no step");
+
+        // Escape drops the typed text and the pending style; last-used stays.
+        begin_text(hwnd, (0.0, 0.0), Some(n0));
+        set(edit(hwnd), "Lain");
+        toggle_pending(hwnd, EDIT_ITALIC);
+        finish_text(hwnd, false);
+        assert_eq!(kind(hwnd, n0), Some(ItemKind::Text("Halo".into(), plain_u)));
+        assert_eq!(style::last_text(), plain_u);
+        assert_eq!(undo_steps(hwnd), steps + 1);
+        style::set_last_text(TextStyle::default());
     }
 
     /// The format controls of the item bar, on the open window.
@@ -3573,6 +3666,18 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn encodable_keeps_style() {
+        let _com = Com::init();
+        let st = style::TextStyle { bold: true, tint: style::Tint::Red, ..Default::default() };
+        let it = Item { kind: ItemKind::Text("\u{65E5}\u{672C}".into(), st), page: 0, x: 0.0, y: 0.0, w: 80.0, h: 14.0, turn: Quarter::R0 };
+        let out = encodable(&[it]).unwrap();
+        let ItemKind::Signature(m) = &out[0].kind else { panic!("{:?}", out[0].kind) };
+        let solid: Vec<&[u8]> = m.rgba.chunks(4).filter(|p| p[3] > 200).collect();
+        assert!(!solid.is_empty());
+        assert!(solid.iter().all(|p| p[0] > 140 && p[1] < 60 && p[2] < 60), "0xA61B1B ink");
     }
 
     #[test]
