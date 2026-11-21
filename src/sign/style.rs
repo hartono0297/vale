@@ -85,6 +85,11 @@ impl TextStyle {
     }
 }
 
+/// Tests that set or depend on the last-used style take this lock, since
+/// the last-used statics are process-wide and tests run in parallel.
+#[cfg(test)]
+pub(crate) static TEST_LOCK: Mutex<()> = Mutex::new(());
+
 static LAST_TEXT: Mutex<TextStyle> = Mutex::new(TextStyle {
     family: Family::Sans,
     bold: false,
@@ -155,8 +160,20 @@ mod tests {
         );
     }
 
+    /// Restores the last-used defaults when dropped, even on panic.
+    struct RestoreDefaults;
+
+    impl Drop for RestoreDefaults {
+        fn drop(&mut self) {
+            set_last_text(TextStyle::default());
+            set_last_check(Tint::default());
+        }
+    }
+
     #[test]
     fn last_used_round_trips() {
+        let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _restore = RestoreDefaults;
         let st = TextStyle { family: Family::Mono, bold: true, italic: false, underline: true, tint: Tint::Red };
         set_last_text(st);
         assert_eq!(last_text(), st);

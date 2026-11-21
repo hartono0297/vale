@@ -77,8 +77,6 @@ impl Session {
         self.items[i].y += dy;
     }
 
-    /// Marks keep their aspect (driven by `w`); other items take `w` and `h`
-    /// as given. Both sides stay between 8 pt and the page's shorter side.
     /// Replace an item's kind and width in one undo step; width is clamped
     /// like `resize_item`. Out of range does nothing.
     pub fn restyle(&mut self, i: usize, kind: ItemKind, w: f32) {
@@ -94,6 +92,8 @@ impl Session {
         self.items[i].w = w.clamp(MIN_SIDE, max);
     }
 
+    /// Marks keep their aspect (driven by `w`); other items take `w` and `h`
+    /// as given. Both sides stay between 8 pt and the page's shorter side.
     pub fn resize_item(&mut self, i: usize, w: f32, h: f32) {
         let Some(it) = self.items.get(i) else { return };
         let max = self
@@ -412,7 +412,10 @@ mod tests {
         assert!(s.undo());
         assert_eq!(s.items[t].kind, old);
         assert_eq!(s.items[t].w, 100.0);
-        assert!(!s.undo() || s.items.is_empty());
+        // Add is the second undo step; restyle must have taken only one.
+        assert!(s.undo());
+        assert!(s.items.is_empty());
+        assert!(!s.undo());
     }
 
     #[test]
