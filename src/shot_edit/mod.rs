@@ -546,8 +546,27 @@ impl Session {
     /// Turns the picture and its annotations a quarter (one undo step).
     /// `size` is the picture as currently shown. The selection stays.
     pub fn rotate(&mut self, turn: rotate::Turn, size: (u32, u32)) -> bool {
+        self.rotate_shifted(turn, size, (0.0, 0.0), (0.0, 0.0))
+    }
+
+    /// Like `rotate`, with every annotation moved by `pre` before the turn
+    /// and by `post` after it, all in the same undo step. The inline capture
+    /// uses it to carry annotations between frame pixels and crop pixels.
+    pub fn rotate_shifted(
+        &mut self,
+        turn: rotate::Turn,
+        size: (u32, u32),
+        pre: (f32, f32),
+        post: (f32, f32),
+    ) -> bool {
         self.begin();
+        for ann in &mut self.doc {
+            ann.move_by(pre.0, pre.1);
+        }
         rotate::rotate_doc(&mut self.doc, turn, (size.0 as f32, size.1 as f32));
+        for ann in &mut self.doc {
+            ann.move_by(post.0, post.1);
+        }
         self.turns = match turn {
             rotate::Turn::Right => (self.turns + 1) % 4,
             rotate::Turn::Left => (self.turns + 3) % 4,
@@ -964,6 +983,19 @@ mod tests {
     }
 
     use rotate::Turn;
+
+    #[test]
+    fn rotate_shifted_moves_turns_and_moves_back_in_one_step() {
+        let mut s = Session::with_doc(vec![rect(110.0, 60.0, 20.0, 10.0)]);
+        let original = s.doc.clone();
+        assert!(s.rotate_shifted(Turn::Right, (100, 40), (-100.0, -50.0), (0.0, 0.0)));
+        assert_eq!(s.doc, vec![rect(20.0, 10.0, 10.0, 20.0)]);
+        assert_eq!(s.turns(), 1);
+        assert!(s.undo());
+        assert_eq!(s.doc, original);
+        assert_eq!(s.turns(), 0);
+        assert!(!s.can_undo());
+    }
 
     #[test]
     fn a_rotation_is_one_undo_step() {

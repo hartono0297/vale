@@ -12,7 +12,7 @@
 
 use super::Rect;
 use crate::i18n::{Key, tr};
-use crate::shot_edit::Tool;
+use crate::shot_edit::{Pt, Tool};
 use crate::shot_edit::rotate::Turn;
 
 // ---- the buttons ----
@@ -264,6 +264,67 @@ pub fn clamp_into(r: Rect, bounds: Rect) -> Rect {
     let x = r.x.min(bounds.right() - r.w).max(bounds.x);
     let y = r.y.min(bounds.bottom() - r.h).max(bounds.y);
     Rect::new(x, y, r.w, r.h)
+}
+
+/// The selection's size after `turns` right turns.
+fn turned_size(w: i32, h: i32, turns: u8) -> (i32, i32) {
+    if turns % 2 == 1 { (h, w) } else { (w, h) }
+}
+
+/// The card the turned selection is shown on while it is turned in place:
+/// the turned size, shrunk to fit `monitor` (a `48 * ui` px margin each
+/// side), centred on the selection and kept on the monitor. Returns the
+/// card and the scale shown (1 when it fits).
+#[cfg_attr(not(test), allow(dead_code))] // used by the overlay in the next task
+pub fn turned_card(sel: Rect, turns: u8, monitor: Rect, ui: f32) -> (Rect, f32) {
+    let (tw, th) = turned_size(sel.w, sel.h, turns);
+    let m = (48.0 * ui).round();
+    let s = 1.0f32
+        .min((monitor.w as f32 - 2.0 * m) / tw as f32)
+        .min((monitor.h as f32 - 2.0 * m) / th as f32);
+    let w = (tw as f32 * s).round().max(1.0) as i32;
+    let h = (th as f32 * s).round().max(1.0) as i32;
+    let (cx, cy) = sel.center();
+    let x = (cx - w / 2).min(monitor.right() - w).max(monitor.x);
+    let y = (cy - h / 2).min(monitor.bottom() - h).max(monitor.y);
+    (Rect::new(x, y, w, h), s)
+}
+
+/// A screen point as a point of the turned crop (pixels of `size`), through
+/// the card it is shown on; clamped to the crop.
+#[cfg_attr(not(test), allow(dead_code))] // used by the overlay in the next task
+pub fn card_local(p: (i32, i32), card: Rect, scale: f32, size: (u32, u32)) -> Pt {
+    let x = ((p.0 - card.x) as f32 / scale).clamp(0.0, size.0 as f32);
+    let y = ((p.1 - card.y) as f32 / scale).clamp(0.0, size.1 as f32);
+    Pt::new(x, y)
+}
+
+/// What a turn of the picture in place shifts the annotations by, as
+/// `(pre, post, size)`. Annotations are in frame px at 0 turns and in crop
+/// px otherwise, so the first turn lifts them into crop px (`pre`), the one
+/// back to 0 puts them in frame px again (`post`), and `size` is the crop as
+/// shown before the turn. `origin` is the frame's top-left on the screen.
+#[cfg_attr(not(test), allow(dead_code))] // used by the overlay in the next task
+pub fn turn_shifts(
+    sel: Rect,
+    origin: (i32, i32),
+    turns_before: u8,
+    turn: Turn,
+) -> ((f32, f32), (f32, f32), (u32, u32)) {
+    let off = ((sel.x - origin.0) as f32, (sel.y - origin.1) as f32);
+    let after = match turn {
+        Turn::Right => (turns_before + 1) % 4,
+        Turn::Left => (turns_before + 3) % 4,
+    };
+    let (w, h) = turned_size(sel.w, sel.h, turns_before);
+    let size = (w as u32, h as u32);
+    if turns_before == 0 {
+        ((-off.0, -off.1), (0.0, 0.0), size)
+    } else if after == 0 {
+        ((0.0, 0.0), off, size)
+    } else {
+        ((0.0, 0.0), (0.0, 0.0), size)
+    }
 }
 
 /// Where a panel of `size` goes around `sel` on `monitor` (the one holding
@@ -858,6 +919,93 @@ mod tests {
     use super::*;
 
     const MON: Rect = Rect::new(0, 0, 1920, 1080);
+
+    #[test]
+    fn card_fits_and_is_centred() {
+        let (c, s) = turned_card(Rect::new(100, 100, 400, 200), 1, MON, 1.0);
+        assert_eq!(c, Rect::new(200, 0, 200, 400));
+        assert_eq!(s, 1.0);
+    }
+
+    #[test]
+    fn a_card_taller_than_the_monitor_shrinks() {
+        let (c, s) = turned_card(Rect::new(0, 500, 1800, 300), 1, MON, 1.0);
+        assert!((s - 984.0 / 1800.0).abs() < 1e-6);
+        assert_eq!(c.h, 984);
+        assert!(inside(c, MON));
+    }
+
+    #[test]
+    fn card_stays_on_a_negative_monitor() {
+        let mon = Rect::new(-1920, 0, 1920, 1080);
+        let (c, _) = turned_card(Rect::new(-300, 900, 600, 100), 1, mon, 1.0);
+        assert!(inside(c, mon));
+    }
+
+    #[test]
+    fn even_turns_keep_the_selection_size() {
+        let (c, s) = turned_card(Rect::new(100, 100, 400, 200), 2, MON, 1.0);
+        assert_eq!((c.w, c.h), (400, 200));
+        assert_eq!(s, 1.0);
+    }
+
+    #[test]
+    fn card_local_maps_back_to_turned_crop_px() {
+        let card = Rect::new(200, 0, 200, 400);
+        assert_eq!(card_local((300, 100), card, 0.5, (400, 800)), Pt::new(200.0, 200.0));
+        assert_eq!(card_local((0, -50), card, 0.5, (400, 800)), Pt::new(0.0, 0.0));
+        assert_eq!(card_local((900, 900), card, 0.5, (400, 800)), Pt::new(400.0, 800.0));
+    }
+
+    #[test]
+    fn turn_shifts_from_zero_lifts_into_crop_px() {
+        let sel = Rect::new(110, 60, 100, 40);
+        let (pre, post, size) = turn_shifts(sel, (10, 10), 0, Turn::Right);
+        assert_eq!((pre, post, size), ((-100.0, -50.0), (0.0, 0.0), (100, 40)));
+    }
+
+    #[test]
+    fn turn_shifts_back_to_zero_puts_into_frame_px() {
+        let sel = Rect::new(110, 60, 100, 40);
+        let (pre, post, size) = turn_shifts(sel, (10, 10), 1, Turn::Left);
+        assert_eq!((pre, post, size), ((0.0, 0.0), (100.0, 50.0), (40, 100)));
+    }
+
+    #[test]
+    fn turn_shifts_between_turns_do_not_move() {
+        let sel = Rect::new(110, 60, 100, 40);
+        let (pre, post, size) = turn_shifts(sel, (10, 10), 1, Turn::Right);
+        assert_eq!((pre, post, size), ((0.0, 0.0), (0.0, 0.0), (40, 100)));
+        let (pre, post, size) = turn_shifts(sel, (10, 10), 2, Turn::Left);
+        assert_eq!((pre, post, size), ((0.0, 0.0), (0.0, 0.0), (100, 40)));
+    }
+
+    #[test]
+    fn turn_from_zero_and_back_restores_frame_px() {
+        use crate::shot_edit::{Annotation, FRect, Session, Style};
+        let sel = Rect::new(110, 60, 100, 40);
+        let origin = (10, 10);
+        let ann = Annotation::Rect {
+            r: FRect::new(120.0, 70.0, 20.0, 10.0),
+            style: Style {
+                color: 0xE5484D,
+                width: 4.0,
+            },
+        };
+        let mut s = Session::with_doc(vec![ann.clone()]);
+        let (pre, post, size) = turn_shifts(sel, origin, 0, Turn::Right);
+        s.rotate_shifted(Turn::Right, size, pre, post);
+        let (pre, post, size) = turn_shifts(sel, origin, s.turns(), Turn::Left);
+        s.rotate_shifted(Turn::Left, size, pre, post);
+        assert_eq!(s.turns(), 0);
+        let (Annotation::Rect { r: a, .. }, Annotation::Rect { r: b, .. }) = (&ann, &s.doc[0])
+        else {
+            panic!("not a rect");
+        };
+        for (p, q) in [(a.x, b.x), (a.y, b.y), (a.w, b.w), (a.h, b.h)] {
+            assert!((p - q).abs() < 1e-3, "{p} vs {q}");
+        }
+    }
 
     fn overlaps(a: Rect, b: Rect) -> bool {
         !a.intersect(&b).is_empty()
