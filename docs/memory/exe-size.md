@@ -465,6 +465,10 @@ settings row. No new crate or `windows` feature.
 Accessories following the face (2641ff8, 2026-11-18): 4,998,656 bytes, +1,536 over
 e0c7738 in the same folder.
 
+## Tanda tangan (2026-11-21)
+
+[[tanda-tangan]]: `cargo build --release --locked` on the feature branch tip gave 6,028,800 bytes against the 5,009,920 baseline measured on `main` at 9271d1c (+1,018,880, about +995 KiB, +20.3 %). In the spike lopdf alone was about 712 KB (with its encryption code) and `Data_Pdf` about 57 KB; the rest is the window, the writer, the maker and the Office driver. New crate: `lopdf` 0.47 (default features off); `miniz_oxide` moved to 0.9 to share lopdf's copy; one new `windows` feature (`Data_Pdf`). The owner's cap was +1.3 MB (1,363,148). `--demo-sign` is debug-only.
+
 ## Shipped release sizes
 
 The `vale.exe` asset of each GitHub release (built by the release workflow,
