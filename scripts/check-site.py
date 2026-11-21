@@ -24,7 +24,10 @@ site/*.html it checks:
   - the notch dock on index.html has the 15 tabs of Page::ALL, in order, each
     controlling an existing panel;
   - the story on index.html (ol.story-list) lists the same 15 pages in the
-    same order (li[data-page]), the playground has exactly six .play-card, and
+    same order (li[data-page]), the playground's article.play-card[data-card]
+    are sign, draw, captions, phone, typing, susun, copy, mascots in that order
+    (sign and mascots alone carry .play-wide, so the six small cards fill rows
+    of 1, 2 or 3 with no empty cell), and
     the Google Calendar and privacy sections each hold a <details>;
   - the hero on index.html has div.picks.js-only with a Mascot group (Cat,
     Cockatiel, Octopus) and a Notch colour group (Plain, Gradient, Face) of
@@ -52,7 +55,8 @@ DOCK_TABS = ["tab-" + n for n in ("calendar", "pomodoro", "record", "reminders",
 MASCOT_SYMBOLS = ["falk-idle", "falk-happy", "falk-sleep", "octo-idle", "octo-happy", "octo-sleep"]
 MASCOT_USES = ["u-cat", "u-falk", "u-octo"]
 STORY_PAGES = [t[len("tab-"):] for t in DOCK_TABS]  # the story's data-page ids are the dock's page ids
-PLAY_CARDS = 6
+PLAY_CARDS = ["sign", "draw", "captions", "phone", "typing", "susun", "copy", "mascots"]
+PLAY_WIDE = ["sign", "mascots"]  # full-row cards; the rest must fill 1, 2 and 3 columns exactly
 # The hero picks: group aria-label -> (data attribute, [(value, visible text)]), in order.
 PICKS = {
     "Mascot": ("data-mascot", [("cat", "Cat"), ("falk", "Cockatiel"), ("octo", "Octopus")]),
@@ -82,7 +86,7 @@ class Page(HTMLParser):
         self.to_top = []  # attrs of every a.to-top
         self.preloads = []  # (href, line) of every <link rel=preload as=font>
         self.story_pages = []  # data-page of every li inside ol.story-list, in order
-        self.play_cards = 0  # .play-card elements inside #playground
+        self.play_cards = []  # (data-card, is .play-wide) of every .play-card inside #playground, in order
         self.nc_uses = []  # (line, [class of every <use>]) of every svg.nc inside #notch
         self.coat_labels = []  # aria-label of every div.coats
         self.details = []  # id of the nearest section around every <details> (None when there is none)
@@ -112,7 +116,7 @@ class Page(HTMLParser):
                 t == "ol" and "story-list" in (at.get("class") or "").split() for t, at, _ in self.stack):
             self.story_pages.append(a["data-page"])
         if "play-card" in classes and any(at.get("id") == "playground" for _, at, _ in self.stack):
-            self.play_cards += 1
+            self.play_cards.append((a.get("data-card"), "play-wide" in classes))
         if tag == "svg" and "nc" in classes and any(at.get("id") == "notch" for _, at, _ in self.stack):
             self.nc_uses.append((line, []))
         if tag == "use" and self.nc_uses and any(
@@ -442,14 +446,21 @@ def main():
             if not panel or panel not in page.ids:
                 problem("index.html", f"tab {tab!r} controls {panel!r}, which is not an id")
 
-    # The story lists the 15 pages of Page::ALL in order, the playground has six cards,
+    # The story lists the 15 pages of Page::ALL in order, the playground has its eight cards,
     # and the Calendar and privacy sections each hold a <details>.
     if "index.html" in pages:
         page = pages["index.html"]
         if page.story_pages != STORY_PAGES:
             problem("index.html", f"the story lists {page.story_pages}, expected {STORY_PAGES} (Page::ALL order, ol.story-list li[data-page])")
-        if page.play_cards != PLAY_CARDS:
-            problem("index.html", f"#playground has {page.play_cards} .play-card, expected {PLAY_CARDS}")
+        cards = [c for c, _ in page.play_cards]
+        if cards != PLAY_CARDS:
+            problem("index.html", f"#playground cards are {cards}, expected {PLAY_CARDS} (data-card, in order)")
+        wide = [c for c, w in page.play_cards if w]
+        if wide != PLAY_WIDE:
+            problem("index.html", f"#playground .play-wide cards are {wide}, expected {PLAY_WIDE}")
+        small = len(page.play_cards) - len(wide)
+        if small % 2 or small % 3:
+            problem("index.html", f"#playground has {small} small cards; a 2 or 3 column row would stay part empty")
         for section in ("google-calendar", "privacy"):
             if section not in page.details:
                 problem("index.html", f"#{section} has no <details>")

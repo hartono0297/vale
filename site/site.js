@@ -1850,9 +1850,11 @@
   }
 
   /* ---------- the playground ----------
-     Six live cards. The controls are .js-only (the text and pictures show
-     without script). Reduced motion: the dance, the dots and the paws stand
-     still, the Susun windows jump at once. */
+     Eight cards: sign, draw, captions, phone, typing, susun, copy, mascots.
+     The controls are .js-only (the text and pictures show without script).
+     The dance and peek cards are gone, so initDance and initPeek find no card
+     and return. Reduced motion: the dots and the paws stand still, the Susun
+     windows jump at once. */
   function playCard(name) { return $('.play-card[data-card="' + name + '"]'); }
 
   function initDance() {
@@ -2012,7 +2014,7 @@
     var pic = card && $('.play-pic', card);
     var cv = card && $('.draw-cv', card);
     var sel = card && $('.sel', card);
-    var toolBtns = card ? $$('.tools button', card) : [];
+    var toolBtns = card ? $$('.tools button[data-t]', card) : [];
     if (!pic || !cv || !sel || !toolBtns.length) return;
     var ctx = cv.getContext('2d');
     if (!ctx) return;

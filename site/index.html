@@ -271,12 +271,53 @@
     <p class="sub">Every card below is live. Try them.</p>
     <div class="play-grid">
 
-      <article class="play-card reveal" data-card="dance">
+      <article class="play-card play-wide reveal" data-card="sign">
         <div class="play-pic" aria-hidden="true">
-          <div class="mn mn-wide"><span class="cover"></span><span class="lyric">Lights low over the harbour</span><span class="eq"><i></i><i></i><i></i><i></i></span></div>
-          <svg class="dance-cat" viewBox="0 0 256 256" focusable="false"><use href="#cat-idle"/></svg>
+          <div class="sg-page">
+            <span class="sg-title">Sample agreement</span>
+            <span class="sg-text"></span>
+            <svg class="sg-check sg-mark" viewBox="0 0 16 16" width="16" height="16" focusable="false"><rect x=".75" y=".75" width="14.5" height="14.5" rx="2" fill="none" stroke="#17120F" stroke-width="1.5"/><path d="M4 8.5l2.6 2.6L12 5.4" fill="none" stroke="#2F55C7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <svg class="sg-sig sg-mark" viewBox="0 0 120 40" focusable="false"><path d="M4 30c8-2 12-20 18-22s-6 26 0 24 10-18 14-16-2 14 4 12 6-10 10-9 0 8 5 7 8-8 13-8 4 6 9 5 12-6 18-7 10 2 15 1" fill="none" stroke="#2F55C7" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span class="sg-line"></span>
+            <span class="sg-date sg-mark">21 Nov 2026</span>
+          </div>
+          <div class="sg-menu">
+            <span class="sg-file">sample.pdf</span>
+            <span>Open</span>
+            <span class="on">Sign</span>
+            <span>Show in folder</span>
+          </div>
         </div>
-        <div class="play-body"><h3>The cat dances to your music</h3><p>It nods to the bass of whatever is playing, and the EQ bars follow the real audio.</p><div class="ctl js-only"><button class="btn btn-s" type="button" data-act="dance">Play a beat</button></div></div>
+        <div class="play-body"><h3>Sign a PDF from the shelf</h3><p>Right-click a file on the shelf and choose Sign. Add your signature, initials, the date or a check. Word and Excel files work too. You get a new file next to the old one, and nothing is uploaded.</p><div class="ctl js-only"><button class="btn btn-s" type="button" data-act="sign">Sign the sample page</button></div></div>
+      </article>
+
+      <article class="play-card reveal" data-card="draw">
+        <div class="play-pic">
+          <div class="frozen" aria-hidden="true"></div>
+          <div class="sel" aria-hidden="true"></div>
+          <canvas class="draw-cv" aria-hidden="true"></canvas>
+          <div class="tools js-only" role="group" aria-label="Drawing tools"><button type="button" class="on" data-t="pen" aria-pressed="true">Pen</button><button type="button" data-t="box" aria-pressed="false">Box</button><button type="button" data-tool="turn">Turn</button><button type="button" data-t="clear">Clear</button><button type="button" data-t="copy">Copy</button></div>
+        </div>
+        <div class="play-body"><h3>Draw right on the screen</h3><p>PrtSc freezes the screen, the selection snaps to windows, and you draw on it in place. Draw in the picture, then Copy. Press Turn, or Ctrl+R, and it turns a quarter, strokes and all.</p></div>
+      </article>
+
+      <article class="play-card reveal" data-card="captions">
+        <div class="play-pic" aria-hidden="true">
+          <div class="call"><span></span><span></span></div>
+          <div class="cap">
+            <p class="cl"><b>Others</b> So the draft goes out on Friday.</p>
+            <p class="cl is-live"><b>Me</b> Friday works, I'll send it in the morning.</p>
+          </div>
+        </div>
+        <div class="play-body"><h3>Captions for a call that has none</h3><p>Ctrl+Alt+C. Made on your PC, never saved to a file.</p><div class="ctl js-only"><button class="btn btn-s" type="button" data-act="captions">Play a sample</button></div><span class="sr-only" role="status" aria-live="polite" data-live></span></div>
+      </article>
+
+      <article class="play-card reveal" data-card="phone">
+        <div class="play-pic" aria-hidden="true">
+          <svg class="qr" viewBox="-2 -2 25 25" focusable="false"><rect x="-2" y="-2" width="25" height="25" rx="2" fill="#F4EDE4"/><path fill="#17120F" fill-rule="evenodd" d="M0 0h7v7h-7zM1 1v5h5v-5zM2 2h3v3h-3zM14 0h7v7h-7zM15 1v5h5v-5zM16 2h3v3h-3zM0 14h7v7h-7zM1 15v5h5v-5zM2 16h3v3h-3z"/><path fill="#17120F" d="M9 0h1v1h-1zM11 0h1v1h-1zM9 1h4v1h-4zM8 2h1v1h-1zM10 2h1v1h-1zM12 2h1v1h-1zM8 3h2v1h-2zM11 3h2v1h-2zM8 4h3v1h-3zM8 5h1v1h-1zM10 5h1v1h-1zM9 6h1v1h-1zM11 7h2v1h-2zM2 8h1v1h-1zM6 8h1v1h-1zM12 8h1v1h-1zM15 8h2v1h-2zM18 8h3v1h-3zM3 9h1v1h-1zM7 9h2v1h-2zM10 9h1v1h-1zM20 9h1v1h-1zM4 10h3v1h-3zM9 10h1v1h-1zM11 10h1v1h-1zM13 10h1v1h-1zM15 10h1v1h-1zM17 10h1v1h-1zM20 10h1v1h-1zM0 11h3v1h-3zM9 11h4v1h-4zM17 11h4v1h-4zM1 12h1v1h-1zM7 12h2v1h-2zM13 12h1v1h-1zM20 12h1v1h-1zM8 13h1v1h-1zM11 13h3v1h-3zM15 13h1v1h-1zM17 13h2v1h-2zM8 14h1v1h-1zM10 14h1v1h-1zM13 14h2v1h-2zM16 14h1v1h-1zM18 14h1v1h-1zM9 15h2v1h-2zM15 15h2v1h-2zM18 15h1v1h-1zM8 16h1v1h-1zM11 16h2v1h-2zM15 16h2v1h-2zM19 16h2v1h-2zM8 17h2v1h-2zM11 17h1v1h-1zM17 17h2v1h-2zM20 17h1v1h-1zM8 18h2v1h-2zM11 18h1v1h-1zM13 18h3v1h-3zM18 18h1v1h-1zM9 19h1v1h-1zM11 19h4v1h-4zM16 19h2v1h-2zM19 19h2v1h-2zM8 20h1v1h-1zM10 20h2v1h-2zM15 20h1v1h-1zM17 20h1v1h-1zM19 20h2v1h-2z"/></svg>
+          <div class="phone"><span class="ph-bar"></span><span class="ph-row"></span><span class="ph-row"></span><span class="ph-row"></span></div>
+        </div>
+        <div class="play-body"><h3>Files from your phone, no cable</h3><p>Scan the QR on the shelf. Wi-Fi at home, Tailscale from anywhere. A laptop's browser works too.</p><div class="ctl js-only"><div class="net" role="group" aria-label="Connection"><button type="button" data-net="wifi" aria-pressed="true">Wi-Fi</button><button type="button" data-net="tailscale" aria-pressed="false">Tailscale</button></div><p class="net-line" role="status">On the same Wi-Fi as your PC.</p></div></div>
       </article>
 
       <article class="play-card reveal" data-card="typing" data-s="idle">
@@ -285,14 +326,6 @@
           <div class="term-lines"></div>
         </div>
         <div class="play-body"><h3>It types while Claude works</h3><p>When Claude Code, a CLI task or Mole is running, the cat gets a laptop. When it is done, one click takes you back to the session.</p><div class="ctl js-only"><button class="btn btn-s" type="button" data-act="start">Start a task</button></div><span class="sr-only" role="status" aria-live="polite" data-live></span></div>
-      </article>
-
-      <article class="play-card reveal" data-card="peek">
-        <div class="play-pic" aria-hidden="true">
-          <div class="full"></div>
-          <div class="mn mn-peek"><span class="pi"><svg viewBox="0 0 256 256" width="20" height="20" focusable="false"><use href="#cat-idle"/></svg><span class="clk">09:41</span></span><span class="pe"><i></i><i></i></span></div>
-        </div>
-        <div class="play-body"><h3>It peeks with two eyes</h3><p>Over a full window, the notch shrinks to the cat's eyes while your pointer is near, and they follow you. Move into the picture.</p></div>
       </article>
 
       <article class="play-card reveal" data-card="susun">
@@ -305,21 +338,31 @@
         <div class="play-body"><h3>Susun puts windows in place</h3><p>Pick a layout, click a window for each tile, and they snap. Saved layouts come back on a hotkey.</p><div class="ctl lay js-only"><button type="button" data-l="cols" aria-label="Three columns" aria-pressed="false"><svg viewBox="0 0 32 20" focusable="false"><use href="#l-cols3"/></svg></button><button type="button" data-l="main" aria-label="Main and two" aria-pressed="false"><svg viewBox="0 0 32 20" focusable="false"><use href="#l-main2"/></svg></button><button type="button" data-l="top" aria-label="Top and two" aria-pressed="false"><svg viewBox="0 0 32 20" focusable="false"><use href="#l-top2"/></svg></button></div><span class="sr-only" role="status" aria-live="polite" data-live></span></div>
       </article>
 
-      <article class="play-card reveal" data-card="draw">
-        <div class="play-pic">
-          <div class="frozen" aria-hidden="true"></div>
-          <div class="sel" aria-hidden="true"></div>
-          <canvas class="draw-cv" aria-hidden="true"></canvas>
-          <div class="tools js-only" role="group" aria-label="Drawing tools"><button type="button" class="on" data-t="pen" aria-pressed="true">Pen</button><button type="button" data-t="box" aria-pressed="false">Box</button><button type="button" data-t="clear">Clear</button><button type="button" data-t="copy">Copy</button></div>
-        </div>
-        <div class="play-body"><h3>Draw right on the screen</h3><p>PrtSc freezes the screen, the selection snaps to windows, and you draw on it in place. Draw in the picture, then Copy.</p></div>
-      </article>
-
       <article class="play-card reveal" data-card="copy">
         <div class="play-pic">
           <blockquote>Select any text on this page and press <kbd>Ctrl</kbd> + <kbd>C</kbd>. Watch the notch at the top.</blockquote>
         </div>
-        <div class="play-body"><h3>Every copy, a preview</h3><p>Copy anything and the notch shows what you copied for three seconds. The history stays on your PC.</p><div class="ctl js-only"><button class="btn btn-s" type="button" data-copy="#cmd-hero">Copy the install line</button></div></div>
+        <div class="play-body"><h3>Every copy, a preview</h3><p>Copy anything and the notch shows what you copied for three seconds. The history stays on your PC. Drag an image out of the history straight into a chat.</p><div class="ctl js-only"><button class="btn btn-s" type="button" data-copy="#cmd-hero">Copy the install line</button></div></div>
+      </article>
+
+      <article class="play-card play-wide reveal" data-card="mascots">
+        <div class="play-pic" aria-hidden="true">
+          <div class="trio">
+            <div class="ms" data-m="cat">
+              <div class="mn mn-peek"><span class="pi"><svg viewBox="0 0 256 256" width="20" height="20" focusable="false"><use href="#cat-idle"/></svg><span class="clk">09:41</span></span><span class="pe"><i></i><i></i></span></div>
+              <svg class="ms-big" viewBox="0 0 256 256" focusable="false"><use href="#cat-idle"/></svg>
+            </div>
+            <div class="ms" data-m="falk">
+              <div class="mn mn-peek"><span class="pi"><svg viewBox="0 0 256 256" width="20" height="20" focusable="false"><use href="#falk-idle"/></svg><span class="clk">09:41</span></span><span class="pe"><i></i><i></i></span></div>
+              <svg class="ms-big" viewBox="0 0 256 256" focusable="false"><use href="#falk-idle"/></svg>
+            </div>
+            <div class="ms" data-m="octo">
+              <div class="mn mn-peek"><span class="pi"><svg viewBox="0 0 256 256" width="20" height="20" focusable="false"><use href="#octo-idle"/></svg><span class="clk">09:41</span></span><span class="pe"><i></i><i></i></span></div>
+              <svg class="ms-big" viewBox="0 0 256 256" focusable="false"><use href="#octo-idle"/></svg>
+            </div>
+          </div>
+        </div>
+        <div class="play-body"><h3>Three mascots, ten short stories</h3><p>A cat, a cockatiel or an octopus. Now and then one hangs off the notch, steals a digit or naps on the clock.</p><div class="ctl js-only"><button class="btn btn-s" type="button" data-act="story">Play a story</button></div></div>
       </article>
 
     </div>
