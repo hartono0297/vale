@@ -69,7 +69,7 @@
   --fk-crest: #F6D04A;
   --fk-cheek: #EC6B3A;
   --oc-body: #E87C8E;
-  --oc-spot: #BF6574;
+  --oc-spot: #BE6674;
   /* The go-to-top tail: its tip colour (set with the coat) and its outline. */
   --tip: #F4EDE4;
   --tail-edge: #A89A8B;
@@ -542,10 +542,10 @@ html[data-theme="light"] .horizon { background: radial-gradient(closest-side, #F
 .bubble.on { opacity: 1; transform: none; }
 .fx { position: absolute; left: 50%; top: 50%; z-index: 6; pointer-events: none; font-size: 18px; line-height: 1; color: var(--ink); }
 
-.coats { display: flex; gap: 4px; justify-content: center; margin: 0 0 1.5rem; }
-.coat-chip { position: relative; width: 36px; height: 36px; padding: 0; border: 0; border-radius: 50%; background: transparent; cursor: pointer; }
-.coat-chip i { position: absolute; inset: 5px; border-radius: 50%; border: 1px solid var(--control); }
-.coat-chip[aria-pressed="true"]::after { content: ""; position: absolute; inset: 0; border-radius: 50%; border: 2px solid var(--text); }
+.coats { display: flex; gap: 0; justify-content: center; margin: 0 0 1.5rem; }
+.coat-chip { position: relative; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 50%; background: transparent; cursor: pointer; }
+.coat-chip i { position: absolute; inset: 9px; border-radius: 50%; border: 1px solid var(--control); }
+.coat-chip[aria-pressed="true"]::after { content: ""; position: absolute; inset: 4px; border-radius: 50%; border: 2px solid var(--text); }
 .coat-chip[data-coat="terracotta"] i { background: #E2683C; }
 .coat-chip[data-coat="calico"] i { background: conic-gradient(#F4EDE4 0 50%, #E2683C 0 75%, #2B2420 0); }
 .coat-chip[data-coat="white"] i { background: #F6F1EA; }
@@ -972,10 +972,6 @@ main .btn { padding-block: 0; }
   .more { margin-top: 32px; }
   .gcal h3, .privacy-short h3, .install h3 { margin: 32px 0 12px; }
   .scopes dt:first-child { margin-top: 0; }
-  .coats { gap: 0; }
-  .coat-chip { width: 44px; height: 44px; }
-  .coat-chip i { inset: 9px; }
-  .coat-chip[aria-pressed="true"]::after { inset: 4px; }
   /* 44 px buttons in a bar with 2 px padding, 4 px up: the bar's top edge stays
      where it was (136 px in the 190 px picture), so it covers no more of the
      selection than before. */

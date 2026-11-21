@@ -392,7 +392,6 @@
     root.setAttribute('data-mascot', mascot);
     buildChips();
     mascotApi = api;
-    window.mascotApi = api; /* also the hook for checking from the console */
     return api;
   }
 
