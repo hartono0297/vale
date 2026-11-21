@@ -438,9 +438,9 @@ html:not(.js) #notch { display: none; }
 .pg-minis svg { display: block; }
 .pg-minis .on { color: var(--notch-accent); }
 
-/* 14 tabs of 30 px plus 24 px padding fit the 458 px inside the open notch's edges. */
+/* 15 tabs of 28 px plus 24 px padding (444 px) fit the 458 px inside the open notch's edges, as the 14 of 30 px did. */
 .dock { display: flex; justify-content: center; align-items: flex-end; height: 64px; padding: 0 12px 6px; }
-.tab { display: flex; align-items: flex-end; justify-content: center; flex: none; width: 30px; height: 32px; margin: 0; padding: 0 0 7px; border: 0; background: transparent; color: var(--notch-2); cursor: pointer; }
+.tab { display: flex; align-items: flex-end; justify-content: center; flex: none; width: 28px; height: 32px; margin: 0; padding: 0 0 7px; border: 0; background: transparent; color: var(--notch-2); cursor: pointer; }
 .tab[aria-selected="true"] { color: var(--notch-accent); }
 .dock-ico { width: 18px; height: 18px; transform-origin: 50% 100%; pointer-events: none; }
 @media (pointer: coarse), (max-width: 32.5em) {
@@ -536,7 +536,7 @@ html[data-theme="light"] .horizon { background: radial-gradient(closest-side, #F
 .coat-chip[data-coat="black"] i { background: #1E1B22; border-color: #75675B; }
 
 /* ---------- marquee ----------
-   The 14 page names, moved sideways by scroll (site.js). Static without
+   The 15 page names, moved sideways by scroll (site.js). Static without
    script or with reduced motion; clipped, so it never causes overflow. */
 .marquee { overflow: hidden; padding: 26px 0; border-block: 1px solid rgba(244, 237, 228, .06); background: rgba(18, 14, 16, .45); -webkit-mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent); mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent); }
 html[data-theme="light"] .marquee { border-color: rgba(23, 18, 15, .08); background: rgba(255, 253, 249, .5); }
@@ -547,9 +547,9 @@ html[data-theme="light"] .marquee { border-color: rgba(23, 18, 15, .08); backgro
 html[data-theme="light"] .marquee-row span { color: rgba(23, 18, 15, .58); }
 html[data-theme="light"] .marquee-row span:nth-child(3n + 1) { color: var(--text); }
 
-/* ---------- story: one hover, fourteen pages ----------
+/* ---------- story: one hover, fifteen pages ----------
    Without script, with reduced motion, or when the stage does not fit the
-   viewport: static. The first page shows on the screen and the 14 pages are
+   viewport: static. The first page shows on the screen and the 15 pages are
    a readable list. site.js adds .is-pin when motion is welcome and the stage
    fits 100svh: the wrapper is tall, the stage sticks, and scroll progress
    grows the panel from notch size and flips through the pages. */
