@@ -499,10 +499,11 @@ h3 { font-size: clamp(1.25rem, 1.1rem + .6vw, 1.5rem); letter-spacing: -.015em; 
 .actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin: 2.25rem 0 0; }
 
 /* ---------- hero ----------
-   Centred: the cat, four coat chips, a two-line headline, one line, Download
-   and the install line, on the night horizon. The top padding keeps the notch
-   and the header pills clear. Without script the cat is a still picture and
-   the chips are not shown. */
+   Centred: the mascot, the Mascot and Notch colour picks, its coat chips, a
+   two-line headline, one line, Download and the install line, on the night
+   horizon. The top padding keeps the notch and the header pills clear.
+   Without script the cat is a still picture and the picks and chips are not
+   shown. */
 .hero { position: relative; display: flex; align-items: center; justify-content: center; min-height: min(100vh, 62rem); min-height: min(100svh, 62rem); padding-block: clamp(6.5rem, 14vh, 8.5rem) clamp(4rem, 9vh, 6rem); text-align: center; overflow-x: clip; }
 html:not(.js) .hero { min-height: 0; }
 .hero-inner { position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; }
@@ -538,10 +539,36 @@ html[data-theme="light"] .horizon { background: radial-gradient(closest-side, #F
 .cat.is-held .squint { opacity: 1; }
 .cat.purr { animation: purr .12s linear infinite; }
 @keyframes purr { 50% { translate: 1.5px 0; } }
+/* Three bodies, one face. html[data-mascot] (set by site.js; absent without
+   script, so the cat shows) picks the body; the eyes, happy and squint shapes
+   are shared. The cockatiel and the octopus have dark eyes whatever the cat's
+   coat (--eye always holds the cat's), and the octopus's face sits 12 units
+   higher, as in its notch symbols. The crest tilts on hover, the cat's ears perk. */
+.cat { --eye-dy: 0px; }
+.cat .face { transform: translateY(var(--eye-dy)); }
+.cat .m-falk, .cat .m-octo,
+html[data-mascot="falk"] .cat .m-cat, html[data-mascot="octo"] .cat .m-cat { display: none; }
+html[data-mascot="falk"] .cat .m-falk, html[data-mascot="octo"] .cat .m-octo { display: inline; }
+html[data-mascot="falk"] .cat, html[data-mascot="octo"] .cat { --eye: #17120F; }
+html[data-mascot="octo"] .cat { --eye-dy: -12px; }
+.cat .crest { transform-origin: 128px 108px; transition: transform .3s cubic-bezier(.3, 1.6, .5, 1); }
+.stage:hover .crest { transform: rotate(-8deg); }
 .bubble { position: absolute; left: 62%; top: -22px; z-index: 6; margin: 0; padding: 6px 12px; border-radius: 14px 14px 14px 4px; background: var(--bubble-bg); color: var(--bubble-text); font-weight: 600; font-size: .875rem; line-height: 1.4; white-space: nowrap; opacity: 0; transform: translateY(8px) scale(.8); transform-origin: 0 100%; transition: opacity .25s, transform .25s cubic-bezier(.3, 1.6, .5, 1); pointer-events: none; }
 .bubble.on { opacity: 1; transform: none; }
 .fx { position: absolute; left: 50%; top: 50%; z-index: 6; pointer-events: none; font-size: 18px; line-height: 1; color: var(--ink); }
 
+/* The hero picks: two groups drawn like the header pills (3 px padding, a
+   1 px edge) holding 44 px buttons. The pressed one is filled with the text
+   colour and its label takes the page colour, so the state reads by
+   lightness, not hue. One row from 40em; stacked and centred below. A group
+   that still does not fit wraps inside its rounded box. */
+.picks { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px 12px; max-width: 100%; margin: 8px 0 4px; }
+.pick-group { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px; max-width: 100%; padding: 3px; border: 1px solid var(--line); border-radius: 26px; }
+.pick { min-height: 44px; padding: 0 14px; border: 0; border-radius: 999px; background: transparent; color: var(--text); font: inherit; font-size: .9375rem; font-weight: 500; cursor: pointer; }
+.pick:hover { background: color-mix(in srgb, transparent, var(--text) 10%); }
+.pick[aria-pressed="true"] { background: var(--text); color: var(--bg); }
+/* Below 20em the Mascot group needs 250 px at 14 px padding; at 10 px it fits 280 px windows on one row. */
+@media (max-width: 19.99em) { .pick { padding: 0 10px; } }
 .coats { display: flex; gap: 0; justify-content: center; margin: 0 0 1.5rem; }
 .coat-chip { position: relative; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 50%; background: transparent; cursor: pointer; }
 .coat-chip i { position: absolute; inset: 9px; border-radius: 50%; border: 1px solid var(--control); }
@@ -945,7 +972,7 @@ main > .tint-panel:last-child { margin-bottom: calc(-1 * clamp(4rem, 10vw, 8rem)
   .notch, .nf, .notch-panel { transition: none; }
   .eq i, .paw, .dots::after, .cat.purr, .play-card.is-on .dance-cat { animation: none !important; }
   .dots::after { content: "..."; }
-  .cat .ear, .cat .eye, .bubble, .mn, .play-pic .win, .bp-pg, .walk-bubble, .mn-peek .pe i { transition: none; }
+  .cat .ear, .cat .eye, .cat .crest, .bubble, .mn, .play-pic .win, .bp-pg, .walk-bubble, .mn-peek .pe i { transition: none; }
   .walk-cat svg, .zz { animation: none !important; }
   .walk-pos.is-asleep .zz { opacity: .9; }
   .marquee-row { transform: none !important; will-change: auto; }
@@ -969,6 +996,7 @@ main .btn { padding-block: 0; }
   .hero .actions .btn-primary, .install-dl .btn { width: 100%; }
   .install-dl .btn { display: flex; }
   .hero-cmd { margin-top: 16px; }
+  .picks { flex-direction: column; align-items: center; }
   .more { margin-top: 32px; }
   .gcal h3, .privacy-short h3, .install h3 { margin: 32px 0 12px; }
   .scopes dt:first-child { margin-top: 0; }

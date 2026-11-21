@@ -395,6 +395,38 @@
     return api;
   }
 
+  /* The hero picks. Mascot buttons switch the mascot through mascotApi (and
+     follow it); Notch colour buttons store vale-notch-style and set
+     data-notch-style on <html> (Plain without storage or with an unknown
+     value), the hook the notch's colour styles paint from. */
+  var NOTCH_STYLES = ['plain', 'gradient', 'face'];
+  function initPicks() {
+    var mascotBtns = $$('.pick[data-mascot]');
+    var styleBtns = $$('.pick[data-notch-style]');
+    function press(btns, attr, value) {
+      btns.forEach(function (b) { b.setAttribute('aria-pressed', b.getAttribute(attr) === value ? 'true' : 'false'); });
+    }
+    if (mascotApi) {
+      press(mascotBtns, 'data-mascot', mascotApi.get());
+      mascotBtns.forEach(function (b) {
+        b.addEventListener('click', function () { mascotApi.set(b.getAttribute('data-mascot'), true); });
+      });
+      mascotApi.on(function (name) { press(mascotBtns, 'data-mascot', name); });
+    }
+    var style = readPref('vale-notch-style');
+    if (NOTCH_STYLES.indexOf(style) < 0) style = 'plain';
+    root.setAttribute('data-notch-style', style);
+    press(styleBtns, 'data-notch-style', style);
+    styleBtns.forEach(function (b) {
+      b.addEventListener('click', function () {
+        style = b.getAttribute('data-notch-style');
+        root.setAttribute('data-notch-style', style);
+        store('vale-notch-style', style);
+        press(styleBtns, 'data-notch-style', style);
+      });
+    });
+  }
+
   /* ---------- progress, the sky and the stars ----------
      progress runs first every frame and fills S (scroll, page progress,
      viewport); it writes --p on <html> (the sky mixes dusk, night and dawn
@@ -535,8 +567,10 @@
       meteors = alive;
       /* ... then the stars gather into the cat's head. */
       if (con) {
-        var e = t - con.t0;
-        var fade = e > 6200 ? Math.max(0, 1 - (e - 6200) / 1200) : 1;
+        /* Cancelled (another mascot was picked): the stars stop where they are,
+           no line is drawn, and they fade out in 400 ms. */
+        var e = con.cut ? con.cut - con.t0 : t - con.t0;
+        var fade = con.cut ? Math.max(0, 1 - (t - con.cut) / 400) : e > 6200 ? Math.max(0, 1 - (e - 6200) / 1200) : 1;
         var oy = con.sy - sy;
         if (fade <= 0) {
           con = null;
@@ -546,7 +580,7 @@
             var q = 1 - Math.pow(1 - k2, 3);
             return [p.sx + (p.x - p.sx) * q, p.sy + (p.y + oy - p.sy) * q, k2];
           });
-          var lk = clamp((e - 2600) / 1400, 0, 1);
+          var lk = con.cut ? 0 : clamp((e - 2600) / 1400, 0, 1);
           var ink = light ? '168,67,28' : '244,237,228';
           ctx.strokeStyle = 'rgba(' + ink + ',' + (0.55 * fade).toFixed(3) + ')';
           ctx.lineWidth = 1.2;
@@ -591,10 +625,11 @@
     };
     skyApi = {
       fx: fx,
-      /* The wish: cx, cy and s place the constellation (viewport px, px per grid unit). */
+      /* The wish: cx, cy and s place the constellation (viewport px, px per grid unit).
+         The constellation is the cat's head, so it is the cat's wish only. */
       wish: function (cx, cy, s) {
         var t = performance.now();
-        if (reduce.matches) return false;
+        if (reduce.matches || (mascotApi && mascotApi.get() !== 'cat')) return false;
         var i;
         for (i = 0; i < 14; i++) meteors.push({ t0: t + i * 110 + Math.random() * 80, d: 700 + Math.random() * 300, x: W * (0.3 + Math.random() * 0.8), y: Math.random() * H * 0.4, len: 300 + Math.random() * 200 });
         con = {
@@ -606,6 +641,9 @@
         };
         loop.kick(fx);
         return true;
+      },
+      cancelWish: function () {
+        if (con && !con.cut) { con.cut = performance.now(); loop.kick(fx); }
       }
     };
     loop.add(fx);
@@ -989,7 +1027,13 @@
      pops back saying "again?". Five presses within 2 s make a wish: the
      bubbles "make a wish" and "granted", meteors, and a constellation of the
      cat's head behind it. Reduced motion: no jump, sparks, vibration, meteors
-     or constellation; bubbles and eye changes still work. */
+     or constellation; bubbles and eye changes still work.
+     The same svg holds the cockatiel and the octopus (html[data-mascot] shows
+     one body, the face is shared), and all of the above works for them too,
+     except the ear twitch and the wish, which stay the cat's: with another
+     mascot five presses are five pokes. Picking another mascot ends a drag
+     (it springs home) and cancels a running wish (the stars fade). */
+  var HERO_LABELS = { cat: 'Vale’s cat', falk: 'Falk, Vale’s cockatiel', octo: 'Vale’s octopus' };
   function initHeroCat() {
     var wrap = $('#cat-wrap');
     var stage = $('#hero-cat');
@@ -999,10 +1043,12 @@
     var bubble = $('#cat-bubble');
     if (!wrap || !stage || !cat || !eyes || !all || !bubble) return;
     var notchEl = $('#notch');
+    function mascot() { return mascotApi ? mascotApi.get() : 'cat'; }
+    function label() { stage.setAttribute('aria-label', HERO_LABELS[mascot()] + '. Press to poke it'); }
 
     stage.setAttribute('role', 'button');
     stage.setAttribute('tabindex', '0');
-    stage.setAttribute('aria-label', 'Vale’s cat. Press to poke it');
+    label();
     /* Quick swipes still scroll; only an armed long press on touch drags. */
     stage.addEventListener('contextmenu', function (e) { e.preventDefault(); });
 
@@ -1058,7 +1104,7 @@
     (function twitch() {
       setTimeout(function () {
         var ear = $('.er', cat);
-        if (!doc.hidden && ear && !reduce.matches) animate(ear, [{ transform: 'none' }, { transform: 'rotate(14deg)', offset: 0.4 }, { transform: 'none' }], { duration: 350 });
+        if (!doc.hidden && ear && !reduce.matches && mascot() === 'cat') animate(ear, [{ transform: 'none' }, { transform: 'rotate(14deg)', offset: 0.4 }, { transform: 'none' }], { duration: 350 });
         twitch();
       }, rnd(4000, 9000));
     })();
@@ -1069,23 +1115,41 @@
     var presses = [];
     var looking = false;
     var lookTimer = 0;
+    var grantTimer = 0;
+    var wishEnd = 0; /* the wish's bubbles show until then (Date.now() ms) */
     function wish() {
       say('make a wish ✨', 3000);
+      wishEnd = Date.now() + 3000;
       if (reduce.matches || !skyApi) return;
       var r = wrap.getBoundingClientRect();
       var ok = skyApi.wish(r.left + r.width / 2, r.top + r.height / 2, 1.8 * r.width / 256);
       if (!ok) return;
+      wishEnd = Date.now() + 7000;
       looking = true;
       clearTimeout(lookTimer);
+      clearTimeout(grantTimer);
       lookTimer = setTimeout(function () { looking = false; loop.kick(catFx); }, 6500);
-      setTimeout(function () { say('✨ granted', 1800); }, 5200);
+      grantTimer = setTimeout(function () { say('✨ granted', 1800); }, 5200);
+      loop.kick(catFx);
+    }
+    function cancelWish() {
+      presses = [];
+      if (skyApi) skyApi.cancelWish();
+      if (Date.now() >= wishEnd) return;
+      wishEnd = 0;
+      looking = false;
+      clearTimeout(lookTimer);
+      clearTimeout(grantTimer);
+      clearTimeout(sayTimer);
+      bubble.classList.remove('on');
+      if (skyApi) skyApi.cancelWish();
       loop.kick(catFx);
     }
     function poke() {
       var now = Date.now();
       presses = presses.filter(function (x) { return now - x < 2000; });
       presses.push(now);
-      if (presses.length >= 5) { presses = []; wish(); return; }
+      if (presses.length >= 5 && mascot() === 'cat') { presses = []; wish(); return; }
       say(SAYS[sayAt++ % SAYS.length]);
       animate(cat, [
         { transform: 'none' },
@@ -1136,6 +1200,12 @@
       if (heroInner) heroInner.classList.add('is-carrying');
       stopPurr();
       loop.kick(catFx);
+    }
+    function letGo() {
+      held = false;
+      cat.classList.remove('is-held');
+      stage.classList.remove('is-held');
+      if (heroInner) heroInner.classList.remove('is-carrying');
     }
     stage.addEventListener('pointerdown', function (e) {
       if (absorbed) return;
@@ -1206,10 +1276,7 @@
       var wasHeld = held;
       clearTimeout(lpTimer);
       down = null;
-      held = false;
-      cat.classList.remove('is-held');
-      stage.classList.remove('is-held');
-      if (heroInner) heroInner.classList.remove('is-carrying');
+      letGo();
       if (e && e.type === 'pointercancel') { returning = true; loop.kick(catFx); return; }
       if (!wasHeld) { poke(); return; }
       if (over) absorb(); else { returning = true; loop.kick(catFx); }
@@ -1334,6 +1401,27 @@
       },
       busy: false
     };
+    /* ----- another mascot picked: a drag ends and it springs home; a wish is cancelled ----- */
+    function dropHold() {
+      clearTimeout(lpTimer);
+      if (down) { try { stage.releasePointerCapture(down.id); } catch (err) { /* already released */ } }
+      down = null;
+      if (!held) return;
+      letGo();
+      over = false;
+      if (notchApi) notchApi.glow(false);
+      returning = true;
+      loop.kick(catFx);
+    }
+    var shownMascot = mascot();
+    if (mascotApi) mascotApi.on(function (name) {
+      if (name === shownMascot) return;
+      shownMascot = name;
+      label();
+      dropHold();
+      cancelWish();
+    });
+
     loop.gate(wrap, catFx, '100px 0px');
     loop.add(catFx);
   }
@@ -2161,6 +2249,7 @@
   safe(initCopy);
   safe(initCmdFade);
   safe(initMascot);
+  safe(initPicks);
   safe(initMiniClocks);
   if (loop) {
     safe(initSky);
