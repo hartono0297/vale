@@ -402,12 +402,12 @@ html:not(.js) #notch { display: none; }
 .nf-idle { justify-content: space-between; }
 .nf-idle .clock { font-family: var(--mono); font-weight: 400; font-size: 13px; font-variant-numeric: tabular-nums; }
 .nc { flex: none; overflow: visible; }
-/* One <use> per mascot in every notch svg; html[data-mascot] picks which one shows
-   (no attribute, no script: the cat). */
-.nc .u-falk, .nc .u-octo { display: none; }
-html[data-mascot="falk"] .nc .u-cat, html[data-mascot="falk"] .nc .u-octo,
-html[data-mascot="octo"] .nc .u-cat, html[data-mascot="octo"] .nc .u-falk { display: none; }
-html[data-mascot="falk"] .nc .u-falk, html[data-mascot="octo"] .nc .u-octo { display: inline; }
+/* One <use> per mascot in every notch svg and in the typing card; html[data-mascot]
+   picks which one shows (no attribute, no script: the cat). */
+.u-falk, .u-octo { display: none; }
+html[data-mascot="falk"] .u-cat, html[data-mascot="falk"] .u-octo,
+html[data-mascot="octo"] .u-cat, html[data-mascot="octo"] .u-falk { display: none; }
+html[data-mascot="falk"] .u-falk, html[data-mascot="octo"] .u-octo { display: inline; }
 /* Notch colour (the hero picks set html[data-notch-style]; site.js writes
    --n-bottom, --n-face and --n-ink from the mascot's coat, ported from the
    app's notch_colour.rs). Gradient: the surface down to 28 %, then the coat's
@@ -528,8 +528,10 @@ h3 { font-size: clamp(1.25rem, 1.1rem + .6vw, 1.5rem); letter-spacing: -.015em; 
   .btn-copy.is-copied { border-color: var(--ink); }
 }
 .btn-s { min-height: 44px; padding: 0 18px; border-color: var(--control); background: transparent; color: var(--text); font-size: .9375rem; font-weight: 500; }
-.btn-s:hover:not(:disabled) { border-color: var(--ink); }
-.btn-s:disabled { opacity: .6; cursor: default; }
+.btn-s:hover:not(:disabled, [aria-disabled="true"]) { border-color: var(--ink); }
+/* A running demo keeps its button focusable (aria-disabled, not disabled), so a
+   keyboard user keeps their place; it looks the same as a disabled one. */
+.btn-s:disabled, .btn-s[aria-disabled="true"] { opacity: .6; cursor: default; }
 .actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin: 2.25rem 0 0; }
 
 /* ---------- hero ----------
@@ -807,7 +809,9 @@ html[data-theme="light"] .screen { box-shadow: 0 30px 80px -30px rgba(40, 24, 16
 .play-card[data-s="work"] .mn-type .tw, .play-card[data-s="done"] .mn-type .td { display: flex; }
 .td b { font-weight: 600; font-size: 12px; white-space: nowrap; }
 .td .open { margin-left: auto; padding: 4px 10px; border-radius: 999px; background: #E2683C; color: #17120F; font-weight: 600; font-size: 11px; }
-.paw { transform-box: fill-box; animation: paw .18s ease-in-out infinite alternate; }
+.paw { fill: var(--coat); transform-box: fill-box; animation: paw .18s ease-in-out infinite alternate; }
+html[data-mascot="falk"] .paw { fill: var(--fk-body); }
+html[data-mascot="octo"] .paw { fill: var(--oc-body); }
 .paw2 { animation-delay: -.09s; }
 @keyframes paw { to { transform: translateY(-3px); } }
 .dots { white-space: nowrap; }

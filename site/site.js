@@ -2118,9 +2118,9 @@
     var LINES = ['> claude "fix the flaky test"', 'Reading src/app.rs', 'Editing 2 files', 'Running cargo test', '1857 passed'];
     function say(text) { if (live) live.textContent = text; }
     btn.addEventListener('click', function () {
-      if (card.getAttribute('data-s') === 'work') return;
+      if (btn.getAttribute('aria-disabled') === 'true') return;
       card.setAttribute('data-s', 'work');
-      btn.disabled = true;
+      btn.setAttribute('aria-disabled', 'true');
       term.textContent = '';
       say('Claude is working');
       LINES.forEach(function (l, i) {
@@ -2133,7 +2133,7 @@
       setTimeout(function () { card.setAttribute('data-s', 'done'); say('Claude is done'); }, 3600);
       setTimeout(function () {
         card.setAttribute('data-s', 'idle');
-        btn.disabled = false;
+        btn.removeAttribute('aria-disabled');
         term.textContent = '';
       }, 7000);
     });
