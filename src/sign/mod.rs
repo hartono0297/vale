@@ -103,6 +103,50 @@ pub struct Mark {
     pub rgba: Vec<u8>,
 }
 
+impl Mark {
+    /// The swatch this mark is drawn in: the colour of its most opaque pixel,
+    /// if that colour is within 24 per channel of a swatch.
+    pub fn tint(&self) -> Option<style::Tint> {
+        if self.rgba.len() < self.w as usize * self.h as usize * 4 {
+            return None;
+        }
+        let px = self.rgba.chunks_exact(4).min_by_key(|p| std::cmp::Reverse(p[3]))?;
+        if px[3] <= 8 {
+            return None;
+        }
+        let rgb = [px[0], px[1], px[2]].map(i32::from);
+        let (tint, diff) = style::Tint::ALL
+            .iter()
+            .map(|&t| {
+                let c = t.rgb();
+                let swatch = [(c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF].map(|v| v as i32);
+                (t, [rgb[0] - swatch[0], rgb[1] - swatch[1], rgb[2] - swatch[2]])
+            })
+            .min_by_key(|(_, d)| d.iter().map(|x| x * x).sum::<i32>())?;
+        (diff.iter().all(|d| d.abs() <= 24)).then_some(tint)
+    }
+
+    /// The same shape and alpha, every pixel's colour set to `t`.
+    pub fn recolored(&self, t: style::Tint) -> Mark {
+        let c = t.rgb();
+        let mut rgba = self.rgba.clone();
+        for p in rgba.chunks_exact_mut(4) {
+            p[0] = (c >> 16) as u8;
+            p[1] = (c >> 8) as u8;
+            p[2] = c as u8;
+        }
+        Mark { w: self.w, h: self.h, rgba }
+    }
+
+    /// Whether `other` has the same size and the same alpha in every pixel.
+    pub fn same_shape(&self, other: &Mark) -> bool {
+        self.w == other.w
+            && self.h == other.h
+            && self.rgba.len() == other.rgba.len()
+            && self.rgba.chunks_exact(4).zip(other.rgba.chunks_exact(4)).all(|(a, b)| a[3] == b[3])
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum ItemKind {
     Signature(Arc<Mark>),
@@ -153,5 +197,32 @@ mod tests {
         assert_eq!(Quarter::R0.turn_cw(), Quarter::R90);
         assert_eq!(Quarter::R90.add(Quarter::R270), Quarter::R0);
         assert_eq!(Quarter::R180.degrees(), 180);
+    }
+
+    #[test]
+    fn mark_tint_reads_the_most_opaque_pixel() {
+        use style::Tint;
+        // A faint edge pixel in a slightly off colour, then the solid ink.
+        let m = Mark { w: 2, h: 1, rgba: vec![0x40, 0x50, 0x70, 60, 0x1F, 0x3A, 0x8A, 255] };
+        assert_eq!(m.tint(), Some(Tint::Blue));
+        let near = Mark { w: 1, h: 1, rgba: vec![0x30, 0x24, 0x20, 200] };
+        assert_eq!(near.tint(), Some(Tint::Black), "within 24 per channel");
+        assert_eq!(Mark { w: 1, h: 1, rgba: vec![0, 200, 0, 255] }.tint(), None, "green is no ink");
+        assert_eq!(Mark { w: 1, h: 1, rgba: vec![0x1F, 0x3A, 0x8A, 8] }.tint(), None, "nothing opaque");
+        assert_eq!(Mark { w: 2, h: 2, rgba: vec![0; 4] }.tint(), None, "short buffer");
+    }
+
+    #[test]
+    fn mark_recolored_keeps_alpha() {
+        use style::Tint;
+        let m = Mark { w: 2, h: 1, rgba: vec![0x1F, 0x3A, 0x8A, 255, 0x1F, 0x3A, 0x8A, 30] };
+        let r = m.recolored(Tint::Red);
+        assert_eq!(r.rgba, vec![0xA6, 0x1B, 0x1B, 255, 0xA6, 0x1B, 0x1B, 30]);
+        assert_eq!((r.w, r.h), (2, 1));
+        assert_eq!(r.tint(), Some(Tint::Red));
+        assert!(r.same_shape(&m) && m.same_shape(&r));
+        assert!(!m.same_shape(&Mark { w: 2, h: 1, rgba: vec![0x1F, 0x3A, 0x8A, 255, 0x1F, 0x3A, 0x8A, 31] }));
+        assert!(!m.same_shape(&Mark { w: 1, h: 2, rgba: m.rgba.clone() }));
+        assert!(Mark { w: 0, h: 0, rgba: Vec::new() }.recolored(Tint::Blue).rgba.is_empty());
     }
 }
