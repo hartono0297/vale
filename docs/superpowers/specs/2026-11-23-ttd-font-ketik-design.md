@@ -17,7 +17,7 @@ then Segoe Script, then Segoe Print), so the look also differs between PCs.
   | Tile | Internal family | Source (google/fonts `06bfe0d6`) | Subset |
   |---|---|---|---|
   | 1 | Vale Sign Slant | Dancing Script, variable, instanced at wght 600 | ~57 KB |
-  | 2 | Vale Sign Thin | Sacramento Regular | ~57 KB |
+  | 2 | Vale Sign Fine | Sacramento Regular | ~57 KB |
   | 3 | Vale Sign Print | Kalam Regular | ~41 KB |
   | 4 | Vale Sign Formal | Great Vibes Regular | ~56 KB |
 
@@ -26,7 +26,9 @@ then Segoe Script, then Segoe Print), so the look also differs between PCs.
   must not use those names. All four get neutral `Vale Sign *` names (and
   neutral file names) for consistency. The UI never shows font names, only
   "Aa" tiles. THIRD-PARTY-NOTICES credits each source font by name ("based
-  on"), which the OFL allows.
+  on"), which the OFL allows. No weight or style words (Thin, Light, Bold,
+  Italic...) in the family names: DirectWrite strips them into the weight or
+  style, so the family is no longer found by its name.
 - **Type tab layout:** name field, then one row of four equal tiles ("Aa" drawn
   in each font, ink colour of the current swatch), then the preview. The
   chosen tile has the accent (orange) outline. The window grows by the row's

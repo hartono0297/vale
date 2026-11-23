@@ -17,7 +17,7 @@
   | Output file | Family (name ID 1 and 16) | Source | Source SHA-256 |
   |---|---|---|---|
   | `SignSlant.ttf` | `Vale Sign Slant` | `dancingscript/DancingScript[wght].ttf`, instanced `{wght: 600}` | `21808625578FE8D8CD10CB684BE546DCA077B27CD03A53A2F1EC11DC743C924C` |
-  | `SignThin.ttf` | `Vale Sign Thin` | `sacramento/Sacramento-Regular.ttf` | `9341FDA10ADBFEB7EFC94302B34507A3E227D7E7F5C432DF3F5AC8753FF73D24` |
+  | `SignThin.ttf` | `Vale Sign Fine` | `sacramento/Sacramento-Regular.ttf` | `9341FDA10ADBFEB7EFC94302B34507A3E227D7E7F5C432DF3F5AC8753FF73D24` |
   | `SignPrint.ttf` | `Vale Sign Print` | `kalam/Kalam-Regular.ttf` | `57CECB63D4608019371954274AE1D8C397764DEBD5B19D4A33C1EFA4DC923C0B` |
   | `SignFormal.ttf` | `Vale Sign Formal` | `greatvibes/GreatVibes-Regular.ttf` | `8D509802186F1B51572531ECF313E8098F9A5BFDFACA93F0C9B34467F9982D15` |
 
@@ -53,7 +53,7 @@ Task 1 (fonts, scripts, `app.rc`, notices, `src/ui/font_coverage.rs`) and Task 2
 - Test: `src/ui/font_coverage.rs`
 
 **Interfaces:**
-- Produces: RCDATA 211-214 holding the four TTFs; families `Vale Sign Slant`, `Vale Sign Thin`, `Vale Sign Print`, `Vale Sign Formal`, weight 400, style normal.
+- Produces: RCDATA 211-214 holding the four TTFs; families `Vale Sign Slant`, `Vale Sign Fine`, `Vale Sign Print`, `Vale Sign Formal`, weight 400, style normal.
 
 - [ ] **Step 1: Write the failing test** in `src/ui/font_coverage.rs`
 

@@ -395,7 +395,7 @@ FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
 
 ==============================================================================
-Sacramento (Brian J. Bonislawsky DBA Astigmatic), renamed Vale Sign Thin: SignThin.ttf
+Sacramento (Brian J. Bonislawsky DBA Astigmatic), renamed Vale Sign Fine: SignThin.ttf
 ==============================================================================
 
 Copyright (c) 2012, Brian J. Bonislawsky DBA Astigmatic (AOETI) (astigma@astigmatic.com), with Reserved Font Names 'Sacramento'

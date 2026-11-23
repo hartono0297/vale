@@ -121,7 +121,7 @@ JOBS = [
 # at wght 600 but labelled 400 so DirectWrite finds it at normal weight.
 SIGN_JOBS = [
     ("DancingScript-VF.ttf", {"wght": 600}, "SignSlant.ttf", "Vale Sign Slant"),
-    ("Sacramento-Regular.ttf", None, "SignThin.ttf", "Vale Sign Thin"),
+    ("Sacramento-Regular.ttf", None, "SignThin.ttf", "Vale Sign Fine"),
     ("Kalam-Regular.ttf", None, "SignPrint.ttf", "Vale Sign Print"),
     ("GreatVibes-Regular.ttf", None, "SignFormal.ttf", "Vale Sign Formal"),
 ]
@@ -203,7 +203,7 @@ EXPECT = {
 }
 SIGN_EXPECT = {
     "SignSlant.ttf": ("Vale Sign Slant", "Regular", "Regular", 400),
-    "SignThin.ttf": ("Vale Sign Thin", "Regular", "Regular", 400),
+    "SignThin.ttf": ("Vale Sign Fine", "Regular", "Regular", 400),
     "SignPrint.ttf": ("Vale Sign Print", "Regular", "Regular", 400),
     "SignFormal.ttf": ("Vale Sign Formal", "Regular", "Regular", 400),
 }
@@ -334,7 +334,7 @@ $ofl = @(
     @{ File = 'DMMono-OFL.txt'; Title = 'DM Mono (Colophon Foundry, Google Fonts): DMMono-400.ttf, DMMono-500.ttf' }
     @{ File = 'JetBrainsMono-OFL.txt'; Title = 'JetBrains Mono (The JetBrains Mono Project Authors): JetBrainsMono-400.ttf, JetBrainsMono-500.ttf, JetBrainsMono-600.ttf' }
     @{ File = 'DancingScript-OFL.txt'; Title = 'Dancing Script (The Dancing Script Project Authors), renamed Vale Sign Slant: SignSlant.ttf' }
-    @{ File = 'Sacramento-OFL.txt'; Title = 'Sacramento (Brian J. Bonislawsky DBA Astigmatic), renamed Vale Sign Thin: SignThin.ttf' }
+    @{ File = 'Sacramento-OFL.txt'; Title = 'Sacramento (Brian J. Bonislawsky DBA Astigmatic), renamed Vale Sign Fine: SignThin.ttf' }
     @{ File = 'Kalam-OFL.txt'; Title = 'Kalam (Indian Type Foundry), renamed Vale Sign Print: SignPrint.ttf' }
     @{ File = 'GreatVibes-OFL.txt'; Title = 'Great Vibes (The Great Vibes Pro Project Authors), renamed Vale Sign Formal: SignFormal.ttf' }
 )
