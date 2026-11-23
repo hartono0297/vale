@@ -76,6 +76,7 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[sign-office-conversion]]: Office, WPS, LibreOffice order, private copy, never touches the user's instance, 90 s detached worker, job object, sweeps; WPS and LibreOffice unverified live
 - [[sign-image-cap]]: one 64 MP cap for signing images, refused at open; maker photos scaled to 1600 px
 - [[sign-signature-store]]: saved signatures and initials (4 each), DPAPI in `signatures.bin`, cleared on last close
+- [[sign-mark-ink]]: a placed signature or initials switches ink (black, blue, red) from its bar by recolouring the mark; all-pages initials take the selected colour instead of stacking
 - [[shelf-image-preview]]: right-click an image card for "Pratinjau gambar": the panel shows the picture as a sub-view (not a window), image cards get a 192 px thumbnail from one lazy worker while the Shelf page is open (1024 px preview, 64 MiB cap, no card thumbnail for network paths, failures remembered, 12 cached by key, no mtime stamp), `MenuOpen` holds the panel; not verified live (2026-11-14)
 - [[shelf-motion]]: shelf cards animate in (200 ms), out as ghosts (180 ms) and across (220 ms), no timer, per-draw alpha, reduced motion (v3.5)
 - [[search]]: quick search on a hotkey: apps, calculator, Windows settings, web; back button returns to the previous page
