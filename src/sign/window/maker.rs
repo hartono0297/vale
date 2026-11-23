@@ -65,6 +65,8 @@ const CHECK_H: f32 = 52.0;
 const TILE_H: f32 = 48.0;
 const BTN_H: f32 = 34.0;
 const FIELD_H: f32 = 36.0;
+/// The row of handwriting-font tiles under the name field (Ketik).
+const FONT_ROW_H: f32 = 44.0;
 const SWATCH: f32 = 18.0;
 /// The logical pad `ink::from_strokes` takes.
 const INK_PAD: (f32, f32) = (300.0, 90.0);
@@ -91,6 +93,7 @@ pub(super) enum MHit {
     Keep,
     Tile(usize),
     Forget(usize),
+    Font(usize),
     New,
     Cancel,
     Use,
@@ -150,12 +153,23 @@ pub(super) fn maker_layout(ui: f32, tab: Tab, saved: usize, has_ink: bool, lab: 
         ));
     }
     y += tabs.h + 12.0 * ui;
-    let area = Rect { x: pad, y, w: inner, h: PAD_H * ui };
+    let area_h = if tab == Tab::Type { PAD_H + FONT_ROW_H + 8.0 } else { PAD_H };
+    let area = Rect { x: pad, y, w: inner, h: area_h * ui };
     let mut field = Rect::default();
     let pad_rect = match tab {
         Tab::Type => {
             field = Rect { x: area.x, y: area.y, w: area.w, h: FIELD_H * ui };
-            Rect { x: area.x, y: area.y + field.h + 8.0 * ui, w: area.w, h: area.h - field.h - 8.0 * ui }
+            let row_h = FONT_ROW_H * ui;
+            let gap = 8.0 * ui;
+            let fw = (area.w - 3.0 * gap) / 4.0;
+            for i in 0..4 {
+                buttons.push((
+                    MHit::Font(i),
+                    Rect { x: area.x + i as f32 * (fw + gap), y: field.bottom() + gap, w: fw, h: row_h },
+                ));
+            }
+            let top = field.h + gap + row_h + gap;
+            Rect { x: area.x, y: area.y + top, w: area.w, h: area.h - top }
         }
         _ => area,
     };
@@ -520,6 +534,7 @@ fn act(hwnd: HWND, hit: MHit) {
             relayout(hwnd);
         }
         MHit::PickPhoto => pick_photo(hwnd),
+        MHit::Font(_) => {}
         MHit::Ink(blue) => {
             with(hwnd, |m| {
                 m.blue = blue;
@@ -757,16 +772,18 @@ fn pen_up(hwnd: HWND) {
 }
 
 fn ring(m: &Maker) -> Vec<MHit> {
-    let mut order: Vec<MHit> = m
-        .layout
-        .buttons
+    ring_of(&m.layout.buttons)
+}
+
+fn ring_of(buttons: &[(MHit, Rect)]) -> Vec<MHit> {
+    let mut order: Vec<MHit> = buttons
         .iter()
         .map(|(h, _)| *h)
         .filter(|h| !matches!(h, MHit::Forget(_)))
         .collect();
     order.sort_by_key(|h| match h {
         MHit::Tab(_) => 0,
-        MHit::Redo | MHit::PickPhoto => 1,
+        MHit::Redo | MHit::PickPhoto | MHit::Font(_) => 1,
         MHit::Ink(_) => 2,
         MHit::Keep => 3,
         MHit::Tile(_) | MHit::New => 4,
@@ -1430,6 +1447,40 @@ mod tests {
     use super::*;
 
     const LAB: MLabels = MLabels { redo: 42.0, pick: 230.0, cancel: 38.0, use_: 38.0 };
+
+    #[test]
+    fn the_type_tab_has_four_font_tiles_between_field_and_preview() {
+        let t = maker_layout(1.0, Tab::Type, 0, false, &LAB);
+        let f: Vec<Rect> = (0..4).map(|i| t.rect_of(MHit::Font(i)).expect("tile")).collect();
+        assert!(t.rect_of(MHit::Font(4)).is_none());
+        for r in &f {
+            assert_eq!(r.h, FONT_ROW_H);
+            assert!(r.y >= t.field.bottom() + 7.99 && r.bottom() <= t.pad.y - 7.99, "{r:?}");
+        }
+        assert!((f[0].x - t.field.x).abs() < 0.01 && (f[3].right() - t.field.right()).abs() < 0.01);
+        for i in 1..4 {
+            assert!((f[i].w - f[0].w).abs() < 0.01);
+            assert!((f[i].x - f[i - 1].right() - 8.0).abs() < 0.01);
+        }
+        assert_eq!(t.pad.h, PAD_H - FIELD_H - 8.0, "the preview keeps its height");
+        let d = maker_layout(1.0, Tab::Draw, 0, false, &LAB);
+        assert!((t.size.1 - d.size.1 - (FONT_ROW_H + 8.0)).abs() < 0.01);
+        assert_eq!(t.hit(f[2].x + f[2].w / 2.0, f[2].y + f[2].h / 2.0), Some(MHit::Font(2)));
+        for tab in [Tab::Draw, Tab::Photo] {
+            let l = maker_layout(1.0, tab, 2, true, &LAB);
+            assert!(!l.buttons.iter().any(|(h, _)| matches!(h, MHit::Font(_))));
+        }
+    }
+
+    #[test]
+    fn font_tiles_come_after_the_tabs_and_before_the_ink() {
+        let t = maker_layout(1.0, Tab::Type, 1, false, &LAB);
+        let order = ring_of(&t.buttons);
+        let at = |h| order.iter().position(|x| *x == h).unwrap();
+        assert!(at(MHit::Tab(Tab::Photo)) < at(MHit::Font(0)));
+        assert_eq!([at(MHit::Font(1)), at(MHit::Font(2)), at(MHit::Font(3))], [at(MHit::Font(0)) + 1, at(MHit::Font(0)) + 2, at(MHit::Font(0)) + 3]);
+        assert!(at(MHit::Font(3)) < at(MHit::Ink(true)));
+    }
 
     fn all_inside(l: &MLayout) {
         let outer = Rect { x: 0.0, y: 0.0, w: l.size.0, h: l.size.1 };
