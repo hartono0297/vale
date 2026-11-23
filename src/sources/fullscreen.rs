@@ -204,6 +204,47 @@ pub fn top_candidate_covers(
         .is_some_and(|w| covers_monitor(w.rect, monitor, w.maximised_with_caption))
 }
 
+/// Whether any of `above` (the windows over the island in the z-order) is a
+/// candidate whose frame overlaps `island` without covering the whole
+/// `monitor`. A window that covers the monitor is left to the fullscreen rule,
+/// which hides the notch instead.
+pub fn covers_island(
+    above: impl IntoIterator<Item = WindowFacts>,
+    island: Rect4,
+    monitor: Rect4,
+) -> bool {
+    above.into_iter().any(|w| {
+        is_candidate(&w)
+            && intersects(w.rect, island)
+            && !covers_monitor(w.rect, monitor, w.maximised_with_caption)
+    })
+}
+
+/// True when another app's window sits above the island and overlaps it, so the
+/// island has to be raised again (a menu or a game launcher can end up over it
+/// and nothing else repairs that). Runs at most once per `TIMER_SYSTEM` tick and
+/// reads only the windows above the island, top first. False when the island's
+/// rectangle or monitor cannot be read.
+pub fn island_covered(island: HWND) -> bool {
+    let mut rect = RECT::default();
+    if unsafe { GetWindowRect(island, &mut rect) }.is_err() {
+        return false;
+    }
+    let Some(monitor) = monitor_of(island).and_then(monitor_rect) else {
+        return false;
+    };
+    let (own_pid, shell, desktop) =
+        unsafe { (GetCurrentProcessId(), GetShellWindow(), GetDesktopWindow()) };
+    let first = unsafe { GetTopWindow(None) }.ok();
+    let above = std::iter::successors(first, |&hwnd| unsafe {
+        GetWindow(hwnd, GW_HWNDNEXT).ok()
+    })
+    .take(MAX_WALK)
+    .take_while(|&hwnd| hwnd != island)
+    .map(|hwnd| unsafe { facts_of(hwnd, own_pid, shell, desktop) });
+    covers_island(above, Rect4::from_win(rect), monitor)
+}
+
 /// Classes of the desktop (the wallpaper host), which spans every monitor.
 fn is_desktop_class_name(class: &str) -> bool {
     ["Progman", "WorkerW"]
@@ -515,6 +556,67 @@ mod tests {
         });
         assert!(top_candidate_covers(windows, NOTCH));
         assert_eq!(read.get(), 3);
+    }
+
+    /// The island's window: top-centre of the notch's monitor.
+    const ISLAND: Rect4 = Rect4::new(650, 0, 1270, 330);
+
+    fn maximised_frame() -> WindowFacts {
+        window(Rect4::new(-8, -8, 1928, 1040))
+    }
+
+    #[test]
+    fn a_window_above_the_island_covers_it() {
+        assert!(covers_island([maximised_frame()], ISLAND, NOTCH));
+    }
+
+    #[test]
+    fn nothing_above_the_island_is_not_covered() {
+        assert!(!covers_island(Vec::new(), ISLAND, NOTCH));
+    }
+
+    #[test]
+    fn a_window_beside_the_island_does_not_cover_it() {
+        assert!(!covers_island(
+            [window(Rect4::new(0, 400, 600, 900))],
+            ISLAND,
+            NOTCH
+        ));
+    }
+
+    #[test]
+    fn a_fullscreen_window_above_is_left_to_the_fullscreen_rule() {
+        assert!(!covers_island([window(NOTCH)], ISLAND, NOTCH));
+    }
+
+    #[test]
+    fn non_candidates_above_never_cover() {
+        let tweaks: [fn(&mut WindowFacts); 7] = [
+            |w| w.own_process = true,
+            |w| w.tool = true,
+            |w| w.transparent = true,
+            |w| w.cloaked = true,
+            |w| w.iconic = true,
+            |w| w.visible = false,
+            |w| w.shell = true,
+        ];
+        for tweak in tweaks {
+            let mut w = maximised_frame();
+            tweak(&mut w);
+            assert!(!covers_island([w], ISLAND, NOTCH));
+        }
+    }
+
+    #[test]
+    fn a_later_covering_window_still_counts() {
+        let mut menu = window(Rect4::new(700, 0, 900, 200));
+        menu.tool = true;
+        let beside = window(Rect4::new(0, 400, 600, 900));
+        assert!(covers_island(
+            [menu, beside, maximised_frame()],
+            ISLAND,
+            NOTCH
+        ));
     }
 
     #[test]
