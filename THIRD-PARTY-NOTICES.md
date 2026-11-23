@@ -32,6 +32,20 @@ Latin subsets embedded in `vale.exe`, all under the **SIL Open Font Licence
 - **JetBrains Mono** (UI font option), Copyright 2020 The JetBrains Mono Project
   Authors ([github.com/JetBrains/JetBrainsMono](https://github.com/JetBrains/JetBrainsMono)),
   SIL Open Font Licence 1.1; the programming ligatures are dropped in the subset.
+- Four handwriting fonts for typed signatures (renamed **Vale Sign Slant**,
+  **Vale Sign Thin**, **Vale Sign Print** and **Vale Sign Formal**, because a
+  subset is a Modified Version under the OFL and two of the sources carry
+  Reserved Font Names), all from [github.com/google/fonts](https://github.com/google/fonts):
+  - Vale Sign Slant is based on **Dancing Script** by The Dancing Script
+    Project Authors, Copyright 2016 The Dancing Script Project Authors
+    ([github.com/googlefonts/DancingScript](https://github.com/googlefonts/DancingScript)).
+  - Vale Sign Thin is based on **Sacramento** by Brian J. Bonislawsky DBA
+    Astigmatic (AOETI), Copyright (c) 2012 Brian J. Bonislawsky DBA Astigmatic (AOETI).
+  - Vale Sign Print is based on **Kalam** by Indian Type Foundry,
+    Copyright (c) 2014 Indian Type Foundry.
+  - Vale Sign Formal is based on **Great Vibes** by The Great Vibes Pro
+    Project Authors, Copyright 2015 The Great Vibes Pro Project Authors
+    ([github.com/googlefonts/great-vibes](https://github.com/googlefonts/great-vibes)).
 
 `scripts/make-fonts.ps1` rebuilds the subsets from the pinned upstream files.
 

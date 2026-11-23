@@ -3,7 +3,8 @@
 //! the cmap of the TTF bytes and scans the sources for non-ASCII characters.
 //! See the note `docs/memory/exe-size.md` before trimming a font further.
 //! JetBrains Mono (the UI font option) is held to the same rules, plus: no
-//! ligature features left in its GSUB.
+//! ligature features left in its GSUB. The four typed-signature fonts
+//! (`Sign*.ttf`) are checked for their Latin subset and for no UI-only symbols.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -169,6 +170,57 @@ fn cmap(font: &[u8]) -> BTreeSet<u32> {
         }
     }
     set
+}
+
+// Latin Extended-A (U+0100-017F) glyphs each typed-signature font keeps. Pinned
+// to the built files: a change means the subset or the pinned source changed.
+const SLANT_EXT_A: usize = 127;
+const THIN_EXT_A: usize = 126;
+const PRINT_EXT_A: usize = 85;
+const FORMAL_EXT_A: usize = 126;
+
+const SIGN_FONTS: [(&str, &[u8], usize); 4] = [
+    (
+        "SignSlant",
+        include_bytes!("../../assets/fonts/SignSlant.ttf"),
+        SLANT_EXT_A,
+    ),
+    (
+        "SignThin",
+        include_bytes!("../../assets/fonts/SignThin.ttf"),
+        THIN_EXT_A,
+    ),
+    (
+        "SignPrint",
+        include_bytes!("../../assets/fonts/SignPrint.ttf"),
+        PRINT_EXT_A,
+    ),
+    (
+        "SignFormal",
+        include_bytes!("../../assets/fonts/SignFormal.ttf"),
+        FORMAL_EXT_A,
+    ),
+];
+
+#[test]
+fn sign_fonts_keep_their_latin_subset() {
+    for (name, bytes, ext_a) in SIGN_FONTS {
+        let map = cmap(bytes);
+        for cp in (0x20..=0x7E).chain(0xA0..=0xFF) {
+            if cp != 0xAD {
+                assert!(map.contains(&cp), "{name} lost U+{cp:04X}");
+            }
+        }
+        assert_eq!(
+            map.range(0x100..=0x17F).count(),
+            ext_a,
+            "{name}: Latin Extended-A count changed"
+        );
+        assert!(
+            map.range(0x2190..=0x2193).next().is_none() && !map.contains(&0x2713),
+            "{name}: UI-only symbols in a sign font"
+        );
+    }
 }
 
 fn rs_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {

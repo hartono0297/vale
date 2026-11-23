@@ -1,6 +1,9 @@
 # Builds the embedded fonts in assets\fonts: static, Latin-subset TTF files of
-# DM Sans, DM Mono and JetBrains Mono, plus assets\fonts\OFL.txt.
-# app.rc embeds the TTFs as RCDATA 203-210; keep the file names in sync.
+# DM Sans, DM Mono and JetBrains Mono, plus four handwriting fonts for typed
+# signatures (SignSlant, SignThin, SignPrint, SignFormal, renamed "Vale Sign *"
+# because a subset is a Modified Version and two carry Reserved Font Names),
+# plus assets\fonts\OFL.txt.
+# app.rc embeds the TTFs as RCDATA 203-214; keep the file names in sync.
 #
 # Sources are pinned by commit and SHA-256 below and downloaded into a fresh
 # scratch directory (-WorkDir, default a new folder under %TEMP%), never into
@@ -55,6 +58,25 @@ $Sources = @(
     @{ Name = 'JetBrainsMono-OFL.txt'; Sha256 = '30F0C136E3C88E422D0791ACD97238870F9054A9729BC34CF2FF0D4ED8CAC4AD'
        Url = "$JetBrainsMono/cd5227bd1f61dff3bbd6c814ceaf7ffd95e947d9/OFL.txt" }
 )
+$SignCommit = '06bfe0d62a98375cb09c942fa18e68bd32cff057'
+$Sources += @(
+    @{ Name = 'DancingScript-VF.ttf'; Sha256 = '21808625578FE8D8CD10CB684BE546DCA077B27CD03A53A2F1EC11DC743C924C'
+       Url = "$GoogleFonts/$SignCommit/ofl/dancingscript/DancingScript%5Bwght%5D.ttf" }
+    @{ Name = 'DancingScript-OFL.txt'; Sha256 = '6F090277C00AF96651CE6DBCC38FF1591047A3BFFEF486E80B6A32E8276A8201'
+       Url = "$GoogleFonts/$SignCommit/ofl/dancingscript/OFL.txt" }
+    @{ Name = 'Sacramento-Regular.ttf'; Sha256 = '9341FDA10ADBFEB7EFC94302B34507A3E227D7E7F5C432DF3F5AC8753FF73D24'
+       Url = "$GoogleFonts/$SignCommit/ofl/sacramento/Sacramento-Regular.ttf" }
+    @{ Name = 'Sacramento-OFL.txt'; Sha256 = '2E2CB5A98DA665F2AB82A9FD01FB18C2337F845761B0C163F690ED65F3B94677'
+       Url = "$GoogleFonts/$SignCommit/ofl/sacramento/OFL.txt" }
+    @{ Name = 'Kalam-Regular.ttf'; Sha256 = '57CECB63D4608019371954274AE1D8C397764DEBD5B19D4A33C1EFA4DC923C0B'
+       Url = "$GoogleFonts/$SignCommit/ofl/kalam/Kalam-Regular.ttf" }
+    @{ Name = 'Kalam-OFL.txt'; Sha256 = 'F62EF357D3A1C3D27EDD35A6E1BA350E8A8D13499797964EEADEFBF0B3B15D1F'
+       Url = "$GoogleFonts/$SignCommit/ofl/kalam/OFL.txt" }
+    @{ Name = 'GreatVibes-Regular.ttf'; Sha256 = '8D509802186F1B51572531ECF313E8098F9A5BFDFACA93F0C9B34467F9982D15'
+       Url = "$GoogleFonts/$SignCommit/ofl/greatvibes/GreatVibes-Regular.ttf" }
+    @{ Name = 'GreatVibes-OFL.txt'; Sha256 = '61093A21F5E63DEDF54222B3C09997E54C0FE43E3851D21386E02DDCBC246D49'
+       Url = "$GoogleFonts/$SignCommit/ofl/greatvibes/OFL.txt" }
+)
 $PipPackages = @('fonttools==4.67.0', 'brotli==1.2.1')
 
 # Fixed head.modified so rebuilding from the same pins gives identical bytes.
@@ -76,6 +98,10 @@ FEATURES = "kern,liga,calt,ccmp,locl,mark,mkmk,tnum,pnum,lnum"
 # JetBrains Mono: the same list without calt, liga and dlig (ligatures dropped).
 FEATURES_NO_LIGA = "kern,ccmp,locl,mark,mkmk,tnum,pnum,lnum"
 NAME_IDS = "0,1,2,3,4,5,6,13,14,16,17"
+# Typed-signature fonts: Latin only, no UI symbols, always unhinted.
+SIGN_UNICODES = ("U+0020-007E,U+00A0-00FF,U+0100-017F,U+2010-2027,U+2030-203A,"
+                 "U+20AC,U+2122")
+SIGN_FEATURES = "kern,liga,calt,ccmp,locl,mark,mkmk"
 WEIGHT_NAMES = {400: "Regular", 500: "Medium", 600: "SemiBold"}
 
 # (source, axis location or None for a static source, output, family, weight,
@@ -89,6 +115,15 @@ JOBS = [
     ("JetBrainsMono-Regular.ttf", None, "JetBrainsMono-400.ttf", "JetBrains Mono", 400, FEATURES_NO_LIGA),
     ("JetBrainsMono-Medium.ttf", None, "JetBrainsMono-500.ttf", "JetBrains Mono", 500, FEATURES_NO_LIGA),
     ("JetBrainsMono-SemiBold.ttf", None, "JetBrainsMono-600.ttf", "JetBrains Mono", 600, FEATURES_NO_LIGA),
+]
+
+# (source, axis location or None, output, family). Dancing Script is instanced
+# at wght 600 but labelled 400 so DirectWrite finds it at normal weight.
+SIGN_JOBS = [
+    ("DancingScript-VF.ttf", {"wght": 600}, "SignSlant.ttf", "Vale Sign Slant"),
+    ("Sacramento-Regular.ttf", None, "SignThin.ttf", "Vale Sign Thin"),
+    ("Kalam-Regular.ttf", None, "SignPrint.ttf", "Vale Sign Print"),
+    ("GreatVibes-Regular.ttf", None, "SignFormal.ttf", "Vale Sign Formal"),
 ]
 
 
@@ -126,7 +161,9 @@ def set_names(font, family, weight):
 
 os.makedirs(work_dir, exist_ok=True)
 os.makedirs(out_dir, exist_ok=True)
-for src, location, out, family, weight, features in JOBS:
+ALL_JOBS = [(*j, UNICODES, True) for j in JOBS]
+ALL_JOBS += [(s, loc, o, fam, 400, SIGN_FEATURES, SIGN_UNICODES, False) for s, loc, o, fam in SIGN_JOBS]
+for src, location, out, family, weight, features, unicodes, may_hint in ALL_JOBS:
     font = TTFont(os.path.join(src_dir, src))
     if location is not None:
         font = instancer.instantiateVariableFont(font, location, static=True)
@@ -136,11 +173,11 @@ for src, location, out, family, weight, features in JOBS:
     args = [
         tmp,
         f"--output-file={os.path.join(out_dir, out)}",
-        f"--unicodes={UNICODES}",
+        f"--unicodes={unicodes}",
         f"--layout-features={features}",
         f"--name-IDs={NAME_IDS}",
     ]
-    if not hinting:
+    if not (hinting and may_hint):
         args.append("--no-hinting")
     subset.main(args)  # pyftsubset
     print(f"built {out} from {src} {location or ''}")
@@ -164,13 +201,25 @@ EXPECT = {
     "JetBrainsMono-500.ttf": ("JetBrains Mono", "Medium", "Regular", 500),
     "JetBrainsMono-600.ttf": ("JetBrains Mono", "SemiBold", "Regular", 600),
 }
+SIGN_EXPECT = {
+    "SignSlant.ttf": ("Vale Sign Slant", "Regular", "Regular", 400),
+    "SignThin.ttf": ("Vale Sign Thin", "Regular", "Regular", 400),
+    "SignPrint.ttf": ("Vale Sign Print", "Regular", "Regular", 400),
+    "SignFormal.ttf": ("Vale Sign Formal", "Regular", "Regular", 400),
+}
+RESERVED = ("Dancing Script", "Sacramento")
 LIMIT = 370 * 1024
+SIGN_LIMIT = 230 * 1024
 
-errors, total = [], 0
-for file, (family, typo_sub, legacy_sub, weight) in EXPECT.items():
+errors, total, sign_total = [], 0, 0
+for file, (family, typo_sub, legacy_sub, weight) in {**EXPECT, **SIGN_EXPECT}.items():
     path = os.path.join(out_dir, file)
     size = os.path.getsize(path)
-    total += size
+    is_sign = file in SIGN_EXPECT
+    if is_sign:
+        sign_total += size
+    else:
+        total += size
     font = TTFont(path)
     name = font["name"]
     ids = {i: name.getDebugName(i) for i in (1, 2, 16, 17)}
@@ -195,10 +244,17 @@ for file, (family, typo_sub, legacy_sub, weight) in EXPECT.items():
         errors.append(f"{file}: still variable")
     if file.startswith("DMSans") and "tnum" not in gsub:
         errors.append(f"{file}: tnum feature missing")
+    if is_sign:
+        for i in (1, 2, 3, 4, 6, 16, 17):
+            value = name.getDebugName(i) or ""
+            if any(r in value for r in RESERVED):
+                errors.append(f"{file}: name {i} carries a Reserved Font Name: {value!r}")
     cmap = font.getBestCmap()
     for cp in (0x20, 0x7E, 0xE9, 0x2013, 0x2026, 0x20AC):
         if cp not in cmap:
             errors.append(f"{file}: U+{cp:04X} missing")
+    if is_sign:
+        continue
     if file.startswith("JetBrainsMono"):
         for tag in ("calt", "liga", "dlig"):
             if tag in gsub:
@@ -210,6 +266,9 @@ for file, (family, typo_sub, legacy_sub, weight) in EXPECT.items():
 print(f"total {total} bytes ({total / 1024:.1f} KB), limit {LIMIT // 1024} KB")
 if total > LIMIT:
     errors.append("total size over limit")
+print(f"sign total {sign_total} bytes ({sign_total / 1024:.1f} KB), limit {SIGN_LIMIT // 1024} KB")
+if sign_total > SIGN_LIMIT:
+    errors.append("sign fonts total size over limit")
 if errors:
     print("\n".join(errors))
     sys.exit(1)
@@ -274,6 +333,10 @@ $ofl = @(
     @{ File = 'DMSans-OFL.txt'; Title = 'DM Sans (Colophon Foundry, Google Fonts): DMSans-400.ttf, DMSans-500.ttf, DMSans-600.ttf' }
     @{ File = 'DMMono-OFL.txt'; Title = 'DM Mono (Colophon Foundry, Google Fonts): DMMono-400.ttf, DMMono-500.ttf' }
     @{ File = 'JetBrainsMono-OFL.txt'; Title = 'JetBrains Mono (The JetBrains Mono Project Authors): JetBrainsMono-400.ttf, JetBrainsMono-500.ttf, JetBrainsMono-600.ttf' }
+    @{ File = 'DancingScript-OFL.txt'; Title = 'Dancing Script (The Dancing Script Project Authors), renamed Vale Sign Slant: SignSlant.ttf' }
+    @{ File = 'Sacramento-OFL.txt'; Title = 'Sacramento (Brian J. Bonislawsky DBA Astigmatic), renamed Vale Sign Thin: SignThin.ttf' }
+    @{ File = 'Kalam-OFL.txt'; Title = 'Kalam (Indian Type Foundry), renamed Vale Sign Print: SignPrint.ttf' }
+    @{ File = 'GreatVibes-OFL.txt'; Title = 'Great Vibes (The Great Vibes Pro Project Authors), renamed Vale Sign Formal: SignFormal.ttf' }
 )
 $text = "The fonts in this folder are subset static instances of the families below,`n" +
         "built by scripts/make-fonts.ps1. Each is licensed under the SIL Open Font`n" +
