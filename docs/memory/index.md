@@ -14,7 +14,7 @@ One note per decision, gotcha or convention. Link each new note here.
 
 - [[studio-palette-accent-aliases]]
 - [[studio-font-sources]]
-- [[exe-size]]: size measured per change (Sign text formatting, 2026-11-21, +33,280 bytes to 6,062,080, is the last entry; shipped release sizes v5.2.0 to v5.5.2 at the end); icon small sizes as PNG (-38 KB), opt-level z option (-326 KB) left to the owner
+- [[exe-size]]: size measured per change (Sign typed fonts, 2026-11-23, +218,624 bytes to 6,282,752, is the last entry; shipped release sizes v5.2.0 to v5.5.2 at the end); icon small sizes as PNG (-38 KB), opt-level z option (-326 KB) left to the owner
 - [[studio-icons]]
 - [[studio-calendar-day-view]]
 - [[studio-media-progress-timer]]
@@ -77,6 +77,7 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[sign-office-conversion]]: Office, WPS, LibreOffice order, private copy, never touches the user's instance, 90 s detached worker, job object, sweeps; WPS and LibreOffice unverified live
 - [[sign-image-cap]]: one 64 MP cap for signing images, refused at open; maker photos scaled to 1600 px
 - [[sign-signature-store]]: saved signatures and initials (4 each), DPAPI in `signatures.bin`, cleared on last close
+- [[sign-typed-fonts]]: the maker's Type tab picks one of four bundled handwriting fonts ("Aa" tiles; Dancing Script, Sacramento, Kalam, Great Vibes renamed "Vale Sign *" for the OFL Reserved Font Names), no weight words in family names (DirectWrite ate "Thin"), last-used font in memory only
 - [[sign-mark-ink]]: a placed signature or initials switches ink (black, blue, red) from its bar by recolouring the mark; all-pages initials take the selected colour instead of stacking
 - [[shelf-image-preview]]: right-click an image card for "Pratinjau gambar": the panel shows the picture as a sub-view (not a window), image cards get a 192 px thumbnail from one lazy worker while the Shelf page is open (1024 px preview, 64 MiB cap, no card thumbnail for network paths, failures remembered, 12 cached by key, no mtime stamp), `MenuOpen` holds the panel; not verified live (2026-11-14)
 - [[shelf-motion]]: shelf cards animate in (200 ms), out as ghosts (180 ms) and across (220 ms), no timer, per-draw alpha, reduced motion (v3.5)

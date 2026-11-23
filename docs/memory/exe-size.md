@@ -473,6 +473,10 @@ e0c7738 in the same folder.
 
 [[sign-text-format]]: `format-teks` branch, `cargo build --release --locked` gave 6,062,080 bytes against 6,028,800 on `main` bc3a7af (+33,280, about +32.5 KiB, +0.55 %). No new crate and no new `windows` feature; PDF fonts are the base-14 ones, nothing embedded. Still under the Tanda tangan module cap (6,373,068).
 
+## Sign: typed-signature fonts (2026-11-23)
+
+[[sign-typed-fonts]]: `cargo build --release --locked` on the branch (merged with `main` e391e17) gave 6,282,752 bytes against 6,064,128 on `main` e391e17 (+218,624, about +213.5 KiB, +3.6 %). The four sign fonts are 216,292 bytes of it (no hinting); no new crate, no new `windows` feature. Still under the Tanda tangan module cap (6,373,068), about 90 KB left.
+
 ## Shipped release sizes
 
 The `vale.exe` asset of each GitHub release (built by the release workflow,
