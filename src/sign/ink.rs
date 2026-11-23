@@ -164,7 +164,8 @@ pub fn from_text(name: &str, ink: Ink, font: HandFont) -> Option<Mark> {
 }
 
 /// The typed name on its uncropped canvas, as `(w, h, premultiplied BGRA)`.
-/// The canvas has `TEXT_PX` of clear room on every side for swashes and tails.
+/// The canvas leaves `TEXT_PX` of room left and right and `TEXT_PX / 2` above
+/// the text, and the height has room below for descenders and tails.
 fn typed_canvas(name: &str, ink: Ink, font: HandFont) -> Option<(u32, u32, Vec<u8>)> {
     let name = name.trim();
     if name.is_empty() {
@@ -173,7 +174,7 @@ fn typed_canvas(name: &str, ink: Ink, font: HandFont) -> Option<(u32, u32, Vec<u
     let text: String = name.chars().take(MAX_NAME).collect();
     let wide: Vec<u16> = text.encode_utf16().collect();
     let margin = TEXT_PX;
-    let w = (wide.len() as u32 * 80 + 2 * margin as u32).min(4096);
+    let w = (wide.len() as u32 * 96 + 2 * margin as u32).min(4096);
     let h = (TEXT_PX * 3.0) as u32;
     let pbgra = raster::offscreen(w, h, |rt, _, dwrite| unsafe {
         let Some(format) = hand::format(dwrite, font, TEXT_PX) else {
@@ -429,7 +430,7 @@ mod tests {
     fn typed_marks_are_never_clipped() {
         let _com = Com::new();
         for f in hand::ALL {
-            for name in ["Kennedy Wurangian", "Çağrı Żółć", "Great Vibes", "Jj Qq Yy fg"] {
+            for name in ["Kennedy Wurangian", "Çağrı Żółć", "Great Vibes", "Jj Qq Yy fg", &"M".repeat(40), &"W".repeat(40)] {
                 let (w, h, px) = typed_canvas(name, Ink::Blue, f).expect("a canvas");
                 let (w, h) = (w as usize, h as usize);
                 for (i, p) in px.chunks_exact(4).enumerate() {

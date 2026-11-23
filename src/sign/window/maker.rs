@@ -1189,7 +1189,8 @@ fn paint(m: &mut Maker) -> windows::core::Result<()> {
                 fill_round(&rt, &brush, *r, 8.0 * ui, PAPER, 1.0);
                 let chosen = hand::ALL.get(*i) == Some(&m.font);
                 if !chosen && m.hover == Some(*hit) {
-                    fill_round(&rt, &brush, *r, 8.0 * ui, p.hover, 0.5);
+                    // On paper in both themes, so not the window palette.
+                    fill_round(&rt, &brush, *r, 8.0 * ui, BASELINE, 0.5);
                 }
                 if chosen {
                     unsafe {
