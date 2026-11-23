@@ -2,6 +2,7 @@
 //! writers and the shelf entry point.
 
 pub mod geom;
+pub mod hand;
 pub mod image_out;
 pub mod ink;
 pub mod names;

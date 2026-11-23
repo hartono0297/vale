@@ -49,6 +49,7 @@ use crate::i18n::{Key, tr};
 use crate::shot_edit::gfx::{Align, Gfx, Target, bitmap, color, rect_f};
 use crate::shot_edit::icons::fill_round;
 use crate::sign::Mark;
+use crate::sign::hand;
 use crate::sign::ink::{self, Ink};
 use crate::theme::WindowPalette;
 use crate::ui::geometry::Rect;
@@ -523,7 +524,7 @@ fn can_use(m: &Maker) -> bool {
 
 fn retype(m: &mut Maker) {
     let name = m.name.as_ref().map(|f| text_edit::text(f.edit)).unwrap_or_default();
-    m.typed = ink::from_text(&name, ink_of(m.blue)).map(Arc::new);
+    m.typed = ink::from_text(&name, ink_of(m.blue), hand::last()).map(Arc::new);
 }
 
 fn act(hwnd: HWND, hit: MHit) {
