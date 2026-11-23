@@ -1183,7 +1183,10 @@ fn paint(m: &mut Maker) -> windows::core::Result<()> {
             MHit::Font(i) => {
                 fill_round(&rt, &brush, *r, 8.0 * ui, PAPER, 1.0);
                 let chosen = hand::ALL.get(*i) == Some(&m.font);
-                if chosen || m.hover == Some(*hit) {
+                if !chosen && m.hover == Some(*hit) {
+                    fill_round(&rt, &brush, *r, 8.0 * ui, p.hover, 0.5);
+                }
+                if chosen {
                     unsafe {
                         brush.SetColor(&color(p.accent, 1.0));
                         rt.DrawRoundedRectangle(
