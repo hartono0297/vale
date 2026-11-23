@@ -170,6 +170,28 @@ impl IslandWindow {
         true
     }
 
+    /// Whether the island is meant to be in front (not lowered).
+    pub fn front(&self) -> bool {
+        self.front
+    }
+
+    /// Puts the island on top again without touching the `front` cache:
+    /// `set_front(true)` returns early while the cache says front, so it
+    /// cannot repair an island another window got above.
+    pub fn raise(&self) {
+        unsafe {
+            let _ = SetWindowPos(
+                self.hwnd,
+                Some(HWND_TOPMOST),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
+    }
+
     /// The window's top-left corner on the screen, physical pixels.
     pub fn screen_origin(&self) -> (i32, i32) {
         (self.origin.x, self.origin.y)
