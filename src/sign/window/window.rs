@@ -1245,7 +1245,7 @@ pub(super) fn float_hits(kind: &ItemKind) -> Vec<Hit> {
             hits.extend([Hit::Family, Hit::Bold, Hit::Italic, Hit::Underline]);
             hits.extend(style::Tint::ALL.map(Hit::Tint));
         }
-        ItemKind::Check(_) => hits.extend(style::Tint::ALL.map(Hit::Tint)),
+        ItemKind::Check(_) | ItemKind::Signature(_) | ItemKind::Initials(_) => hits.extend(style::Tint::ALL.map(Hit::Tint)),
         _ => {}
     }
     hits.extend([Hit::Smaller, Hit::Bigger]);
@@ -1825,11 +1825,12 @@ pub(super) fn selected_style(w: &Win) -> Option<style::TextStyle> {
     }
 }
 
-/// The colour of the selected Text, Date or Check.
+/// The colour of the selected Text, Date, Check, Signature or Initials.
 pub(super) fn selected_tint(w: &Win) -> Option<style::Tint> {
     match &w.doc.as_ref()?.session.items.get(w.selected?)?.kind {
         ItemKind::Text(_, st) | ItemKind::Date(_, st) => Some(st.tint),
         ItemKind::Check(t) => Some(*t),
+        ItemKind::Signature(m) | ItemKind::Initials(m) => m.tint(),
         _ => None,
     }
 }
@@ -1885,12 +1886,24 @@ pub(super) fn restyle_selected(w: &mut Win, f: impl FnOnce(&mut style::TextStyle
     }
 }
 
-/// A colour for the selected item: a Check's own (as one undo step), or the
-/// style of a Text or Date.
+/// A colour for the selected item: a Check's own or a Signature's or
+/// Initials' ink (each one undo step), or the style of a Text or Date.
 pub(super) fn tint_selected(w: &mut Win, t: style::Tint) {
     let Some(i) = w.selected else { return };
     let Some(d) = &mut w.doc else { return };
     let Some(it) = d.session.items.get(i) else { return };
+    match &it.kind {
+        ItemKind::Signature(m) | ItemKind::Initials(m) => {
+            if m.tint() != Some(t) {
+                let marked = Arc::new(m.recolored(t));
+                let kind = if matches!(it.kind, ItemKind::Signature(_)) { ItemKind::Signature(marked) } else { ItemKind::Initials(marked) };
+                let width = it.w;
+                d.session.restyle(i, kind, width);
+            }
+            return;
+        }
+        _ => {}
+    }
     match it.kind {
         ItemKind::Check(old) => {
             style::set_last_check(t);
@@ -3461,6 +3474,35 @@ mod tests {
         // Other kinds ignore the text controls.
         with(hwnd, |w| restyle_selected(w, |s| s.bold = !s.bold));
         assert_eq!(item(hwnd, c).kind, ItemKind::Check(Tint::Red));
+
+        // A signature and initials get the inks too; a recolour is one undo step,
+        // keeps the shape, and the same ink again adds nothing.
+        let ink = Arc::new(Mark { w: 2, h: 1, rgba: vec![0x1F, 0x3A, 0x8A, 255, 0x1F, 0x3A, 0x8A, 40] });
+        let mut sig = all_tints.to_vec();
+        sig.extend([Hit::Smaller, Hit::Bigger, Hit::AddDate, Hit::Remove]);
+        assert_eq!(float_hits(&ItemKind::Signature(ink.clone())), sig);
+        let mut ini = all_tints.to_vec();
+        ini.extend([Hit::Smaller, Hit::Bigger, Hit::AllPages, Hit::Remove]);
+        assert_eq!(float_hits(&ItemKind::Initials(ink.clone())), ini);
+        let s = add(ItemKind::Signature(ink.clone()), 60.0, 40.0);
+        assert_eq!(with(hwnd, |w| selected_tint(w)).flatten(), Some(Tint::Blue));
+        let steps = undo_steps(hwnd);
+        with(hwnd, |w| tint_selected(w, Tint::Red));
+        let ItemKind::Signature(red) = item(hwnd, s).kind else { panic!("still a signature") };
+        assert_eq!(red.tint(), Some(Tint::Red));
+        assert!(red.same_shape(&ink));
+        assert_eq!(item(hwnd, s).w, 40.0);
+        assert_eq!(undo_steps(hwnd), steps + 1);
+        with(hwnd, |w| tint_selected(w, Tint::Red));
+        assert_eq!(undo_steps(hwnd), steps + 1, "same ink: no step");
+        with(hwnd, |w| {
+            w.doc.as_mut().expect("open").session.undo();
+        });
+        assert_eq!(item(hwnd, s).kind, ItemKind::Signature(ink.clone()));
+        with(hwnd, |w| {
+            w.doc.as_mut().expect("open").session.redo();
+        });
+        assert_eq!(with(hwnd, |w| selected_tint(w)).flatten(), Some(Tint::Red));
 
         // Ctrl+B on a selected text toggles bold; the face menu opens from
         // its button and a pick sets the face.
