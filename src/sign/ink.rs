@@ -10,19 +10,16 @@ use windows::Win32::Graphics::Direct2D::{
     D2D1_CAP_STYLE_ROUND, D2D1_DASH_STYLE_SOLID, D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ELLIPSE,
     D2D1_LINE_JOIN_ROUND, D2D1_STROKE_STYLE_PROPERTIES, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
 };
-use windows::Win32::Graphics::DirectWrite::{
-    DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_NORMAL,
-    DWRITE_WORD_WRAPPING_NO_WRAP, IDWriteFactory,
-};
 use windows::Win32::Graphics::Imaging::{
     CLSID_WICImagingFactory, GUID_WICPixelFormat32bppPBGRA, IWICBitmapSource, IWICImagingFactory,
     WICBitmapDitherTypeNone, WICBitmapInterpolationModeFant, WICBitmapPaletteTypeCustom,
 };
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
-use windows::core::{BOOL, HSTRING, Interface, w};
+use windows::core::Interface;
 use windows_numerics::Vector2;
 
 use super::Mark;
+use super::hand::{self, HandFont};
 use super::raster;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -39,7 +36,7 @@ impl Ink {
         }
     }
 
-    fn color(self) -> D2D1_COLOR_F {
+    pub(crate) fn color(self) -> D2D1_COLOR_F {
         let [r, g, b] = self.rgb();
         D2D1_COLOR_F {
             r: f32::from(r) / 255.0,
@@ -160,50 +157,31 @@ fn dedup(s: &[(f32, f32)]) -> Vec<(f32, f32)> {
     out
 }
 
-/// The first of Ink Free, Segoe Script, Segoe Print the system has.
-fn handwriting_family(dwrite: &IDWriteFactory) -> Option<HSTRING> {
-    unsafe {
-        let mut collection = None;
-        dwrite.GetSystemFontCollection(&mut collection, false).ok()?;
-        let collection = collection?;
-        ["Ink Free", "Segoe Script", "Segoe Print"]
-            .into_iter()
-            .map(HSTRING::from)
-            .find(|name| {
-                let (mut index, mut exists) = (0u32, BOOL(0));
-                collection.FindFamilyName(name, &mut index, &mut exists).is_ok()
-                    && exists.as_bool()
-            })
-    }
+/// A typed name in `font` as a mark.
+pub fn from_text(name: &str, ink: Ink, font: HandFont) -> Option<Mark> {
+    let (w, h, pbgra) = typed_canvas(name, ink, font)?;
+    crop(raster::to_mark(w, h, &pbgra), CROP_PAD)
 }
 
-/// A typed name in a handwriting font as a mark.
-pub fn from_text(name: &str, ink: Ink) -> Option<Mark> {
+/// The typed name on its uncropped canvas, as `(w, h, premultiplied BGRA)`.
+/// The canvas leaves `TEXT_PX` of room left and right and `TEXT_PX / 2` above
+/// the text, and the height has room below for descenders and tails.
+fn typed_canvas(name: &str, ink: Ink, font: HandFont) -> Option<(u32, u32, Vec<u8>)> {
     let name = name.trim();
     if name.is_empty() {
         return None;
     }
     let text: String = name.chars().take(MAX_NAME).collect();
     let wide: Vec<u16> = text.encode_utf16().collect();
-    let w = (wide.len() as u32 * 80 + 80).min(4096);
-    let h = 200u32;
+    let margin = TEXT_PX;
+    let w = (wide.len() as u32 * 96 + 2 * margin as u32).min(4096);
+    let h = (TEXT_PX * 3.0) as u32;
     let pbgra = raster::offscreen(w, h, |rt, _, dwrite| unsafe {
-        let Some(family) = handwriting_family(dwrite) else {
+        let Some(format) = hand::format(dwrite, font, TEXT_PX) else {
             return;
         };
-        let Ok(format) = dwrite.CreateTextFormat(
-            &family,
-            None,
-            DWRITE_FONT_WEIGHT_NORMAL,
-            DWRITE_FONT_STYLE_NORMAL,
-            DWRITE_FONT_STRETCH_NORMAL,
-            TEXT_PX,
-            w!("en-us"),
-        ) else {
-            return;
-        };
-        let _ = format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
-        let Ok(layout) = dwrite.CreateTextLayout(&wide, &format, w as f32 - 40.0, h as f32) else {
+        let Ok(layout) = dwrite.CreateTextLayout(&wide, &format, w as f32 - 2.0 * margin, h as f32)
+        else {
             return;
         };
         let Ok(brush) = rt.CreateSolidColorBrush(&ink.color(), None) else {
@@ -211,13 +189,13 @@ pub fn from_text(name: &str, ink: Ink) -> Option<Mark> {
         };
         rt.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
         rt.DrawTextLayout(
-            Vector2::new(20.0, 20.0),
+            Vector2::new(margin, TEXT_PX / 2.0),
             &layout,
             &brush,
             D2D1_DRAW_TEXT_OPTIONS_NONE,
         );
     })?;
-    crop(raster::to_mark(w, h, &pbgra), CROP_PAD)
+    Some((w, h, pbgra))
 }
 
 /// Why a photo gave no mark.
@@ -424,11 +402,44 @@ mod tests {
     }
 
     #[test]
-    fn typed_name_uses_installed_font() {
+    fn typed_name_makes_a_mark_in_every_font() {
         let _com = Com::new();
-        let m = from_text("Siti", Ink::Blue).expect("a mark");
-        assert!(m.w > 20 && m.h > 10);
-        assert!(from_text("   ", Ink::Blue).is_none());
+        for f in hand::ALL {
+            let m = from_text("Siti", Ink::Blue, f).expect("a mark");
+            assert!(m.w > 20 && m.h > 10, "{f:?}: {} x {}", m.w, m.h);
+            assert!(from_text("   ", Ink::Blue, f).is_none());
+        }
+    }
+
+    #[test]
+    fn each_font_gives_its_own_mark() {
+        let _com = Com::new();
+        let marks: Vec<Mark> = hand::ALL
+            .iter()
+            .map(|&f| from_text("Crist", Ink::Blue, f).expect("a mark"))
+            .collect();
+        for i in 0..marks.len() {
+            for j in i + 1..marks.len() {
+                let (a, b) = (&marks[i], &marks[j]);
+                assert!(a.w != b.w || a.h != b.h || a.rgba != b.rgba, "{i} and {j} are alike");
+            }
+        }
+    }
+
+    #[test]
+    fn typed_marks_are_never_clipped() {
+        let _com = Com::new();
+        for f in hand::ALL {
+            for name in ["Kennedy Wurangian", "Çağrı Żółć", "Great Vibes", "Jj Qq Yy fg", &"M".repeat(40), &"W".repeat(40)] {
+                let (w, h, px) = typed_canvas(name, Ink::Blue, f).expect("a canvas");
+                let (w, h) = (w as usize, h as usize);
+                for (i, p) in px.chunks_exact(4).enumerate() {
+                    let (x, y) = (i % w, i / w);
+                    let near_edge = x < 2 || y < 2 || x >= w - 2 || y >= h - 2;
+                    assert!(!(near_edge && p[3] > 0), "{f:?} {name:?}: ink at ({x}, {y}) of {w} x {h}");
+                }
+            }
+        }
     }
 
     /// 400x200 white PNG with a dark grey horizontal line 8 px thick.

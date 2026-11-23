@@ -8,3 +8,7 @@
 208 RCDATA "assets/fonts/JetBrainsMono-400.ttf"
 209 RCDATA "assets/fonts/JetBrainsMono-500.ttf"
 210 RCDATA "assets/fonts/JetBrainsMono-600.ttf"
+211 RCDATA "assets/fonts/SignSlant.ttf"
+212 RCDATA "assets/fonts/SignThin.ttf"
+213 RCDATA "assets/fonts/SignPrint.ttf"
+214 RCDATA "assets/fonts/SignFormal.ttf"

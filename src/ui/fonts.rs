@@ -40,6 +40,9 @@ pub const JETBRAINS_MONO: &str = "JetBrains Mono";
 /// (206-207), JetBrains Mono 400/500/600 (208-210).
 pub const FONT_RESOURCE_IDS: [u16; 8] = [203, 204, 205, 206, 207, 208, 209, 210];
 
+/// RCDATA ids of the four typed-signature fonts (`sign::hand`), in tile order.
+pub const SIGN_FONT_RESOURCE_IDS: [u16; 4] = [211, 212, 213, 214];
+
 /// Display text is tracked this much tighter, in em (the design's
 /// `letter-spacing: -.025em`).
 pub const DISPLAY_TRACKING_EM: f32 = -0.025;
@@ -226,7 +229,7 @@ fn build_collection(dwrite: &IDWriteFactory, files: &[&[u8]]) -> Option<IDWriteF
     }
 }
 
-fn has_family(collection: &IDWriteFontCollection, name: &str) -> bool {
+pub(crate) fn has_family(collection: &IDWriteFontCollection, name: &str) -> bool {
     let (mut index, mut exists) = (0u32, BOOL(0));
     let found = unsafe { collection.FindFamilyName(&HSTRING::from(name), &mut index, &mut exists) };
     found.is_ok() && exists.as_bool()
@@ -261,6 +264,18 @@ pub fn embedded(dwrite: &IDWriteFactory) -> &'static Embedded {
     &EMBEDDED
         .get_or_init(|| Shared(Embedded::build(dwrite, blobs())))
         .0
+}
+
+/// The typed-signature fonts as a collection on the shared factory `dwrite`,
+/// built on first use; `None` when none of them could be loaded.
+pub fn sign_collection(dwrite: &IDWriteFactory) -> Option<&'static IDWriteFontCollection> {
+    static SIGN: OnceLock<Shared<Option<IDWriteFontCollection>>> = OnceLock::new();
+    SIGN.get_or_init(|| {
+        let files = resources(&SIGN_FONT_RESOURCE_IDS);
+        Shared(build_collection(dwrite, &files).and_then(|c| c.cast().ok()))
+    })
+    .0
+    .as_ref()
 }
 
 /// `name` is in the system font collection.
