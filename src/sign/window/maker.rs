@@ -711,9 +711,14 @@ fn xy(lparam: LPARAM) -> (f32, f32) {
     ((lparam.0 & 0xFFFF) as i16 as f32, ((lparam.0 >> 16) & 0xFFFF) as i16 as f32)
 }
 
+/// Ink starts only on bare pad: Start over sits on the pad and is a click.
+fn starts_stroke(layout: &MLayout, tab: Tab, x: f32, y: f32) -> bool {
+    tab == Tab::Draw && layout.hit(x, y) == Some(MHit::Pad)
+}
+
 fn pen_down(hwnd: HWND, x: f32, y: f32) -> bool {
     with(hwnd, |m| {
-        if m.tab != Tab::Draw || !m.layout.pad.contains(x, y) {
+        if !starts_stroke(&m.layout, m.tab, x, y) {
             return false;
         }
         m.strokes.push(vec![(x, y)]);
@@ -1475,6 +1480,17 @@ mod tests {
         let t = l.rect_of(MHit::Tile(1)).unwrap();
         assert_eq!(l.hit(t.x + 4.0, t.bottom() - 4.0), Some(MHit::Tile(1)));
         assert_eq!(l.hit(l.pad.x + 40.0, l.pad.y + 70.0), Some(MHit::Pad));
+    }
+
+    #[test]
+    fn start_over_is_not_ink() {
+        let l = maker_layout(1.0, Tab::Draw, 0, true, &LAB);
+        let r = l.rect_of(MHit::Redo).unwrap();
+        assert!(!starts_stroke(&l, Tab::Draw, r.x + r.w / 2.0, r.y + r.h / 2.0), "a click on Start over is not a dot");
+        assert!(starts_stroke(&l, Tab::Draw, l.pad.x + l.pad.w / 2.0, l.pad.y + l.pad.h / 2.0));
+        assert!(starts_stroke(&l, Tab::Draw, r.x - 2.0, r.y + r.h / 2.0), "right beside the button still draws");
+        let t = maker_layout(1.0, Tab::Type, 0, false, &LAB);
+        assert!(!starts_stroke(&t, Tab::Type, t.pad.x + t.pad.w / 2.0, t.pad.y + t.pad.h / 2.0));
     }
 
     #[test]
