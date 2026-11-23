@@ -6214,15 +6214,6 @@ impl App {
         }
     }
 
-    /// Asks Windows whether a fullscreen app is in front and tells the state
-    /// when that changed. While the Susun pick overlay is up the question is
-    /// not asked: the overlay is Vale's own topmost window over the whole
-    /// virtual screen and `SHQueryUserNotificationState` reports it as a
-    /// fullscreen app, which would hide the island and cancel the pick a
-    /// second after it began. The last known state stays, in `self.fullscreen`
-    /// and in the state alike (they never disagree). A real fullscreen app
-    /// takes the foreground from the overlay, which cancels the pick; the
-    /// next check then sees it.
     /// Puts the island back on top when another app's window got above it
     /// (a window that went fullscreen and back, a maximise, a restore).
     fn keep_on_top(&self) {
@@ -6236,6 +6227,15 @@ impl App {
         }
     }
 
+    /// Asks Windows whether a fullscreen app is in front and tells the state
+    /// when that changed. While the Susun pick overlay is up the question is
+    /// not asked: the overlay is Vale's own topmost window over the whole
+    /// virtual screen and `SHQueryUserNotificationState` reports it as a
+    /// fullscreen app, which would hide the island and cancel the pick a
+    /// second after it began. The last known state stays, in `self.fullscreen`
+    /// and in the state alike (they never disagree). A real fullscreen app
+    /// takes the foreground from the overlay, which cancels the pick; the
+    /// next check then sees it.
     fn check_fullscreen(&mut self) {
         let own_overlay_up = arrange_overlay::active();
         let reported = if own_overlay_up {
