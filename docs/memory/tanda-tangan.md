@@ -1,6 +1,6 @@
 ---
 tags: [feature, sign, shelf, pdf]
-date: 2026-11-21
+date: 2026-11-23
 ---
 
 # Tanda tangan: sign and lightly edit documents
