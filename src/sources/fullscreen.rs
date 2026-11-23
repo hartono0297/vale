@@ -220,16 +220,14 @@ pub fn covers_island(
     })
 }
 
-/// True when another app's window sits above the island and overlaps it, so the
-/// island has to be raised again (a menu or a game launcher can end up over it
-/// and nothing else repairs that). Runs at most once per `TIMER_SYSTEM` tick and
-/// reads only the windows above the island, top first. False when the island's
-/// rectangle or monitor cannot be read.
-pub fn island_covered(island: HWND) -> bool {
-    let mut rect = RECT::default();
-    if unsafe { GetWindowRect(island, &mut rect) }.is_err() {
-        return false;
-    }
+/// True when another app's window sits above the island and overlaps `drawn`
+/// (the drawn notch in screen pixels, not the whole mostly transparent canvas),
+/// so the island has to be raised again (an app window that went fullscreen and
+/// back, or another app's always-on-top window, can end up over it and nothing
+/// else repairs that). Runs at most once per `TIMER_SYSTEM` tick and reads only
+/// the windows above the island, top first. False when the island's monitor
+/// cannot be read.
+pub fn island_covered(island: HWND, drawn: Rect4) -> bool {
     let Some(monitor) = monitor_of(island).and_then(monitor_rect) else {
         return false;
     };
@@ -242,7 +240,7 @@ pub fn island_covered(island: HWND) -> bool {
     .take(MAX_WALK)
     .take_while(|&hwnd| hwnd != island)
     .map(|hwnd| unsafe { facts_of(hwnd, own_pid, shell, desktop) });
-    covers_island(above, Rect4::from_win(rect), monitor)
+    covers_island(above, drawn, monitor)
 }
 
 /// Classes of the desktop (the wallpaper host), which spans every monitor.

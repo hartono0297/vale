@@ -93,7 +93,9 @@ use crate::shortcuts;
 use crate::sources::battery::{
     BatteryMonitor, battery_low_now, battery_notice, energy_saver_on, read_battery,
 };
-use crate::sources::fullscreen::{is_fullscreen, island_covered as foreign_window_covers};
+use crate::sources::fullscreen::{
+    Rect4, is_fullscreen, island_covered as foreign_window_covers,
+};
 use crate::sources::{explorer, media, notif_open, notifications};
 use crate::state::{IslandState, ShownPanel, ToastForm, is_media_hit, is_real_toast};
 use crate::system::{
@@ -6217,11 +6219,20 @@ impl App {
     /// Puts the island back on top when another app's window got above it
     /// (a window that went fullscreen and back, a maximise, a restore).
     fn keep_on_top(&self) {
-        let Some(win) = self.win.as_ref() else {
+        let (Some(win), Some((left, top, right, bottom))) =
+            (self.win.as_ref(), self.renderer.island_px())
+        else {
             return;
         };
+        let (ox, oy) = win.screen_origin();
+        let drawn = Rect4::new(
+            ox + left as i32,
+            oy + top as i32,
+            ox + right as i32,
+            oy + bottom as i32,
+        );
         if should_raise(win.front(), self.fullscreen, || {
-            foreign_window_covers(win.hwnd())
+            foreign_window_covers(win.hwnd(), drawn)
         }) {
             win.raise();
         }
