@@ -149,55 +149,71 @@ impl Session {
 
     /// Copies an initials item to every other live page at the same spot,
     /// each turned to stand upright on its own page as shown, skipping pages
-    /// where it would fall outside the page or that already have the same
-    /// initials there (within half a point). Returns how many copies were
-    /// made.
+    /// where it would fall outside the page. A page that already has initials
+    /// of the same shape there (within half a point) gets them recoloured to
+    /// the selected mark instead of a second copy. Returns how many pages
+    /// changed (copied or recoloured).
     pub fn initials_on_all(&mut self, i: usize) -> usize {
         let Some(src) = self.items.get(i) else { return 0 };
         let ItemKind::Initials(mark) = &src.kind else { return 0 };
         let mark = mark.clone();
         let (from, x, y, w, h) = (src.page, src.x, src.y, src.w, src.h);
-        let copies: Vec<Item> = self
-            .live_pages()
-            .into_iter()
-            .filter(|&p| p != from)
-            .filter_map(|p| {
-                let page = &self.pages[p];
-                let turn = geom::upright_turn(page.geom, page.extra);
-                let copy = Item { kind: ItemKind::Initials(mark.clone()), page: p, x, y, w, h, turn };
-                let (bw, bh) = geom::occupied(&copy);
-                let g = page.geom;
-                let already = self.has_initials_at(p, &mark, x, y);
-                (!already && x >= 0.0 && y >= 0.0 && x + bw <= g.w && y + bh <= g.h).then_some(copy)
-            })
-            .collect();
-        if copies.is_empty() {
+        let mut copies: Vec<Item> = Vec::new();
+        let mut recolour: Vec<usize> = Vec::new();
+        for p in self.live_pages().into_iter().filter(|&p| p != from) {
+            if let Some(j) = self.initials_at(p, &mark, x, y) {
+                if !self.initials_equal(j, &mark) {
+                    recolour.push(j);
+                }
+                continue;
+            }
+            let page = &self.pages[p];
+            let turn = geom::upright_turn(page.geom, page.extra);
+            let copy = Item { kind: ItemKind::Initials(mark.clone()), page: p, x, y, w, h, turn };
+            let (bw, bh) = geom::occupied(&copy);
+            let g = page.geom;
+            if x >= 0.0 && y >= 0.0 && x + bw <= g.w && y + bh <= g.h {
+                copies.push(copy);
+            }
+        }
+        let n = copies.len() + recolour.len();
+        if n == 0 {
             return 0;
         }
         self.checkpoint();
-        let n = copies.len();
+        for j in recolour {
+            self.items[j].kind = ItemKind::Initials(mark.clone());
+        }
         self.items.extend(copies);
         n
     }
 
-    /// Every other live page already has item `i`'s initials at its spot
-    /// (so "Pasang di semua halaman" has nothing left to add).
+    /// Every other live page already has initials at item `i`'s spot that
+    /// equal it (so "Pasang di semua halaman" has nothing left to change).
     pub fn initials_everywhere(&self, i: usize) -> bool {
         let Some(src) = self.items.get(i) else { return false };
         let ItemKind::Initials(mark) = &src.kind else { return false };
         let others: Vec<usize> = self.live_pages().into_iter().filter(|&p| p != src.page).collect();
-        !others.is_empty() && others.iter().all(|&p| self.has_initials_at(p, mark, src.x, src.y))
+        !others.is_empty()
+            && others
+                .iter()
+                .all(|&p| self.initials_at(p, mark, src.x, src.y).is_some_and(|j| self.initials_equal(j, mark)))
     }
 
-    /// Page `p` has the same initials (the same `Arc` or an equal mark) at
-    /// `x, y`, within half a point.
-    fn has_initials_at(&self, p: usize, mark: &Arc<Mark>, x: f32, y: f32) -> bool {
-        self.items.iter().any(|it| {
+    /// Index of the initials item on page `p` at `x, y` (within half a
+    /// point) whose mark has the same shape as `mark`, whatever its colour.
+    fn initials_at(&self, p: usize, mark: &Arc<Mark>, x: f32, y: f32) -> Option<usize> {
+        self.items.iter().position(|it| {
             it.page == p
-                && matches!(&it.kind, ItemKind::Initials(m) if Arc::ptr_eq(m, mark) || **m == **mark)
+                && matches!(&it.kind, ItemKind::Initials(m) if m.same_shape(mark))
                 && (it.x - x).abs() <= 0.5
                 && (it.y - y).abs() <= 0.5
         })
+    }
+
+    /// Item `j`'s initials are `mark` itself (the same `Arc` or an equal mark).
+    fn initials_equal(&self, j: usize, mark: &Arc<Mark>) -> bool {
+        matches!(&self.items[j].kind, ItemKind::Initials(m) if Arc::ptr_eq(m, mark) || **m == **mark)
     }
 
     pub fn undo(&mut self) -> bool {
@@ -295,6 +311,24 @@ mod tests {
         s.items[2].x -= 100.0;
         assert_eq!(s.initials_on_all(i), 1);
         assert_eq!(s.items.len(), 4);
+    }
+
+    #[test]
+    fn initials_on_all_gives_copies_the_new_colour() {
+        let mut s = three();
+        let blue = Arc::new(Mark { w: 2, h: 1, rgba: vec![0x1F, 0x3A, 0x8A, 255, 0x1F, 0x3A, 0x8A, 40] });
+        let i = s.add(item(ItemKind::Initials(blue.clone()), 0, 500.0, 40.0, 48.0, 24.0));
+        assert_eq!(s.initials_on_all(i), 2);
+        let red = Arc::new(blue.recolored(crate::sign::style::Tint::Red));
+        s.items[i].kind = ItemKind::Initials(red.clone());
+        assert!(!s.initials_everywhere(i), "the other pages are still blue");
+        let before = s.items.len();
+        assert_eq!(s.initials_on_all(i), 2, "both copies took the colour");
+        assert_eq!(s.items.len(), before, "nothing stacked");
+        assert!(s.items.iter().all(|it| matches!(&it.kind, ItemKind::Initials(m) if **m == *red)));
+        assert!(s.initials_everywhere(i));
+        assert!(s.undo());
+        assert!(s.items[1..].iter().all(|it| matches!(&it.kind, ItemKind::Initials(m) if **m == *blue)), "one undo step");
     }
 
     #[test]
