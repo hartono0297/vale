@@ -16,6 +16,21 @@ pub struct Entry {
 /// Newest first. Add the entry for a version before bumping it.
 pub static ENTRIES: &[Entry] = &[
     Entry {
+        version: "5.6.2",
+        id: &[
+            "Tanda tangan ketik: pilih satu dari empat gaya tulisan tangan.",
+            "Tanda tangan dan paraf yang sudah ditempel bisa diganti hitam, biru, atau merah.",
+            "Tombol Ulangi di tab Gambar kini menghapus coretan, tidak membuat titik.",
+            "Notch kembali ke paling atas bila tertutup jendela aplikasi lain.",
+        ],
+        en: &[
+            "Typed signature: pick one of four handwriting styles.",
+            "A placed signature or initials can switch to black, blue or red.",
+            "Start over in the Draw tab now clears the drawing instead of adding a dot.",
+            "The notch comes back on top when another app's window covers it.",
+        ],
+    },
+    Entry {
         version: "5.6.1",
         id: &[
             "Falk Abu-abu kini Kuning: kuning seluruhnya, tanpa pita abu-abu di bawah pipi.",
