@@ -93,7 +93,9 @@ use crate::shortcuts;
 use crate::sources::battery::{
     BatteryMonitor, battery_low_now, battery_notice, energy_saver_on, read_battery,
 };
-use crate::sources::fullscreen::is_fullscreen;
+use crate::sources::fullscreen::{
+    Rect4, is_fullscreen, island_covered as foreign_window_covers,
+};
 use crate::sources::{explorer, media, notif_open, notifications};
 use crate::state::{IslandState, ShownPanel, ToastForm, is_media_hit, is_real_toast};
 use crate::system::{
@@ -5963,6 +5965,7 @@ impl App {
         match id {
             TIMER_SYSTEM => {
                 self.check_fullscreen();
+                self.keep_on_top();
                 self.check_lyrics_card_fullscreen();
                 // Pinned notes hide over a fullscreen app; free when none are.
                 self.widgets_fullscreen_tick();
@@ -6210,6 +6213,28 @@ impl App {
             self.clock = None;
             // The blink waited for the animation to end.
             self.sync_robot_timers(now);
+        }
+    }
+
+    /// Puts the island back on top when another app's window got above it
+    /// (a window that went fullscreen and back, a maximise, a restore).
+    fn keep_on_top(&self) {
+        let (Some(win), Some((left, top, right, bottom))) =
+            (self.win.as_ref(), self.renderer.island_px())
+        else {
+            return;
+        };
+        let (ox, oy) = win.screen_origin();
+        let drawn = Rect4::new(
+            ox + left as i32,
+            oy + top as i32,
+            ox + right as i32,
+            oy + bottom as i32,
+        );
+        if should_raise(win.front(), self.fullscreen, || {
+            foreign_window_covers(win.hwnd(), drawn)
+        }) {
+            win.raise();
         }
     }
 
@@ -8735,6 +8760,14 @@ fn fullscreen_event(reported: bool, own_overlay_up: bool, last: bool) -> Option<
     }
 }
 
+/// Whether the island should be put back on top: it is meant to be in front
+/// (`front`, not lowered by stay-behind), nothing is fullscreen, and
+/// `covered` (the window walk, run only when the rest holds) says another
+/// app's window sits over it.
+fn should_raise(front: bool, fullscreen: bool, covered: impl FnOnce() -> bool) -> bool {
+    front && !fullscreen && covered()
+}
+
 /// Where the current track is now; `None` without media, a timeline or a
 /// known length.
 fn track_progress(state: &IslandState, now: Instant) -> Option<Progress> {
@@ -11146,6 +11179,15 @@ mod tests {
         assert_eq!(fullscreen_event(false, false, true), Some(false));
         assert_eq!(fullscreen_event(true, false, true), None);
         assert_eq!(fullscreen_event(false, false, false), None);
+    }
+
+    #[test]
+    fn should_raise_only_when_in_front_not_fullscreen_and_covered() {
+        assert!(should_raise(true, false, || true));
+        assert!(!should_raise(true, false, || false));
+        // Lowered by stay-behind or fullscreen: never walks the windows.
+        assert!(!should_raise(false, false, || panic!("walked")));
+        assert!(!should_raise(true, true, || panic!("walked")));
     }
 
     #[test]
