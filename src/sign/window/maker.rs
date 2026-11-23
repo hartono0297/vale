@@ -49,7 +49,7 @@ use crate::i18n::{Key, tr};
 use crate::shot_edit::gfx::{Align, Gfx, Target, bitmap, color, rect_f};
 use crate::shot_edit::icons::fill_round;
 use crate::sign::Mark;
-use crate::sign::hand;
+use crate::sign::hand::{self, HandFont};
 use crate::sign::ink::{self, Ink};
 use crate::theme::WindowPalette;
 use crate::ui::geometry::Rect;
@@ -262,6 +262,8 @@ struct Maker {
     pointer: Option<u32>,
     name: Option<Field>,
     typed: Option<Arc<Mark>>,
+    /// The handwriting font of the typed signature.
+    font: HandFont,
     photo_path: Option<PathBuf>,
     photo: Option<Arc<Mark>>,
     /// Why the last photo picked gave no mark.
@@ -379,6 +381,7 @@ pub(super) fn open(
         pointer: None,
         name: None,
         typed: None,
+        font: hand::last(),
         photo_path: None,
         photo: None,
         photo_failed: None,
@@ -522,9 +525,16 @@ fn can_use(m: &Maker) -> bool {
     }
 }
 
+/// Makes tile `i` the remembered font; `None` for a tile that does not exist.
+fn pick_font(i: usize) -> Option<HandFont> {
+    let f = *hand::ALL.get(i)?;
+    hand::set_last(f);
+    Some(f)
+}
+
 fn retype(m: &mut Maker) {
     let name = m.name.as_ref().map(|f| text_edit::text(f.edit)).unwrap_or_default();
-    m.typed = ink::from_text(&name, ink_of(m.blue), hand::last()).map(Arc::new);
+    m.typed = ink::from_text(&name, ink_of(m.blue), m.font).map(Arc::new);
 }
 
 fn act(hwnd: HWND, hit: MHit) {
@@ -535,7 +545,14 @@ fn act(hwnd: HWND, hit: MHit) {
             relayout(hwnd);
         }
         MHit::PickPhoto => pick_photo(hwnd),
-        MHit::Font(_) => {}
+        MHit::Font(i) => {
+            with(hwnd, |m| {
+                if let Some(f) = pick_font(i) {
+                    m.font = f;
+                    retype(m);
+                }
+            });
+        }
         MHit::Ink(blue) => {
             with(hwnd, |m| {
                 m.blue = blue;
@@ -810,7 +827,7 @@ fn on_key(hwnd: HWND, vk: u16) {
                 };
                 m.focus = order.get(next).copied();
                 // From the tabs into the name field when typing.
-                (m.tab == Tab::Type && m.focus == Some(MHit::Ink(true)) && !shift)
+                (m.tab == Tab::Type && m.focus == Some(MHit::Font(0)) && !shift)
                     .then(|| m.name.as_ref().map(|f| f.edit))
                     .flatten()
             })
@@ -1163,6 +1180,48 @@ fn paint(m: &mut Maker) -> windows::core::Result<()> {
                     );
                 }
             }
+            MHit::Font(i) => {
+                fill_round(&rt, &brush, *r, 8.0 * ui, PAPER, 1.0);
+                let chosen = hand::ALL.get(*i) == Some(&m.font);
+                if chosen || m.hover == Some(*hit) {
+                    unsafe {
+                        brush.SetColor(&color(p.accent, 1.0));
+                        rt.DrawRoundedRectangle(
+                            &windows::Win32::Graphics::Direct2D::D2D1_ROUNDED_RECT { rect: rect_f(
+                                r.x + 1.0,
+                                r.y + 1.0,
+                                r.w - 2.0,
+                                r.h - 2.0,
+                            ), radiusX: 8.0 * ui, radiusY: 8.0 * ui },
+                            &brush,
+                            2.0 * ui,
+                            None,
+                        );
+                    }
+                }
+                if let Some(f) = hand::ALL.get(*i)
+                    && let Some(fmt) = hand::format(&m.gfx.dwrite, *f, 22.0 * ui)
+                {
+                    let wide: Vec<u16> = "Aa".encode_utf16().collect();
+                    if let Ok(lay) = unsafe { m.gfx.dwrite.CreateTextLayout(&wide, &fmt, r.w, r.h) } {
+                        unsafe {
+                            let _ = lay.SetTextAlignment(
+                                windows::Win32::Graphics::DirectWrite::DWRITE_TEXT_ALIGNMENT_CENTER,
+                            );
+                            let _ = lay.SetParagraphAlignment(
+                                windows::Win32::Graphics::DirectWrite::DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+                            );
+                            brush.SetColor(&ink_of(m.blue).color());
+                            rt.DrawTextLayout(
+                                Vector2::new(r.x, r.y),
+                                &lay,
+                                &brush,
+                                windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_CLIP,
+                            );
+                        }
+                    }
+                }
+            }
             MHit::New => {
                 if m.hover == Some(*hit) {
                     fill_round(&rt, &brush, *r, 8.0 * ui, p.hover, 1.0);
@@ -1411,7 +1470,7 @@ extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) ->
                     EDIT_COMMIT => act(hwnd, MHit::Use),
                     EDIT_CANCEL => act(hwnd, MHit::Cancel),
                     EDIT_TAB => {
-                        with(hwnd, |m| m.focus = Some(MHit::Ink(true)));
+                        with(hwnd, |m| m.focus = Some(MHit::Font(0)));
                         take_focus(hwnd);
                         invalidate(hwnd);
                     }
@@ -1448,6 +1507,16 @@ mod tests {
     use super::*;
 
     const LAB: MLabels = MLabels { redo: 42.0, pick: 230.0, cancel: 38.0, use_: 38.0 };
+
+    #[test]
+    fn picking_a_font_tile_sets_and_remembers_it() {
+        let _l = hand::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(pick_font(2), Some(HandFont::Print));
+        assert_eq!(hand::last(), HandFont::Print);
+        assert_eq!(pick_font(9), None);
+        assert_eq!(hand::last(), HandFont::Print, "a bad index changes nothing");
+        hand::set_last(HandFont::Slant);
+    }
 
     #[test]
     fn the_type_tab_has_four_font_tiles_between_field_and_preview() {
