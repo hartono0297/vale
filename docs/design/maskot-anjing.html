@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<title>Maskot anjing</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&display=swap" rel="stylesheet">
+<style>
+  @page { size: A4 landscape; margin: 8mm 10mm; }
+  :root { --paper: #F4EDE4; --card: #FFFBF5; --ink: #231C18; --ink-2: #5E5045; --line: #D9CBBB; }
+  * { box-sizing: border-box; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body { margin: 0; background: var(--paper); color: var(--ink); font: 13px/1.45 "DM Sans", "Segoe UI", system-ui, sans-serif; }
+  .page { width: 1040px; margin: 0 auto; padding: 4px 0; break-after: page; }
+  .page:last-child { break-after: auto; }
+  h1 { font-size: 30px; line-height: 1.1; margin: 0 0 6px; letter-spacing: -0.01em; }
+  h2 { font-size: 22px; margin: 0 0 2px; }
+  h3 { font-size: 14px; margin: 14px 0 6px; }
+  p { margin: 0 0 8px; max-width: 86ch; }
+  .lead { color: var(--ink-2); font-size: 14px; }
+  .muted { color: var(--ink-2); }
+  .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; break-inside: avoid; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; break-inside: avoid; }
+  .cell { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+  .cap { font-size: 12px; font-weight: 500; text-align: center; }
+  .sub { font-size: 11px; color: var(--ink-2); text-align: center; }
+  .tile { width: 84px; height: 84px; border-radius: 12px; display: inline-grid; place-items: center; }
+  .tile svg { width: 72px; height: 72px; overflow: visible; }
+  .tile.big { width: 168px; height: 168px; border-radius: 18px; }
+  .tile.big svg { width: 140px; height: 140px; }
+  svg.notch { width: 300px; height: auto; display: block; }
+  svg.notch.sm { width: 214px; }
+  svg.peek { width: 120px; height: auto; display: block; }
+  .shelf { background: #D8CCBE; border-radius: 8px; padding: 0 6px 6px; display: inline-block; }
+  .hero { display: grid; grid-template-columns: 168px 1fr; gap: 16px; align-items: start; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  ol, ul { margin: 4px 0 8px 18px; padding: 0; }
+  li { margin: 0 0 4px; }
+  .win { background: #1B1613; color: #F4EDE4; border-radius: 12px; padding: 12px; font-size: 12px; }
+  .win .t { font-weight: 700; font-size: 13px; margin-bottom: 6px; }
+  .win .lbl { color: #A89A8B; margin: 8px 0 5px; }
+  .seg { display: flex; gap: 6px; flex-wrap: wrap; }
+  .seg span { display: inline-flex; align-items: center; gap: 5px; border: 1px solid #5A4D43; border-radius: 8px; padding: 3px 8px 3px 4px; }
+  .seg span.on { border-color: #E2683C; background: #2A211C; }
+  .seg svg { width: 24px; height: 24px; overflow: visible; }
+  .chip { width: 16px; height: 16px; border-radius: 50%; display: inline-block; border: 1px solid #5A4D43; }
+</style>
+</head>
+<body>
+<div id="out"></div>
+<script>
+// Shared drawing kit for the dog mascot sheet. Grid = the app's 64-unit mascot grid.
+(function () {
+  const INK = '#17120F', CR = '#F4EDE4', NAVY = '#2F4A7A';
+  const SURF = { Espresso: '#17120F', Graphite: '#221B17', Sea: '#132321', Night: '#151C2E', Plum: '#2A2140' };
+  let uid = 0;
+  const nid = (p = 'k') => p + (++uid);
+  const pill = (x, y, w, h, c) => `<rect x="${x - w / 2}" y="${y - h / 2}" width="${w}" height="${h}" rx="${Math.min(w, h) / 2}" fill="${c}"/>`;
+  const dot = (x, y, r, c) => `<circle cx="${x}" cy="${y}" r="${r}" fill="${c}"/>`;
+  const st = (d, w, c, o = 1) => `<path d="${d}" fill="none" stroke="${c}" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round" opacity="${o}"/>`;
+  const hex = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+  const mix = (a, b, t) => { const A = hex(a), B = hex(b); return '#' + A.map((v, i) => Math.round(v + (B[i] - v) * t).toString(16).padStart(2, '0')).join(''); };
+  const lum = h => { const [r, g, b] = hex(h).map(v => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }); return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
+  const contrast = (a, b) => { const x = lum(a), y = lum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
+  const svg = (vb, inner, label, cls = '') => `<svg class="${cls}" viewBox="${vb}" role="img" aria-label="${label}">${inner}</svg>`;
+
+  // Ear pose per expression (spec section 3): alert raises tips 4, sleep droops 12 deg, sad 24 deg outward.
+  const EARS = { alert: { up: 4, rot: 0 }, sleep: { up: 0, rot: 12 }, sad: { up: 0, rot: 24 } };
+  const earPose = s => EARS[s] || { up: 0, rot: 0 };
+  const BOB = { alert: -1.5, sleep: 1.5, sad: 1.5 };
+
+  function eyes(state, ink, dy = 0) {
+    let s;
+    switch (state) {
+      case 'blink': s = st('M20.6 40.8h6.8M36.6 40.8h6.8', 2.4, ink); break;
+      case 'happy': s = st('M20.2 41.8Q24 36.4 27.8 41.8M36.2 41.8Q40 36.4 43.8 41.8', 2.4, ink); break;
+      case 'sleep': s = st('M20.4 40Q24 43.4 27.6 40M36.4 40Q40 43.4 43.6 40', 2.2, ink); break;
+      case 'alert': s = dot(24, 40, 4.6, ink) + dot(40, 40, 4.6, ink); break;
+      case 'sad': s = pill(24, 42.5, 5.6, 5, ink) + pill(40, 42.5, 5.6, 5, ink); break;
+      default: s = pill(24, 40, 5.6, 10, ink) + pill(40, 40, 5.6, 10, ink);
+    }
+    return `<g transform="translate(0 ${dy})">${s}</g>`;
+  }
+  const zz = () => st('M55 3h5l-5 5.5h5M62 -4h3.6l-3.6 4h3.6', 1.5, CR, 0.85);
+
+  // Accessories on a head, placed on the mascot's anchors (spec section 5).
+  function accessory(name, a) {
+    if (name === 'bowtie') {
+      const [x, y] = a.tie;
+      return `<g fill="${NAVY}" stroke="${NAVY}" stroke-width="1.2" stroke-linejoin="round"><path d="M${x} ${y}L${x - 6} ${y - 3.6}L${x - 6} ${y + 3.6}Z"/><path d="M${x} ${y}L${x + 6} ${y - 3.6}L${x + 6} ${y + 3.6}Z"/></g>${dot(x, y, 1.6, '#5878AE')}`;
+    }
+    if (name === 'headphone') {
+      const [x0, x1, y, top] = a.hp;
+      return st(`M${x0 + 1} ${y - 3}C${x0} ${top} ${x1} ${top} ${x1 - 1} ${y - 3}`, 2.6, CR) +
+        `<rect x="${x0 - 3}" y="${y - 6}" width="7" height="12" rx="3" fill="${CR}"/><rect x="${x0 - 1.4}" y="${y - 3.5}" width="3.8" height="7" rx="1.6" fill="${NAVY}"/>` +
+        `<rect x="${x1 - 4}" y="${y - 6}" width="7" height="12" rx="3" fill="${CR}"/><rect x="${x1 - 2.4}" y="${y - 3.5}" width="3.8" height="7" rx="1.6" fill="${NAVY}"/>`;
+    }
+    if (name === 'sailor') {
+      const [tx, ty] = a.top;
+      return `<path d="M${tx - 11} ${ty + 1.5}Q${tx - 12} ${ty - 8} ${tx} ${ty - 9}Q${tx + 12} ${ty - 8} ${tx + 11} ${ty + 1.5}Z" fill="#F6F1EA"/>` +
+        `<rect x="${tx - 11.2}" y="${ty - 2.4}" width="22.4" height="3.6" fill="${NAVY}"/><rect x="${tx - 13}" y="${ty + 0.6}" width="26" height="2.4" rx="1.2" fill="${NAVY}"/>`;
+    }
+    if (name === 'bandana') { // idea only: a raspberry neckerchief knotted under the chin
+      const [x, y] = a.tie;
+      return `<path d="M${x - 15} ${y - 2.5}Q${x} ${y + 1.5} ${x + 15} ${y - 2.5}L${x + 2} ${y + 8.5}Q${x} ${y + 10} ${x - 2} ${y + 8.5}Z" fill="#D23F6A" stroke="#D23F6A" stroke-width="1.4" stroke-linejoin="round"/>` +
+        dot(x - 5, y + 1.5, 0.9, '#F07A9A') + dot(x + 4, y + 2.5, 0.9, '#F07A9A') + dot(x, y + 5.5, 0.9, '#F07A9A');
+    }
+    return '';
+  }
+
+  // One mascot head on the 64 grid. m = mascot def, k = coat key, o.state, o.acc.
+  function head(m, k, o = {}) {
+    k = k || m.def;
+    const c = m.coats[k], s = o.state || 'idle', id = nid('h');
+    const dy = m.eyeDy || 0;
+    return `<g transform="translate(0 ${BOB[s] || 0})">` +
+      m.head(k, { state: s, id, ears: earPose(s) }) +
+      eyes(s, c.eye, dy) +
+      (m.over ? `<g transform="translate(0 ${dy})">${m.over(k, { state: s, id })}</g>` : '') +
+      (o.acc ? accessory(o.acc, m.anchors) : '') +
+      (s === 'sleep' ? zz() : '') + '</g>';
+  }
+
+  // Notch outline (Notch style): notch from x L to R, h tall, 12 shoulders, 16 bottom radius.
+  const notchPath = (L, R, h) => `M${L - 12} 0A12 12 0 0 1 ${L} 12L${L} ${h - 16}A16 16 0 0 0 ${L + 16} ${h}L${R - 16} ${h}A16 16 0 0 0 ${R} ${h - 16}L${R} 12A12 12 0 0 1 ${R + 12} 0Z`;
+  const NP = notchPath(12, 202, 34);
+  const clock = (x, c) => `<text x="${x}" y="22.5" text-anchor="middle" font-family="DM Sans, Segoe UI, sans-serif" font-weight="600" font-size="16" fill="${c}">09.41</text>`;
+
+  // Idle notch, Polos: 190 x 34, mascot in a 26 dip square beside the clock.
+  function idleNotch(m, k, o = {}) {
+    k = k || m.def;
+    const surf = SURF[o.surf || m.coats[k].surf];
+    return svg('0 0 214 34', `<path d="${NP}" fill="${surf}"/><g transform="translate(68 4) scale(0.40625)">${head(m, k, o)}</g>${clock(124, CR)}`, `${m.label} di notch`, 'notch');
+  }
+
+  // Jadi muka: the notch itself is the face (no head, no ears). Grid unit = 1.28 dip.
+  function faceNotch(m, k, o = {}) {
+    k = k || m.def;
+    const c = m.coats[k], s = o.state || 'idle', id = nid('f');
+    const fill = c.face, ink = contrast(INK, fill) >= 4.5 ? INK : CR;
+    const T = 'translate(81 17) scale(1.28) translate(-32 -40)';
+    let edge = '';
+    if (c.edge === 'surface') edge = `<path d="${NP}" fill="none" stroke="${SURF[c.surf]}" stroke-width="2" clip-path="url(#${id})"/>`;
+    if (c.edge === 'rim') edge = `<path d="${NP}" fill="none" stroke="${c.rim}" stroke-width="3" clip-path="url(#${id})"/>`;
+    let acc = '';
+    if (o.acc === 'headphone') {
+      const ed = contrast(CR, fill) < 3 ? ` stroke="${c.eye}" stroke-width="1"` : '';
+      const cup = x => `<rect x="${x - 3.15}" y="${17 - 5.4}" width="6.3" height="10.8" rx="2.7" fill="${CR}"${ed}/><rect x="${x - 1.7}" y="${17 - 3.2}" width="3.4" height="6.4" rx="1.4" fill="${NAVY}"/>`;
+      acc = cup(12 + 3.5 + 3.15) + cup(202 - 3.5 - 3.15);
+    }
+    if (o.acc === 'bowtie') acc = `<g transform="${T} translate(32 47.5) scale(0.55) translate(-32 -51.5)">${accessory('bowtie', { tie: [32, 51.5] })}</g>`;
+    const z = s === 'sleep' ? `<g transform="${T}">${st('M50 32h4l-4 4.4h4M55.5 27h3l-3 3.2h3', 1.3, ink, 0.85)}</g>` : '';
+    return svg('0 0 214 34',
+      `<defs><clipPath id="${id}"><path d="${NP}"/></clipPath></defs><path d="${NP}" fill="${fill}"/>` +
+      `<g clip-path="url(#${id})"><g transform="${T}">${m.faceMarks ? m.faceMarks(k, { state: s }) : ''}${eyes(s, c.eye)}${m.faceOver ? m.faceOver(k, { state: s }) : ''}</g></g>` +
+      edge + acc + z + clock(142.6, ink), `${m.label} jadi muka`, 'notch');
+  }
+
+  // Peek: the notch shrinks to a 34 x 14 pill with the mini face (grid unit = 0.8 dip).
+  function peek(m, k, o = {}) {
+    k = k || m.def;
+    const c = m.coats[k], id = nid('p');
+    const T = 'translate(17 7) scale(0.8) translate(-32 -40)';
+    const P = '<rect x="0" y="0" width="34" height="14" rx="7"/>';
+    let edge = '';
+    if (c.edge === 'surface') edge = `<rect x="0" y="0" width="34" height="14" rx="7" fill="none" stroke="${SURF[c.surf]}" stroke-width="2" clip-path="url(#${id})"/>`;
+    if (c.edge === 'rim') edge = `<rect x="0" y="0" width="34" height="14" rx="7" fill="none" stroke="${c.rim}" stroke-width="3" clip-path="url(#${id})"/>`;
+    return svg('-3 -3 40 20',
+      `<defs><clipPath id="${id}">${P}</clipPath></defs><rect x="0" y="0" width="34" height="14" rx="7" fill="${c.face}"/>` +
+      `<g clip-path="url(#${id})"><g transform="${T}">${m.peekMarks ? m.peekMarks(k) : ''}${eyes(o.state || 'idle', c.eye)}${m.faceOver ? m.faceOver(k, {}) : ''}</g></g>` + edge,
+      `${m.label} mengecil jadi mata`, 'peek');
+  }
+
+  // Square tile on the coat's surface (Settings-style), head at the given state/accessory.
+  function tile(m, k, o = {}, cls = 'tile') {
+    k = k || m.def;
+    const surf = SURF[o.surf || m.coats[k].surf];
+    return `<span class="${cls}" style="background:${surf}">${svg('-6 -8 76 76', head(m, k, o), m.label)}</span>`;
+  }
+
+  // ---------- reference mascots (cat, falk, octopus), for comparison ----------
+  const CAT_HEAD = 'M7 50L7 41Q7 24 32 24Q57 24 57 41L57 50Q57 54 53 54L11 54Q7 54 7 50Z';
+  const REF = {};
+  REF.cat = {
+    label: 'Kucing', def: 'terracotta',
+    coats: { terracotta: { label: 'Terracotta', surf: 'Espresso', eye: INK, face: '#E2683C' } },
+    anchors: { top: [32, 24], tie: [32, 51.5], hp: [7, 57, 41, 16.4] },
+    head: () => `<g fill="#E2683C" stroke="#E2683C" stroke-width="5" stroke-linejoin="round"><polygon points="9,37 12,10 27,26"/><polygon points="55,37 52,10 37,26"/></g><path d="${CAT_HEAD}" fill="#E2683C"/>`,
+  };
+  const FALK = 'M9 43Q9 22 32 22Q55 22 55 43Q55 57 32 57Q9 57 9 43Z';
+  const CREST = ['M28 27Q26.80 19.04 27 11Q21.21 19.39 28 27Z', 'M30.5 26Q30.98 14.15 35 3Q24.70 12.93 30.5 26Z', 'M33 26Q35.86 15.26 42 6Q30.02 12.64 33 26Z', 'M35.5 27Q40.05 19.93 46 14Q36.00 16.67 35.5 27Z'];
+  REF.falk = {
+    label: 'Falk', def: 'lutino',
+    coats: { lutino: { label: 'Lutino', surf: 'Espresso', eye: INK, face: '#F6D04A' } },
+    anchors: { top: [32, 26], tie: [32, 52.5], hp: [9, 55, 40, 17] },
+    head: (k, o) => `<g transform="rotate(10 32 27)" fill="#F6D04A"><ellipse cx="32" cy="26" rx="5.5" ry="4"/>${CREST.map(d => `<path d="${d}"/>`).join('')}</g>` +
+      `<defs><clipPath id="${o.id}c"><path d="${FALK}"/></clipPath></defs><path d="${FALK}" fill="#F1E4A2"/><ellipse cx="32" cy="33" rx="22" ry="17" fill="#F6D04A" clip-path="url(#${o.id}c)"/>` +
+      dot(15.5, 44.5, 4.4, '#EC6B3A') + dot(48.5, 44.5, 4.4, '#EC6B3A'),
+    over: () => '<path d="M29.4 44.2Q32 42.4 34.6 44.2Q34.4 48.4 32 49.8Q29.6 48.4 29.4 44.2Z" fill="#D9978F"/>',
+  };
+  const MANTLE = 'M32 9C50 9 55 25 50 37Q47 45 40 46L24 46Q17 45 14 37C9 25 14 9 32 9Z';
+  REF.octopus = {
+    label: 'Gurita', def: 'coral', eyeDy: -3,
+    coats: { coral: { label: 'Koral', surf: 'Espresso', eye: INK, face: '#E87C8E' } },
+    anchors: { top: [32, 9], tie: [32, 45.5], hp: [11, 53, 33, 3] },
+    head: () => {
+      const col = '#E87C8E', shade = mix(col, '#000000', 0.18);
+      const L = [[19, 42, 8, 51, 3, 54, -1], [24, 45, 15, 57, 9.5, 57.5, -1], [29, 46, 27, 58, 21, 58.5, 1]];
+      let arms = '';
+      [-1, 1].forEach(side => L.forEach(([sx, sy, cx, cy, ex, ey, o]) => {
+        const X = v => side < 0 ? v : 64 - v, d = side < 0 ? o : -o, e = X(ex), mx = e + d * 3.2, my = ey - 3.2;
+        arms += st(`M${X(sx)} ${sy}Q${X(cx)} ${cy} ${e} ${ey}Q${e + d * 3.4} ${ey + 0.2} ${mx} ${my}Q${mx - 0.2} ${my - 2.4} ${mx - d * 2.4} ${my - 2.2}`, 5, col);
+      }));
+      return arms + `<path d="${MANTLE}" fill="${col}"/>` + dot(22, 20, 2.2, shade) + dot(40, 15, 1.6, shade) + dot(45, 24, 1.3, shade);
+    },
+  };
+
+  window.DOGKIT = { INK, CR, NAVY, SURF, pill, dot, st, mix, contrast, svg, eyes, zz, accessory, head, idleNotch, faceNotch, peek, tile, earPose, REF, nid };
+  window.DOG = {};
+})();
+
+</script>
+<script>
+// Husky: pointed upright ears, dark cap over the top of the head and ears,
+// light mask around the eyes with the dark widow's peak between them.
+(function () {
+  const K = window.DOGKIT;
+  const WHITE = '#F6F1EA', NOSE = '#2B2420', TONGUE = '#E8818F';
+
+  const HEAD = 'M7 47L7 41Q7 22 32 22Q57 22 57 41L57 47Q57 55 49 55L15 55Q7 55 7 47Z';
+  const EAR_L = [[7, 35], [11, 10], [27, 24]];
+  const EAR_R = EAR_L.map(([x, y]) => [64 - x, y]);
+  // Light mask: arches over both eyes, dark peak down between them, dark temples.
+  const MASK = 'M0 50C8 48 13 44 15 38C17 31 22 30 25 30.5Q27.5 31 28.4 32.8L32 39.6L35.6 32.8Q36.5 31 39 30.5C42 30 47 31 49 38C51 44 56 48 64 50L64 64L0 64Z';
+  const BROW = [[20.5, 27.2], [43.5, 27.2]];
+
+  const coats = {
+    abu: { label: 'Abu-abu & putih', cap: '#7E8898', surf: 'Night', eye: K.INK, face: WHITE, dot: '#7E8898', tint: '#7E8898', edge: 'surface' },
+    hitam: { label: 'Hitam & putih', cap: '#2C2A32', surf: 'Plum', eye: K.INK, face: WHITE, dot: '#2C2A32', tint: '#8E7CB8', edge: 'surface', rim: '#8E7CB8' },
+    tembaga: { label: 'Merah tembaga & putih', cap: '#A9643E', surf: 'Espresso', eye: K.INK, face: WHITE, dot: '#A9643E', tint: '#A9643E', edge: 'surface' },
+    salju: { label: 'Putih salju', cap: '#D6CFC6', surf: 'Sea', eye: K.INK, face: WHITE, dot: WHITE, tint: WHITE, edge: 'surface' },
+  };
+
+  const pts = (e, up) => e.map(([x, y], i) => `${x},${i === 1 ? y - up : y}`).join(' ');
+  const ears = (up, rot, fill, sw) =>
+    `<g fill="${fill}" stroke="${fill}" stroke-width="${sw}" stroke-linejoin="round" stroke-linecap="round">` +
+    `<polygon transform="rotate(${-rot} 17 30)" points="${pts(EAR_L, up)}"/><polygon transform="rotate(${rot} 47 30)" points="${pts(EAR_R, up)}"/></g>`;
+  const NOSE_D = 'M29.4 45.6Q32 44.8 34.6 45.6Q34.7 47.4 32 48.9Q29.3 47.4 29.4 45.6Z';
+  const nose = state => `<path d="${NOSE_D}" fill="${NOSE}"/>` +
+    (state === 'happy' ? `<path d="M30.7 49.4h2.6v1.5a1.3 1.3 0 0 1 -2.6 0Z" fill="${TONGUE}"/>` : '');
+
+  window.DOG.husky = {
+    label: 'Husky',
+    blurb: 'Telinga segitiga tegak yang lebih pendek dan lebar dari kucing, topi bulu gelap di atas kepala dan telinga, lalu topeng terang di sekitar mata dengan lancip gelap di tengah dahi. Dua titik alis terang dan hidung kecil membuatnya terbaca husky.',
+    def: 'abu',
+    coats,
+    anchors: { top: [32, 22.5], tie: [32, 54.5], hp: [7, 57, 41, 14.5] },
+    head(k, o) {
+      const c = coats[k], { up, rot } = o.ears, id = `${o.id}m`;
+      const rim = c.rim
+        ? `<g fill="none" stroke="${c.rim}" stroke-linejoin="round">` +
+          `<polygon transform="rotate(${-rot} 17 30)" points="${pts(EAR_L, up)}" stroke-width="8.2"/><polygon transform="rotate(${rot} 47 30)" points="${pts(EAR_R, up)}" stroke-width="8.2"/>` +
+          `<path d="${HEAD}" stroke-width="3.2"/></g>`
+        : '';
+      return rim + ears(up, rot, c.cap, 5) +
+        `<defs><clipPath id="${id}"><path d="${HEAD}"/></clipPath></defs><path d="${HEAD}" fill="${c.cap}"/>` +
+        `<path d="${MASK}" fill="${c.face}" clip-path="url(#${id})"/>` +
+        BROW.map(([x, y]) => K.dot(x, y, 2, c.face)).join('');
+    },
+    over: (k, o) => nose(o.state),
+    faceMarks(k) {
+      const c = coats[k];
+      return `<path d="M-30 20H61Q62 30 60 34Q57 42 53.5 44Q50 44 49 38C47 32 43 30.5 39 31Q36.5 31.5 35.6 33.2L32 39.6L28.4 33.2Q27.5 31.5 25 31C21 30.5 17 32 15 38Q14 44 10.5 44Q7 42 4 34Q-10 31 -30 33Z" fill="${c.cap}"/>` +
+        K.dot(21.5, 29.2, 1.6, c.face) + K.dot(42.5, 29.2, 1.6, c.face);
+    },
+    faceOver: (k, o) => nose(o.state),
+    peekMarks(k) {
+      const c = coats[k];
+      return `<path d="M8 28H56V39Q52 33.6 44 33.4Q38.8 33.4 36.6 35L32 39.4L27.4 35Q25.2 33.4 20 33.4Q12 33.6 8 39Z" fill="${c.cap}"/>`;
+    },
+  };
+})();
+
+</script>
+<script>
+// Pomeranian: a round fluff ball (scalloped ruff, widest at the cheeks), tiny ears peeking out on top,
+// a lighter muzzle and a small nose. Same 64 grid and pill eyes as the cat.
+(function () {
+  const K = window.DOGKIT, INK = K.INK;
+
+  // Fluff = one flat union of circles: a round core plus bumps around it (bigger on the cheeks and below).
+  const FLUFF = [
+    [32, 39, 18.5],
+    [24, 24.5, 6.5], [32, 23, 6.5], [40, 24.5, 6.5],
+    [15.5, 30, 7], [48.5, 30, 7],
+    [12.5, 39.5, 7.5], [51.5, 39.5, 7.5],
+    [15, 48.5, 7.5], [49, 48.5, 7.5],
+    [23.5, 52.5, 6], [32, 53, 6], [40.5, 52.5, 6],
+  ];
+  const fluff = c => FLUFF.map(([x, y, r]) => K.dot(x, y, r, c)).join('');
+
+  // Tiny ears: outer base, tip, inner base. Pivots at the ear bases.
+  const EAR_L = [[16, 22], [18.5, 12], [25, 18.5]], PIV_L = [20.5, 21];
+  const EAR_R = EAR_L.map(([x, y]) => [64 - x, y]), PIV_R = [64 - PIV_L[0], PIV_L[1]];
+  const ear = (pts, up) => `<polygon points="${pts.map(([x, y], i) => `${x},${i === 1 ? y - up : y}`).join(' ')}"/>`;
+
+  // Lighter muzzle (head) and nose.
+  const MUZZLE = [32, 49, 9, 6.5];
+  const muzzle = c => `<ellipse cx="${MUZZLE[0]}" cy="${MUZZLE[1]}" rx="${MUZZLE[2]}" ry="${MUZZLE[3]}" fill="${c}"/>`;
+  const NOSE = 'M29.4 45.4Q32 44.6 34.6 45.4Q34.7 47.3 32 48.7Q29.3 47.3 29.4 45.4Z';
+  const TONGUE = 'M30.5 49.4Q32 49 33.5 49.4Q33.6 52.4 32 52.6Q30.4 52.4 30.5 49.4Z';
+
+  window.DOG.pomeranian = {
+    label: 'Pomeranian',
+    blurb: 'Kepala bulat seperti bola bulu: pinggirnya bergelombang, paling lebar di pipi, dengan telinga segitiga kecil yang cuma mengintip di atas. Moncong lebih terang dan hidung kecil membuatnya terbaca anjing.',
+    def: 'oranye',
+    coats: {
+      oranye: { label: 'Oranye', surf: 'Espresso', eye: INK, face: '#EE9B3A', dot: '#EE9B3A', tint: '#EE9B3A', head: '#EE9B3A', muzzle: '#F8D9A6', nose: INK },
+      krem: { label: 'Krem', surf: 'Night', eye: INK, face: '#F2DDB8', dot: '#F2DDB8', tint: '#F2DDB8', edge: 'surface', head: '#F2DDB8', muzzle: '#FBF4E8', nose: INK },
+      coklat: { label: 'Coklat', surf: 'Graphite', eye: INK, face: '#B07A4F', dot: '#B07A4F', tint: '#B07A4F', head: '#B07A4F', muzzle: '#DDB287', nose: '#3B2418' },
+      hitam: { label: 'Hitam', surf: 'Plum', eye: '#F2B33D', face: '#1E1B22', dot: '#1E1B22', tint: '#8E7CB8', edge: 'rim', rim: '#8E7CB8', head: '#1E1B22', muzzle: '#C98A4A', nose: INK },
+    },
+    anchors: { top: [32, 18.5], tie: [32, 57], hp: [6, 58, 40, 13] },
+
+    head(k, o) {
+      const c = this.coats[k], { up, rot } = o.ears;
+      const ears = `<g fill="${c.head}" stroke="${c.head}" stroke-width="5" stroke-linejoin="round">` +
+        `<g transform="rotate(${-rot} ${PIV_L[0]} ${PIV_L[1]})">${ear(EAR_L, up)}</g>` +
+        `<g transform="rotate(${rot} ${PIV_R[0]} ${PIV_R[1]})">${ear(EAR_R, up)}</g></g>`;
+      let rim = '';
+      if (c.rim) {
+        rim = `<g fill="${c.rim}" stroke="${c.rim}" stroke-width="8.2" stroke-linejoin="round">` +
+          `<g transform="rotate(${-rot} ${PIV_L[0]} ${PIV_L[1]})">${ear(EAR_L, up)}</g>` +
+          `<g transform="rotate(${rot} ${PIV_R[0]} ${PIV_R[1]})">${ear(EAR_R, up)}</g></g>` +
+          FLUFF.map(([x, y, r]) => K.dot(x, y, r + 1.6, c.rim)).join('');
+      }
+      return rim + ears + fluff(c.head) + muzzle(c.muzzle);
+    },
+    over(k, o) {
+      const c = this.coats[k];
+      return (o.state === 'happy' ? `<path d="${TONGUE}" fill="#E8798A"/>` : '') + `<path d="${NOSE}" fill="${c.nose}"/>`;
+    },
+    faceMarks(k) { return muzzle(this.coats[k].muzzle); },
+    faceOver(k, o) { return this.over(k, o); },
+    peekMarks(k) { return muzzle(this.coats[k].muzzle); },
+  };
+})();
+
+</script>
+<script>
+// Shiba inu: wide round-cheeked head, small thick ears, cream urajiro (cheeks + muzzle) and two cream eyebrow dots.
+(function () {
+  const K = window.DOGKIT, dot = K.dot;
+  // Head: broad forehead, cheeks fullest low (y ~46), soft chin. x 5.5..58.5, y 23..56.
+  const HEAD = 'M32 23.5C45 23.5 53 25.5 55.5 33C57.5 39 59.5 47 55.5 52.5C51 56.5 42 56 32 56C22 56 13 56.5 8.5 52.5C4.5 47 6.5 39 8.5 33C11 25.5 19 23.5 32 23.5Z';
+  // Ears: outer base, tip, inner base. Short, wide-based, tips leaning a little inward (forward).
+  const EAR_L = [[6.5, 30], [14, 13], [26.5, 23.5]], EAR_R = EAR_L.map(([x, y]) => [64 - x, y]);
+  const PIV_L = [15, 28], PIV_R = [49, 28];
+
+  // Coat palette: head, urajiro (cream), brow dots, nose.
+  const P = {
+    merah: { head: '#D88A35', ura: '#F6EBD9', brow: '#F6EBD9', nose: '#2B211C' },
+    wijen: { head: '#B87A42', ura: '#F1E3CC', brow: '#F1E3CC', nose: '#211915', saddle: '#6F432A' },
+    hitam: { head: '#27211F', ura: '#F3E8D6', brow: '#D69A52', nose: '#17120F', tan: '#C98A48' },
+    krem: { head: '#E6CB9C', ura: '#FBF5EA', brow: '#FBF5EA', nose: '#3A2C24' },
+  };
+
+  const ear = (pts, up) => pts.map(([x, y], i) => `${x},${i === 1 ? y - up : y}`).join(' ');
+  const ears = (col, o, w = 5) => {
+    const { up, rot } = o.ears;
+    return `<g fill="${col}" stroke="${col}" stroke-width="${w}" stroke-linejoin="round">` +
+      `<polygon transform="rotate(${-rot} ${PIV_L[0]} ${PIV_L[1]})" points="${ear(EAR_L, up)}"/>` +
+      `<polygon transform="rotate(${rot} ${PIV_R[0]} ${PIV_R[1]})" points="${ear(EAR_R, up)}"/></g>`;
+  };
+  // Urajiro on the head: two cheek lobes leave a coat-coloured bridge down to the nose, muzzle under it.
+  const ura = c => `<ellipse cx="17.5" cy="51" rx="14" ry="8.2" fill="${c}"/><ellipse cx="46.5" cy="51" rx="14" ry="8.2" fill="${c}"/>` + dot(32, 53, 5.5, c);
+  const brows = c => `<ellipse cx="22.5" cy="31.2" rx="2.9" ry="2.2" fill="${c}"/><ellipse cx="41.5" cy="31.2" rx="2.9" ry="2.2" fill="${c}"/>`;
+  const nose = (c, s) => (s === 'happy' ? '<path d="M30.6 49.6h2.8v1.6a1.4 1.4 0 0 1 -2.8 0Z" fill="#E07A8A"/>' : '') +
+    `<path d="M29.4 46.4Q29.4 45 32 45Q34.6 45 34.6 46.4Q34.6 48.6 32 48.8Q29.4 48.6 29.4 46.4Z" fill="${c}"/>`;
+
+  const RIM = '#8E7CB8';
+  window.DOG.shiba = {
+    label: 'Shiba',
+    blurb: 'Kepala lebar dengan pipi penuh, telinga segitiga kecil yang tebal, dan urajiro: pipi serta moncong krem plus dua titik alis krem di atas mata. Hidung kecil gelap di tengah moncong.',
+    def: 'merah',
+    coats: {
+      merah: { label: 'Merah', surf: 'Night', eye: '#17120F', face: P.merah.head, dot: P.merah.head, tint: P.merah.head },
+      wijen: { label: 'Wijen', surf: 'Sea', eye: '#17120F', face: P.wijen.head, dot: P.wijen.head, tint: P.wijen.head },
+      hitam: { label: 'Hitam & tan', surf: 'Plum', eye: '#F2B33D', face: P.hitam.head, dot: P.hitam.head, tint: RIM, edge: 'rim', rim: RIM },
+      krem: { label: 'Krem', surf: 'Graphite', eye: '#17120F', face: P.krem.head, dot: P.krem.head, tint: P.krem.head, edge: 'surface' },
+    },
+    anchors: { top: [32, 23], tie: [32, 53.5], hp: [6, 58, 42, 15.5] },
+    head(k, o) {
+      const p = P[k], c = this.coats[k], id = `${o.id}m`;
+      const rim = c.edge === 'rim' ? ears(c.rim, o, 8.2) + `<path d="${HEAD}" fill="none" stroke="${c.rim}" stroke-width="3.2"/>` : '';
+      return rim + ears(p.saddle || p.head, o) +
+        `<defs><clipPath id="${id}"><path d="${HEAD}"/></clipPath></defs><path d="${HEAD}" fill="${p.head}"/>` +
+        (p.saddle ? `<path d="M14 20H50Q44 27 32 31Q20 27 14 20Z" fill="${p.saddle}" clip-path="url(#${id})"/>` : '') +
+        `<g clip-path="url(#${id})">${p.tan ? `<g transform="translate(0 -1.8)">${ura(p.tan)}</g>` : ''}${ura(p.ura)}</g>` + brows(p.brow);
+    },
+    over(k, o) { return nose(P[k].nose, o.state); },
+    // Jadi muka: urajiro band along the bottom (two cheek lobes + muzzle) and the brow dots.
+    faceMarks(k) {
+      const p = P[k];
+      const band = c => `<ellipse cx="13" cy="53.5" rx="15" ry="8" fill="${c}"/><ellipse cx="49" cy="53.5" rx="11" ry="8" fill="${c}"/>` + dot(32, 54, 6.5, c);
+      return (p.tan ? `<g transform="translate(0 -1.8)">${band(p.tan)}</g>` : '') + band(p.ura) + brows(p.brow);
+    },
+    faceOver(k) { return nose(P[k].nose); },
+    // Peek: one urajiro band under the eyes (the nose comes from faceOver).
+    peekMarks(k) { return `<ellipse cx="32" cy="49.5" rx="22" ry="6.5" fill="${P[k].ura}"/>`; },
+  };
+})();
+
+</script>
+<script>
+(() => {
+  const K = window.DOGKIT, R = K.REF, out = document.getElementById('out');
+  const only = new URLSearchParams(location.search).get('only');
+  const keys = ['husky', 'pomeranian', 'shiba'].filter(k => window.DOG[k] && (!only || only === k));
+  const STATES = [['idle', 'Diam'], ['blink', 'Kedip'], ['happy', 'Senang'], ['alert', 'Kaget'], ['sad', 'Sedih'], ['sleep', 'Tidur']];
+  const ACC = [['bowtie', 'Dasi kupu-kupu'], ['headphone', 'Headphone'], ['sailor', 'Topi pelaut'], ['bandana', 'Bandana (ide baru)']];
+  const cell = (inner, cap, sub = '') => `<div class="cell">${inner}<div class="cap">${cap}</div>${sub ? `<div class="sub">${sub}</div>` : ''}</div>`;
+  const shelf = s => `<div class="shelf">${s}</div>`;
+
+  // ---------- cover ----------
+  if (!only) {
+    const dogs = keys.map(k => window.DOG[k]);
+    out.insertAdjacentHTML('beforeend', `<section class="page">
+      <h1>Maskot anjing: husky, pomeranian, shiba</h1>
+      <p class="lead">Calon maskot keempat, digambar dengan aturan yang sama dengan kucing, falk dan gurita: satu siluet warna rata, telinga menyatu dengan kepala, dua mata pil di garis yang sama, tanpa garis tepi. Bedanya cuma dari bentuk kepala, telinga, dan satu-dua tanda warna kecil.</p>
+      <div class="row" style="gap:20px;margin:10px 0 6px">${dogs.map(m => cell(K.tile(m, m.def, {}, 'tile big'), m.label, m.coats[m.def].label)).join('')}</div>
+      <h3>Di notch, dibanding maskot yang sudah ada (diperbesar 1,5x)</h3>
+      <div class="grid3">${dogs.map(m => cell(shelf(K.idleNotch(m)), m.label)).join('')}${[R.cat, R.falk, R.octopus].map(m => cell(shelf(K.idleNotch(m)), m.label, 'sudah ada')).join('')}</div>
+      <h3>Ukuran asli di layar</h3>
+      <div class="row">${[...dogs, R.cat, R.falk, R.octopus].map(m => cell(shelf(K.idleNotch(m).replace('class="notch"', 'class="notch sm" style="width:214px"')), m.label)).join('')}</div>
+    </section>`);
+  }
+
+  // ---------- one section per breed ----------
+  keys.forEach(k => {
+    const m = window.DOG[k], coats = Object.keys(m.coats);
+    out.insertAdjacentHTML('beforeend', `<section class="page">
+      <div class="hero">${K.tile(m, m.def, {}, 'tile big')}
+        <div><h2>${m.label}</h2><p class="muted">${m.blurb || ''}</p>
+          <h3>Ekspresi</h3>
+          <div class="row">${STATES.map(([s, l]) => cell(K.tile(m, m.def, { state: s }), l)).join('')}</div>
+        </div></div>
+      <h3>Warna bulu (latar notch ikut otomatis)</h3>
+      <div class="row">${coats.map(c => cell(K.tile(m, c), m.coats[c].label, 'di ' + m.coats[c].surf)).join('')}</div>
+      <div class="grid2" style="margin-top:10px">${coats.map(c => cell(shelf(K.idleNotch(m, c)), m.coats[c].label + ', Polos')).join('')}</div>
+    </section>
+    <section class="page">
+      <h2>${m.label}: Jadi muka dan mengecil jadi mata</h2>
+      <p class="muted">Jadi muka: notch-nya sendiri jadi wajah, tanpa kepala dan telinga, hanya mata dan tanda warna. Mengecil: notch jadi pil 34 x 14 saat kursor mendekat.</p>
+      <div class="grid2">${coats.map(c => cell(shelf(K.faceNotch(m, c)), m.coats[c].label + ', Jadi muka')).join('')}</div>
+      <div class="grid3" style="margin-top:10px">${cell(shelf(K.faceNotch(m, m.def, { state: 'happy' })), 'Senang')}${cell(shelf(K.faceNotch(m, m.def, { state: 'blink' })), 'Kedip')}${cell(shelf(K.faceNotch(m, m.def, { state: 'sleep' })), 'Tidur')}</div>
+      <h3>Mengecil jadi mata (diperbesar 3x)</h3>
+      <div class="row">${coats.map(c => cell(shelf(K.peek(m, c)), m.coats[c].label)).join('')}</div>
+      <h3>Aksesori (dipakai bersama semua maskot)</h3>
+      <div class="row">${ACC.map(([a, l]) => cell(K.tile(m, m.def, { acc: a }), l)).join('')}
+        ${cell(shelf(K.faceNotch(m, m.def, { acc: 'headphone' })), 'Jadi muka + Headphone')}</div>
+    </section>`);
+  });
+
+  // ---------- decisions ----------
+  if (!only && keys.length) {
+    const dogs = keys.map(k => window.DOG[k]);
+    const icon = (m, on) => `<span class="${on ? 'on' : ''}">${K.svg('-6 -8 76 76', K.head(m, m.def), m.label)}${m.label}</span>`;
+    const ref = [R.cat, R.falk, R.octopus].map(m => icon(m, 0)).join('');
+    out.insertAdjacentHTML('beforeend', `<section class="page">
+      <h2>Yang perlu diputuskan</h2>
+      <ol>
+        <li><b>Ras:</b> satu ras saja, dua, atau ketiganya.</li>
+        <li><b>Di Pengaturan → Maskot:</b> (A) satu tile "Anjing" lalu pilih ras di bawahnya, atau (B) tiap ras jadi tile maskot sendiri.</li>
+        <li><b>Warna bulu</b> per ras: ambil semua yang di lembar ini, atau dikurangi.</li>
+        <li><b>Hidung kecil:</b> kucing tidak punya hidung; anjing di sini pakai hidung kecil supaya terbaca anjing. Tetap, atau dibuang.</li>
+        <li><b>Cerita animasi:</b> ikut punya cerita sendiri (seperti kucing, falk, gurita), atau cuma wajah di notch dulu.</li>
+        <li><b>Aksesori:</b> pakai sepuluh yang sudah ada, plus Bandana baru atau tidak.</li>
+      </ol>
+      <div class="grid2" style="margin-top:12px">
+        <div class="card"><b>A. Satu tile "Anjing", ras di bawahnya</b>
+          <div class="win" style="margin-top:8px"><div class="t">Pengaturan, Maskot</div><div class="lbl">Maskot di notch</div>
+            <div class="seg">${ref}${icon(dogs[0], 1).replace(dogs[0].label + '</span>', 'Anjing</span>')}</div>
+            <div class="lbl">Ras</div><div class="seg">${dogs.map((m, i) => `<span class="${i ? '' : 'on'}" style="padding-left:8px">${m.label}</span>`).join('')}</div>
+            <div class="lbl">Warna bulu</div><div class="seg">${Object.values(dogs[0].coats).map((c, i) => `<span class="${i ? '' : 'on'}"><i class="chip" style="background:${c.dot || c.face}"></i>${c.label}</span>`).join('')}</div></div>
+          <p class="muted" style="margin-top:6px">Baris maskot tetap empat. Satu baris tambahan untuk ras.</p></div>
+        <div class="card"><b>B. Tiap ras jadi maskot sendiri</b>
+          <div class="win" style="margin-top:8px"><div class="t">Pengaturan, Maskot</div><div class="lbl">Maskot di notch</div>
+            <div class="seg">${ref}${dogs.map((m, i) => icon(m, i === 0)).join('')}</div>
+            <div class="lbl">Warna bulu</div><div class="seg">${Object.values(dogs[0].coats).map((c, i) => `<span class="${i ? '' : 'on'}"><i class="chip" style="background:${c.dot || c.face}"></i>${c.label}</span>`).join('')}</div></div>
+          <p class="muted" style="margin-top:6px">Tanpa baris ras, tapi baris maskot jadi ${3 + dogs.length} tile.</p></div>
+      </div>
+    </section>`);
+  }
+  document.body.dataset.h = [...document.querySelectorAll('.page')].map(s => s.offsetHeight).join(',');
+})();
+</script>
+</body>
+</html>
