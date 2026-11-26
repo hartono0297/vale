@@ -16,6 +16,19 @@ pub struct Entry {
 /// Newest first. Add the entry for a version before bumping it.
 pub static ENTRIES: &[Entry] = &[
     Entry {
+        version: "5.6.3",
+        id: &[
+            "Folder di shelf kini muncul di link HP dan laptop, diunduh sebagai satu file zip.",
+            "Sticky note bisa diubah ukurannya dari semua sisi dan pojok.",
+            "Sticky note yang digulung bisa diubah lebarnya dari sisi kiri atau kanan.",
+        ],
+        en: &[
+            "Folders on the shelf now show up on the phone and laptop link, as one zip file.",
+            "Sticky notes can be resized from every side and corner.",
+            "A rolled-up sticky note can change its width from its left or right side.",
+        ],
+    },
+    Entry {
         version: "5.6.2",
         id: &[
             "Tanda tangan ketik: pilih satu dari empat gaya tulisan tangan.",
