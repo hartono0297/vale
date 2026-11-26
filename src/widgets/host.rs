@@ -39,7 +39,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CheckMenuRadioItem, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
     DestroyWindow, GWL_EXSTYLE, GWLP_HWNDPARENT, GWLP_USERDATA, GetCaretBlinkTime, GetCursorPos, GetForegroundWindow,
-    GetShellWindow, GetWindowLongPtrW, HWND_BOTTOM, HWND_TOPMOST, IDC_ARROW, IDC_HAND, IDC_IBEAM, IDC_SIZEALL, IDC_SIZENWSE,
+    GetShellWindow, GetWindowLongPtrW, HWND_BOTTOM, HWND_TOPMOST, IDC_ARROW, IDC_HAND, IDC_IBEAM, IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE,
     IsWindowVisible, KillTimer, LoadCursorW, MA_ACTIVATE, MA_NOACTIVATE, MF_CHECKED, MF_POPUP, MF_SEPARATOR,
     MF_GRAYED, MF_STRING, PostMessageW, RegisterClassExW, SW_HIDE, SW_SHOWNA, SWP_NOACTIVATE, SWP_NOMOVE,
     SWP_NOSIZE, SWP_NOZORDER, SetCursor, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow,
@@ -83,7 +83,7 @@ use crate::widgets::tuck::{self, Edge};
 use crate::widgets::remind::{self, Preset};
 use crate::widgets::remind_pop;
 use crate::widgets::prefs::{FullscreenRule, WidgetLayer, WidgetPrefs};
-use crate::widgets::snap::{Axis, Snapped, snap_move_for, snap_resize};
+use crate::widgets::snap::{Axis, Edges, Snapped, snap_move_for, snap_resize_edges};
 use crate::widgets::sticky::{
     self, Deco, DipRect, NoteFont, Paper, Pattern, Stamp, Sticky, TextSize,
 };
@@ -234,7 +234,7 @@ struct PopDrawn {
 #[derive(Clone, Copy, PartialEq)]
 enum DragKind {
     Move,
-    Resize,
+    Resize(Edges),
 }
 
 struct Drag {
@@ -2434,6 +2434,16 @@ fn client_to_dip(w: &Win, x: i32, y: i32) -> (f32, f32) {
     )
 }
 
+/// The resize cursor for the edges a drag moves.
+fn resize_cursor(e: Edges) -> PCWSTR {
+    match (e.left || e.right, e.top || e.bottom) {
+        (true, false) => IDC_SIZEWE,
+        (false, true) => IDC_SIZENS,
+        _ if e.left == e.top => IDC_SIZENWSE,
+        _ => IDC_SIZENESW,
+    }
+}
+
 fn set_cursor(hwnd: HWND) -> bool {
     let mut pt = POINT::default();
     unsafe {
@@ -2443,10 +2453,9 @@ fn set_cursor(hwnd: HWND) -> bool {
         let i = idx_of(s, hwnd)?;
         let w = &s.wins[i];
         if let Some(d) = &w.drag {
-            return Some(if d.kind == DragKind::Move {
-                IDC_SIZEALL
-            } else {
-                IDC_SIZENWSE
+            return Some(match d.kind {
+                DragKind::Move => IDC_SIZEALL,
+                DragKind::Resize(e) => resize_cursor(e),
             });
         }
         if w.on_tab(pt.x, pt.y, Instant::now()) {
@@ -2458,7 +2467,7 @@ fn set_cursor(hwnd: HWND) -> bool {
             Target::Bar(BarHit::Bar) => Some(IDC_ARROW),
             Target::Bar(_) | Target::Image(_) | Target::ImageRemove(_) => Some(IDC_HAND),
             Target::Header if !s.prefs.lock => Some(IDC_SIZEALL),
-            Target::Resize(_) if !s.prefs.lock => Some(IDC_SIZENWSE),
+            Target::Resize(e) if !s.prefs.lock => Some(resize_cursor(e)),
             _ => Some(IDC_ARROW),
         }
     })
@@ -2826,8 +2835,8 @@ fn left_down(hwnd: HWND, x: i32, y: i32) {
                 start_move(s, i, (pt.x, pt.y));
                 Some(Down::Capture)
             }
-            Target::Resize(_) => {
-                begin_drag(s, i, DragKind::Resize, (pt.x, pt.y));
+            Target::Resize(e) => {
+                begin_drag(s, i, DragKind::Resize(e), (pt.x, pt.y));
                 Some(Down::Capture)
             }
             Target::Body | Target::Footer => {
@@ -4761,19 +4770,6 @@ fn moved_view(
     (snapped, view)
 }
 
-/// A note shown as `start` (when the grip was taken) resized to `size`: its
-/// top-left stays where it is shown, which for a note on a fallback monitor
-/// is not its saved place.
-fn resized(
-    start: &DipRect,
-    size: (f32, f32),
-    area: &DipRect,
-    others: &[DipRect],
-    alt: bool,
-) -> Snapped {
-    snap_resize(DipRect::new(start.x, start.y, size.0, size.1), area, others, alt)
-}
-
 /// The pointer moved at `cursor` (px) while a note is dragged or resized.
 fn drag_move(s: &mut State, i: usize, cursor: (i32, i32), alt: bool, shift: bool) {
     let (kind, start_cursor, start_note, start_dip, moved) = {
@@ -4798,10 +4794,7 @@ fn drag_move(s: &mut State, i: usize, cursor: (i32, i32), alt: bool, shift: bool
             };
             (di, desired)
         }
-        DragKind::Resize => (
-            s.wins[i].display,
-            Rect::new(start_note.x, start_note.y, start_note.w + dx, start_note.h + dy),
-        ),
+        DragKind::Resize(_) => (s.wins[i].display, start_note),
     };
     let Some(disp) = s.displays.get(di).cloned() else {
         return;
@@ -4832,13 +4825,26 @@ fn drag_move(s: &mut State, i: usize, cursor: (i32, i32), alt: bool, shift: bool
             &others,
             alt,
         ),
-        DragKind::Resize => {
-            let mut snapped = resized(&start_dip, (rel.w, rel.h), &area, &others, alt);
+        DragKind::Resize(edges) => {
+            let delta = (dx as f32 / scale, dy as f32 / scale);
+            let mut snapped =
+                snap_resize_edges(start_dip, delta, edges, &area, &others, alt, rolled);
             // A stack is never narrower than its counter and arrows need.
             if s.wins[i].stack.is_some() && snapped.rect.w < stack::MIN_W {
-                snapped.rect.w = stack::MIN_W.min((area.right() - snapped.rect.x).max(0.0));
+                let r = &mut snapped.rect;
+                if edges.left {
+                    r.x = (start_dip.right() - stack::MIN_W).max(area.x);
+                    r.w = start_dip.right() - r.x;
+                } else {
+                    r.w = stack::MIN_W.min((area.right() - r.x).max(0.0));
+                }
             }
-            let view = snapped.rect;
+            // A rolled note keeps the height it unrolls to.
+            let view = if rolled {
+                DipRect { h: s.wins[i].view.h, ..snapped.rect }
+            } else {
+                snapped.rect
+            };
             (snapped, view)
         }
     };
@@ -4849,9 +4855,11 @@ fn drag_move(s: &mut State, i: usize, cursor: (i32, i32), alt: bool, shift: bool
     // shows the note smaller there and keeps the size it was given.
     w.sticky.rect.x = rect.x;
     w.sticky.rect.y = rect.y;
-    if kind == DragKind::Resize {
+    if matches!(kind, DragKind::Resize(_)) {
         w.sticky.rect.w = rect.w;
-        w.sticky.rect.h = rect.h;
+        if !rolled {
+            w.sticky.rect.h = rect.h;
+        }
     }
     let px = place::to_px(
         &DipRect {
@@ -5878,8 +5886,7 @@ mod tests {
         assert!(p.fallback);
         assert_eq!(p.view.x, 1680.0);
         let area = place::snap_area(&d[0]);
-        let r = resized(&p.view, (200.0, 240.0), &area, &[], true).rect;
-        assert_eq!((r.x, r.y), (p.view.x, p.view.y), "no jump to the old offset");
+        let r = snap_resize_edges(p.view, (-40.0, 32.0), Edges::BOTTOM_RIGHT, &area, &[], true, false).rect;
         assert_eq!((r.w, r.h), (200.0, 240.0));
     }
 
@@ -8354,7 +8361,7 @@ mod tests {
         );
         // Press the grip and drag wider and taller in 24 small moves.
         let (x0, y0) = (1000, 500);
-        with(|s| begin_drag(s, 0, DragKind::Resize, (x0, y0)));
+        with(|s| begin_drag(s, 0, DragKind::Resize(Edges::BOTTOM_RIGHT), (x0, y0)));
         let w0 = with(|s| s.wins[0].view.w).unwrap();
         let mut sizes = std::collections::HashSet::new();
         for step in 1..=24 {
@@ -8386,6 +8393,96 @@ mod tests {
         assert_eq!(decodes(), first + 3);
         host.shutdown();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One note in a window (hidden), shown on a 96 dpi display.
+    fn resize_fixture(f: impl FnOnce(&mut Sticky)) -> WidgetHost {
+        resize_fixture_of(vec![note_with("n1", "x", f)])
+    }
+
+    fn resize_fixture_of(notes: Vec<Note>) -> WidgetHost {
+        let displays = vec![display("A", 0, true, 96)];
+        let mut host = WidgetHost::new(HWND::default());
+        host.sync(&ctx(&notes, &displays));
+        host
+    }
+
+    fn resize_by(edges: Edges, by: (i32, i32)) {
+        let (x0, y0) = (1000, 500);
+        with(|s| begin_drag(s, 0, DragKind::Resize(edges), (x0, y0)));
+        with(|s| drag_move(s, 0, (x0 + by.0, y0 + by.1), true, false));
+        with(|s| finish_drag(s, 0, true));
+    }
+
+    #[test]
+    fn a_note_resized_from_the_left_keeps_its_right_edge() {
+        let _focus = keyboard_lock();
+        let mut host = resize_fixture(|_| {});
+        let (right, w) = with(|s| (s.wins[0].view.right(), s.wins[0].view.w)).unwrap();
+        resize_by(Edges { left: true, ..Edges::default() }, (-80, 0));
+        let v = with(|s| s.wins[0].view).unwrap();
+        assert_eq!(v.right(), right);
+        assert_eq!(v.w, w + 80.0);
+        host.shutdown();
+    }
+
+    #[test]
+    fn a_note_resized_from_the_top_keeps_its_bottom_edge() {
+        let _focus = keyboard_lock();
+        let mut host = resize_fixture(|_| {});
+        let (bottom, h) = with(|s| (s.wins[0].view.bottom(), s.wins[0].view.h)).unwrap();
+        resize_by(Edges { top: true, ..Edges::default() }, (0, -60));
+        let v = with(|s| s.wins[0].view).unwrap();
+        assert_eq!(v.bottom(), bottom);
+        assert_eq!(v.h, h + 60.0);
+        host.shutdown();
+    }
+
+    #[test]
+    fn a_rolled_note_resizes_its_width_only() {
+        let _focus = keyboard_lock();
+        let mut host = resize_fixture(|s| s.rolled = true);
+        let (h, saved_h, w) = with(|s| (s.wins[0].view.h, s.wins[0].sticky.rect.h, s.wins[0].sticky.rect.w)).unwrap();
+        resize_by(Edges { right: true, bottom: true, ..Edges::default() }, (60, 90));
+        let (vh, rh, rw) = with(|s| (s.wins[0].view.h, s.wins[0].sticky.rect.h, s.wins[0].sticky.rect.w)).unwrap();
+        assert_eq!(vh, h, "the unrolled height stays");
+        assert_eq!(rh, saved_h);
+        assert_eq!(rw, w + 60.0);
+        host.shutdown();
+    }
+
+    #[test]
+    fn a_stack_resized_from_the_left_keeps_its_right_edge_at_min_width() {
+        let _focus = keyboard_lock();
+        let sheet = |id: &str, order: u32| {
+            note_with(id, "x", |s| {
+                s.stack = Some("stk".into());
+                s.stack_order = order;
+                s.stack_top = order == 0;
+                s.rect.w = 300.0;
+            })
+        };
+        let mut host = resize_fixture_of(vec![sheet("a", 0), sheet("b", 1)]);
+        assert!(with(|s| s.wins[0].stack.is_some()).unwrap());
+        let right = with(|s| s.wins[0].view.right()).unwrap();
+        resize_by(Edges { left: true, ..Edges::default() }, (200, 0));
+        let v = with(|s| s.wins[0].view).unwrap();
+        assert_eq!(v.w, stack::MIN_W);
+        assert_eq!(v.right(), right);
+        host.shutdown();
+    }
+
+    #[test]
+    fn resize_cursor_matches_the_edges() {
+        let e = |l, t, r, b| Edges { left: l, top: t, right: r, bottom: b };
+        assert_eq!(resize_cursor(e(true, false, false, false)), IDC_SIZEWE);
+        assert_eq!(resize_cursor(e(false, false, true, false)), IDC_SIZEWE);
+        assert_eq!(resize_cursor(e(false, true, false, false)), IDC_SIZENS);
+        assert_eq!(resize_cursor(e(false, false, false, true)), IDC_SIZENS);
+        assert_eq!(resize_cursor(e(true, true, false, false)), IDC_SIZENWSE);
+        assert_eq!(resize_cursor(Edges::BOTTOM_RIGHT), IDC_SIZENWSE);
+        assert_eq!(resize_cursor(e(false, true, true, false)), IDC_SIZENESW);
+        assert_eq!(resize_cursor(e(true, false, false, true)), IDC_SIZENESW);
     }
 
     #[test]

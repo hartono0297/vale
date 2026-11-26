@@ -39,11 +39,11 @@ use crate::ui::icons::{Icon, IconSet};
 use crate::ui::robot::{Expr, Pose, RobotPainter};
 use crate::widgets::art::{self, Piece};
 use crate::widgets::checklist::{self, Line};
+use crate::widgets::snap::Edges;
 use crate::widgets::sticky::{
     Deco, DipRect, NoteFont, Pattern, ROLLED_H, Stamp, TextSize, Tones, chip_tones, tangan_family,
 };
 use crate::widgets::styles::{self, Hl, Run};
-use crate::widgets::snap::Edges;
 use crate::widgets::toolbar::{self, BAR_BLOCK, BarHit, Tool};
 use crate::widgets::tuck::{self, Edge};
 

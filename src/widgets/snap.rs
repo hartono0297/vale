@@ -293,6 +293,7 @@ pub fn snap_resize_edges(
 /// A widget resized by its bottom-right grip to `want` (its top-left stays):
 /// the size snaps to the grid, to the area's edges and to other widgets, and
 /// is kept inside the limits and the area.
+#[cfg(test)]
 pub fn snap_resize(want: DipRect, area: &DipRect, others: &[DipRect], alt: bool) -> Snapped {
     snap_resize_edges(want, (0.0, 0.0), Edges::BOTTOM_RIGHT, area, others, alt, false)
 }
