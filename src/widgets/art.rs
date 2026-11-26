@@ -643,9 +643,9 @@ pub fn draw_clock(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widgets::snap::Edges;
     use crate::widgets::paint::{GRIP, Target, body_rect, button_rect, grip_rect, margins, target};
     use crate::theme::{Accent, Surface, island};
+    use crate::widgets::snap::Edges;
     use crate::widgets::sticky::{MAX_H, MAX_W, MIN_H, MIN_W, Paper, contrast, tones};
 
     const SURFACES: [Surface; 6] = [

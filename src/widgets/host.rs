@@ -4855,9 +4855,12 @@ fn drag_move(s: &mut State, i: usize, cursor: (i32, i32), alt: bool, shift: bool
     // shows the note smaller there and keeps the size it was given.
     w.sticky.rect.x = rect.x;
     w.sticky.rect.y = rect.y;
-    if matches!(kind, DragKind::Resize(_)) {
-        w.sticky.rect.w = rect.w;
-        if !rolled {
+    // and only the sides that moved: the other size stays as saved.
+    if let DragKind::Resize(edges) = kind {
+        if edges.left || edges.right {
+            w.sticky.rect.w = rect.w;
+        }
+        if (edges.top || edges.bottom) && !rolled {
             w.sticky.rect.h = rect.h;
         }
     }
@@ -5251,7 +5254,6 @@ fn move_vertical(parent: HWND, edit_hwnd: HWND, up: bool, extend: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widgets::snap::Edges;
     use crate::arrange::Monitor;
     use crate::widgets::paint::margins;
     use crate::widgets::sticky::ROLLED_H;
@@ -5887,6 +5889,7 @@ mod tests {
         assert_eq!(p.view.x, 1680.0);
         let area = place::snap_area(&d[0]);
         let r = snap_resize_edges(p.view, (-40.0, 32.0), Edges::BOTTOM_RIGHT, &area, &[], true, false).rect;
+        assert_eq!((r.x, r.y), (p.view.x, p.view.y), "no jump to the old offset");
         assert_eq!((r.w, r.h), (200.0, 240.0));
     }
 
@@ -8448,6 +8451,39 @@ mod tests {
         assert_eq!(vh, h, "the unrolled height stays");
         assert_eq!(rh, saved_h);
         assert_eq!(rw, w + 60.0);
+        host.shutdown();
+    }
+
+    #[test]
+    fn a_side_drag_on_a_clamped_note_keeps_the_saved_height() {
+        let _focus = keyboard_lock();
+        // 192 dpi: the area is 520 dip tall, so the 800 dip note is shown smaller.
+        let displays = vec![display("A", 0, true, 192)];
+        let mut host = WidgetHost::new(HWND::default());
+        let note = note_with("n1", "x", |s| s.rect = DipRect::new(100.0, 10.0, 640.0, 800.0));
+        host.sync(&ctx(&[note], &displays));
+        let (vh, saved_h) = with(|s| (s.wins[0].view.h, s.wins[0].sticky.rect.h)).unwrap();
+        assert!(vh < saved_h, "shown smaller than saved: {vh} < {saved_h}");
+        let w = with(|s| s.wins[0].view.w).unwrap();
+        resize_by(Edges { right: true, ..Edges::default() }, (-80, 0));
+        let (vw, rw, rh) = with(|s| (s.wins[0].view.w, s.wins[0].sticky.rect.w, s.wins[0].sticky.rect.h)).unwrap();
+        assert_eq!(vw, w - 40.0);
+        assert_eq!(rw, vw);
+        assert_eq!(rh, saved_h, "the untouched height is not overwritten");
+        host.shutdown();
+    }
+
+    #[test]
+    fn a_rolled_note_resized_from_the_left_keeps_its_height() {
+        let _focus = keyboard_lock();
+        let mut host = resize_fixture(|s| s.rolled = true);
+        let (v0, saved_h) = with(|s| (s.wins[0].view, s.wins[0].sticky.rect.h)).unwrap();
+        resize_by(Edges { left: true, ..Edges::default() }, (-80, 0));
+        let (v, rh) = with(|s| (s.wins[0].view, s.wins[0].sticky.rect.h)).unwrap();
+        assert!(v.x < v0.x);
+        assert_eq!(v.right(), v0.right());
+        assert_eq!(v.h, v0.h);
+        assert_eq!(rh, saved_h);
         host.shutdown();
     }
 

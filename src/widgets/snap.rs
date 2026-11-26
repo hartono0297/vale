@@ -536,6 +536,26 @@ mod tests {
     }
 
     #[test]
+    fn a_neighbour_far_on_the_other_axis_does_not_pull_a_left_edge() {
+        let far = r(100.0, 600.0, 200.0, 100.0);
+        let e = Edges { left: true, ..Edges::default() };
+        let s = snap_resize_edges(r(320.0, 100.0, 240.0, 208.0), (-3.0, 0.0), e, &AREA, &[far], false, false);
+        assert_eq!((s.rect.x, s.rect.w), (320.0, 240.0), "the grid, not the neighbour's 312");
+    }
+
+    #[test]
+    fn a_right_or_bottom_edge_snaps_to_a_neighbour_with_the_gap() {
+        let e = Edges { right: true, ..Edges::default() };
+        let beside = r(360.0, 100.0, 200.0, 200.0);
+        let s = snap_resize_edges(r(100.0, 100.0, 240.0, 208.0), (3.0, 0.0), e, &AREA, &[beside], false, false);
+        assert_eq!(s.rect.right(), beside.x - GAP);
+        let e = Edges { bottom: true, ..Edges::default() };
+        let below = r(100.0, 330.0, 200.0, 200.0);
+        let s = snap_resize_edges(r(100.0, 100.0, 240.0, 208.0), (0.0, 4.0), e, &AREA, &[below], false, false);
+        assert_eq!(s.rect.bottom(), below.y - GAP);
+    }
+
+    #[test]
     fn a_rolled_resize_keeps_the_rolled_height() {
         let e = Edges { right: true, bottom: true, ..Edges::default() };
         let s = snap_resize_edges(r(400.0, 100.0, 240.0, ROLLED_H), (40.0, 90.0), e, &AREA, &[], false, true);
