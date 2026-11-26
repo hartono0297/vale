@@ -28,6 +28,7 @@ pub mod session;
 pub mod share;
 pub mod thumb;
 pub mod ua;
+pub mod zip_stream;
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::ops::RangeInclusive;
