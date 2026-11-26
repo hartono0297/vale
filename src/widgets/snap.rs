@@ -16,6 +16,19 @@ pub const GAP: f32 = 12.0;
 /// How near an edge must come before it snaps.
 pub const THRESHOLD: f32 = 8.0;
 
+/// The edges a resize moves: one for a side, two for a corner.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Edges {
+    pub left: bool,
+    pub top: bool,
+    pub right: bool,
+    pub bottom: bool,
+}
+
+impl Edges {
+    pub const BOTTOM_RIGHT: Edges = Edges { left: false, top: false, right: true, bottom: true };
+}
+
 /// The taskbar-like zone at the bottom the Dock will take; widgets stay out of
 /// it. The Dock's later phase feeds this; today nothing is reserved.
 pub fn reserved_bottom_dip() -> f32 {
