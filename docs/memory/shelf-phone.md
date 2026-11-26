@@ -303,8 +303,8 @@ and the notch's "diambil" tag (the page's own "Tersimpan" per phone stays),
   shows again.
 - **Whole shelf shared, `phone_sync_shared`.** While a session listens (at `Ready`, and at
   every `shelf_look`, which every shelf change ends with: drop, file from a phone, card
-  removed, Kosongkan) every card that is a file (not a folder), not stale, is shared once;
-  a mirror entry whose card left the shelf or turned stale (or became a folder) is
+  removed, Kosongkan) every card that is not stale is shared once (folders too since 2026-11-26, as a zip:
+  [[shelf-folder-zip]]); a mirror entry whose card left the shelf or turned stale is
   unshared. Pure decision: `sync_plan(cards, mirror, skipped)`. Network paths keep the
   phase 2 rule (never looked at on the UI thread: `share_unseen` + `phone-share-check`).
   **Loop guard:** `skipped` holds the keys of cards whose `share` returned `None` or whose
