@@ -106,7 +106,7 @@ Rules:
 - Consumes: `/api/files` entries with `kind: "folder"` and optional `big: true` (Task 2).
 
 - [ ] **Step 1:** Add `folder:"M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"` to `KIND`.
-- [ ] **Step 2:** Add string `big` to both dictionaries: Indonesian `"Isinya terlalu banyak"`, English `"Too many files"`.
-- [ ] **Step 3:** `fileRow`: when `f.big` (and not gone/err), the action is `h("span",{class:"gn"},t("big"))` instead of a Save button; `unsaved(f)` also returns false for `f.big` so Save all skips it. Keep the minified style of the file.
+- [ ] **Step 2:** Add string `many` (the key `big` is taken by uploads) to both dictionaries: Indonesian `"Isinya terlalu banyak"`, English `"Too many files"`.
+- [ ] **Step 3:** `fileRow`: when `f.big` (and not gone/err), the action is `h("span",{class:"gn"},t("many"))` instead of a Save button; `unsaved(f)` also returns false for `f.big` so Save all skips it. Keep the minified style of the file.
 - [ ] **Step 4: Run** `cargo test --locked phone::` (the page is embedded; its tests must stay green).
 - [ ] **Step 5:** Do not commit (the controller commits it).
