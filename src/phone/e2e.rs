@@ -576,8 +576,7 @@ fn a_phone_lists_downloads_resumes_and_is_cut_off_by_the_shared_files() {
     let png_bytes = std::fs::read(&png).expect("read png");
     let (_d1, vs) = r.join();
 
-    // Only a regular file can be shared.
-    assert!(r.handle.share(&share).is_none(), "a folder");
+    // Only a regular file or a folder can be shared.
     assert!(r.handle.share(&share.join("nothing.pdf")).is_none(), "a missing path");
     let txt_id = r.handle.share(&txt).expect("share txt");
     let png_id = r.handle.share(&png).expect("share png");
@@ -808,13 +807,14 @@ fn a_phone_lists_downloads_resumes_and_is_cut_off_by_the_shared_files() {
     assert_eq!(now.len(), 3);
     assert!(now.iter().all(|f| f["id"] != listed_id.as_str()));
     wait_for(&r.rx, |e| matches!(e, PhoneEvent::SharedGone { id } if *id == listed_id));
-    // A file replaced by a folder is gone too.
+    // A file replaced by a folder is served as a zip of it.
     let swap = r.dir.join("swap.txt");
     std::fs::write(&swap, b"x").expect("write");
     let swap_id = r.handle.share(&swap).expect("share");
     std::fs::remove_file(&swap).expect("remove");
     std::fs::create_dir(&swap).expect("dir");
-    assert_eq!(send(r.addr, "GET", &format!("/api/file/{swap_id}"), Some(&vs), "").status, 410);
+    let zipped = send(r.addr, "GET", &format!("/api/file/{swap_id}"), Some(&vs), "");
+    assert_eq!(zipped.header("content-type"), Some("application/zip"));
 
     // Session end drops every id.
     r.handle.unshare_all();
@@ -1102,4 +1102,59 @@ fn ready_says_which_network_the_session_is_on() {
         ready,
         PhoneEvent::Ready { net: PhoneNet::Tailscale, public: false, .. }
     ));
+}
+
+#[test]
+fn a_shelf_folder_downloads_as_a_zip() {
+    use std::os::windows::process::CommandExt;
+    let r = rig("phone-e2e-folder");
+    let folder = r.dir.join("DA");
+    std::fs::create_dir_all(folder.join("sub")).expect("dirs");
+    std::fs::write(folder.join("a.txt"), b"alpha").expect("a");
+    std::fs::write(folder.join("sub").join("b.txt"), b"bravo").expect("b");
+    let (_d, vs) = r.join();
+
+    let id = r.handle.share(&folder).expect("a folder is shared");
+    let files = files_of(&r, &vs);
+    let e = entry_of(&files, &id);
+    assert_eq!(e["name"], "DA.zip");
+    assert_eq!(e["kind"], "folder");
+    assert_eq!(e["view"], false);
+    let size = e["size"].as_u64().expect("size");
+    assert!(size > 0);
+
+    let path = format!("/api/file/{id}");
+    let head = send(r.addr, "HEAD", &path, Some(&vs), "");
+    assert_eq!(head.status, 200);
+    assert_eq!(head.header("content-length"), Some(size.to_string().as_str()));
+    assert_eq!(head.header("accept-ranges"), Some("none"));
+    assert_eq!(head.header("content-type"), Some("application/zip"));
+    assert!(head.header("content-disposition").is_some_and(|d| d.contains("DA.zip")));
+    assert!(head.header("etag").is_none());
+
+    // Range is ignored: the whole zip comes back.
+    let got = send(r.addr, "GET", &path, Some(&vs), "Range: bytes=10-\r\n");
+    assert_eq!(got.status, 200);
+    assert_eq!(got.body.len() as u64, size);
+    let zip = r.dir.join("got.zip");
+    std::fs::write(&zip, &got.body).expect("save zip");
+    let listing = std::process::Command::new("tar")
+        .arg("-tf")
+        .arg(&zip)
+        .creation_flags(0x0800_0000)
+        .output()
+        .expect("tar");
+    let names = String::from_utf8_lossy(&listing.stdout).replace('\\', "/");
+    assert!(names.contains("a.txt") && names.contains("sub/b.txt"), "{names}");
+    assert!(saved(&r, &vs, &id));
+
+    assert_eq!(send(r.addr, "GET", &format!("/api/view/{id}"), Some(&vs), "").status, 404);
+    assert_eq!(send(r.addr, "GET", &format!("/api/thumb/{id}"), Some(&vs), "").status, 404);
+
+    std::fs::remove_dir_all(&folder).expect("remove folder");
+    assert!(files_of(&r, &vs).iter().all(|f| f["id"] != id.as_str()));
+    wait_for(&r.rx, |e| matches!(e, PhoneEvent::SharedGone { id: g } if *g == id));
+    let dir = r.dir.clone();
+    r.handle.stop();
+    let _ = std::fs::remove_dir_all(&dir);
 }

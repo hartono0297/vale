@@ -1,9 +1,9 @@
 //! The shelf files shared with the phones: a small set that lives and dies
 //! with the session (`Session` holds it). The app shares every file card of
 //! the shelf, so the set follows the shelf. No sockets, no clock and no file
-//! system here: the caller checks that a path is a regular file before it
-//! asks to share it (for a file on the network, right after, off the UI
-//! thread), so every rule is tested without a network.
+//! system here: the caller checks that a path is a regular file or a plain
+//! folder before it asks to share it (for a file on the network, right after,
+//! off the UI thread), so every rule is tested without a network.
 //!
 //! Each shared file gets a random 128-bit id from the session's filler (the
 //! same one the token comes from). The phone only ever sees ids and names:
@@ -101,9 +101,10 @@ impl SharedSet {
         self.position(id).is_some()
     }
 
-    /// Shares `path` (the caller has seen it is a regular file) and returns
-    /// its id. A path already shared (by its key) gives the id it has; a
-    /// full set, a nameless path or a filler that fails share nothing.
+    /// Shares `path` (the caller has seen it is a regular file or a plain
+    /// folder) and returns its id. A path already shared (by its key) gives
+    /// the id it has; a full set, a nameless path or a filler that fails
+    /// share nothing.
     pub fn share(&mut self, fill: Fill, path: &Path) -> Option<String> {
         let key = shelf::key_of(path);
         if key.is_empty() {

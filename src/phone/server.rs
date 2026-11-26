@@ -20,6 +20,7 @@ use super::names::{clash_name, sanitize};
 use super::net::{self, BoundCheck, peer_allowed};
 use super::session::Tick;
 use super::share::{RangeAns, Route, counts_as_taken};
+use super::zip_stream::{self, Planned};
 use super::{note_page, thumb, ua};
 use crate::config::PhoneNet;
 use super::{EndReason, FailReason, Mode, PhoneEvent, Refusal, Runtime, ServerConfig, Shared};
@@ -384,10 +385,11 @@ fn api_device(shared: &Shared, req: &Request, touch: bool) -> Option<u64> {
 }
 
 /// Looks at a file that was shared without being looked at (one on the
-/// network), on the caller's thread, never the UI's: anything that is not a
-/// regular file has its id revoked (`SharedGone`, told once).
+/// network), on the caller's thread, never the UI's: anything that is neither
+/// a regular file nor a plain folder has its id revoked (`SharedGone`, told
+/// once).
 pub(crate) fn check_shared(shared: &Shared, id: &str, path: &Path) {
-    if files::regular_size(path).is_none() {
+    if files::regular_size(path).is_none() && !files::plain_folder(path) {
         revoke_gone(shared, id);
     }
 }
@@ -413,7 +415,8 @@ fn kind_word(kind: crate::shelf::ShelfKind) -> &'static str {
         ShelfKind::Media => "audio",
         ShelfKind::Archive => "archive",
         ShelfKind::Code => "code",
-        ShelfKind::Folder | ShelfKind::Document => "doc",
+        ShelfKind::Folder => "folder",
+        ShelfKind::Document => "doc",
     }
 }
 
@@ -421,7 +424,9 @@ fn kind_word(kind: crate::shelf::ShelfKind) -> &'static str {
 /// id, name, size (read now), its version (the `ETag` without its quotes),
 /// kind, whether the page may show it inline,
 /// whether this phone finished it and whether it is downloading it. No path
-/// ever appears. A file found gone is left out, revoked and reported.
+/// ever appears. A file found gone is left out, revoked and reported. A folder
+/// is listed as its zip (`<name>.zip`, the zip's size), or with size 0 and
+/// `big` when it holds too many files.
 fn file_list(shared: &Shared, req: &Request) -> Response {
     let Some(device) = api_device(shared, req, false) else {
         return Response::not_found();
@@ -448,6 +453,31 @@ fn file_list(shared: &Shared, req: &Request) -> Response {
     let mut files = Vec::new();
     let mut gone = Vec::new();
     for (id, path, name, kind, saved, busy) in snapshot {
+        if files::regular_file(&path).is_none() && files::plain_folder(&path) {
+            let (size, v, big) = match zip_stream::plan(&path) {
+                Some(Planned::Zip(p)) => (p.len(), http::etag(p.len(), p.newest()), false),
+                Some(Planned::TooMany) => (0, String::new(), true),
+                None => {
+                    gone.push(id);
+                    continue;
+                }
+            };
+            let mut item = serde_json::json!({
+                "id": id,
+                "name": format!("{name}.zip"),
+                "size": size,
+                "v": v.trim_matches('"'),
+                "kind": "folder",
+                "view": false,
+                "saved": saved,
+                "busy": busy,
+            });
+            if big {
+                item["big"] = true.into();
+            }
+            files.push(item);
+            continue;
+        }
         match files::regular_file(&path) {
             Some((size, mtime)) => files.push(serde_json::json!({
                 "id": id,
@@ -589,6 +619,9 @@ fn download(
         found
     };
     let (device, name, path) = found;
+    if files::plain_folder(&path) {
+        return folder_download(shared, stream, req, id, route, (device, &name, &path));
+    }
     let mut opened = match files::open_shared(&path) {
         Ok(o) => o,
         Err(OpenError::Gone) => {
@@ -664,6 +697,65 @@ fn download(
     Routed::Streamed
 }
 
+/// `GET` and `HEAD` of a shared folder: a stored zip of it, streamed with the
+/// size known up front. No ranges, no ETag; only the download route fits a
+/// folder, and a folder with too many files is refused.
+fn folder_download(
+    shared: &Shared,
+    stream: &mut TcpStream,
+    req: &Request,
+    id: &str,
+    route: Route,
+    (device, name, path): (u64, &str, &Path),
+) -> Routed {
+    if route != Route::File {
+        return Routed::Reply(Response::not_found());
+    }
+    let plan = match zip_stream::plan(path) {
+        Some(Planned::Zip(p)) => p,
+        Some(Planned::TooMany) => return Routed::Reply(Response::error(500, "too many files")),
+        None => {
+            revoke_gone(shared, id);
+            return Routed::Reply(Response::gone());
+        }
+    };
+    let head = FileHead {
+        status: 200,
+        content_type: "application/zip",
+        content_length: plan.len(),
+        cache_control: "no-store",
+        extra: vec![
+            ("Accept-Ranges", "none".to_owned()),
+            (
+                "Content-Disposition",
+                http::content_disposition("attachment", &format!("{name}.zip")),
+            ),
+        ],
+    };
+    if http::write_file_head(stream, &head).is_err() || req.method == Method::Head {
+        return Routed::Streamed;
+    }
+    let busy = Busy::new(shared, id, device);
+    let all = plan.write(stream, &mut || {
+        if shared.stop.load(Ordering::SeqCst) {
+            return false;
+        }
+        let Ok(mut s) = shared.session.lock() else {
+            return false;
+        };
+        if !s.shared().contains(id) {
+            return false;
+        }
+        s.touch(Instant::now());
+        true
+    });
+    if all && let Ok(mut s) = shared.session.lock() {
+        s.shared_mut().mark_saved(id, device);
+    }
+    drop(busy);
+    Routed::Streamed
+}
+
 /// `GET /api/thumb/<id>`: a small JPEG of a shared image (never an SVG, never
 /// the full image in its place). Any failure is a bare 404 and the page draws
 /// the type icon. The thumbnail is kept in the set for the file's version
@@ -681,7 +773,7 @@ fn thumbnail(shared: &Shared, req: &Request, id: &str) -> Response {
     let Some((name, path)) = found else {
         return Response::not_found();
     };
-    if !http::is_viewable(&name) {
+    if !http::is_viewable(&name) || files::plain_folder(&path) {
         return Response::not_found();
     }
     let opened = match files::open_shared(&path) {

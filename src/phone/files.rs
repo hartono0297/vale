@@ -60,6 +60,11 @@ pub fn regular_size(path: &Path) -> Option<u64> {
     regular_file(path).map(|(len, _)| len)
 }
 
+/// Whether `path` is a real folder right now (not a symlink or junction).
+pub fn plain_folder(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink())
+}
+
 /// `regular_size` with the file's modified time.
 pub fn regular_file(path: &Path) -> Option<(u64, Option<std::time::SystemTime>)> {
     let m = fs::symlink_metadata(path).ok()?;
@@ -137,6 +142,30 @@ pub(crate) mod tests {
         // A file replaced by a folder of the same name.
         fs::create_dir(&path).expect("dir");
         assert_eq!(open_shared(&path).unwrap_err(), OpenError::Gone);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn plain_folder_is_true_only_for_a_real_folder() {
+        use std::os::windows::process::CommandExt;
+        let dir = temp_dir("phone-files-folder");
+        assert!(plain_folder(&dir));
+        let file = dir.join("a.txt");
+        fs::write(&file, b"x").expect("write");
+        assert!(!plain_folder(&file), "a file");
+        assert!(!plain_folder(&dir.join("nothing")), "missing");
+        let junction = dir.join("junction");
+        let made = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&dir)
+            .creation_flags(0x0800_0000)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if made {
+            assert!(!plain_folder(&junction), "a junction");
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 

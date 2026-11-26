@@ -334,9 +334,10 @@ pub fn start_lan(lang: Lang, net: PhoneNet, sink: Sink) -> Handle {
 }
 
 impl Handle {
-    /// Shares the file at `path` with the phones: it is looked at now (a
-    /// regular file, not a folder, a symlink or a junction), added to the
-    /// session's set and given a random id. `None` for anything else, a full
+    /// Shares the file or folder at `path` with the phones: it is looked at
+    /// now (a regular file or a plain folder, not a symlink or a junction),
+    /// added to the session's set and given a random id. A folder is served
+    /// as a zip. `None` for anything else, a full
     /// set or a system with no random bytes. Nothing is read or opened.
     ///
     /// A path on the network (`shelf::is_network`) is not looked at here:
@@ -347,7 +348,9 @@ impl Handle {
         if crate::shelf::is_network(path) {
             return self.share_unseen(path);
         }
-        files::regular_size(path)?;
+        if files::regular_size(path).is_none() && !files::plain_folder(path) {
+            return None;
+        }
         self.shared.session.lock().ok()?.share(path)
     }
 
