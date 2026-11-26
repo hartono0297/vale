@@ -100,16 +100,23 @@ fn plan_with_cap(root: &Path, cap: usize) -> Option<Planned> {
         first = false;
         for item in read.flatten() {
             let path = item.path();
-            let Ok(meta) = fs::symlink_metadata(&path) else { continue };
-            if meta.file_type().is_symlink() {
+            // The directory entry carries the type (reparse tag included) from
+            // the listing itself: no extra handle per item.
+            let Ok(kind) = item.file_type() else { continue };
+            if kind.is_symlink() {
                 continue;
             }
+            let Ok(meta) = item.metadata() else { continue };
             let rel = format!("{prefix}{}", item.file_name().to_string_lossy());
-            if meta.is_dir() {
+            // A name that does not fit the zip's 16-bit length is left out.
+            if rel.len() >= usize::from(u16::MAX) {
+                continue;
+            }
+            if kind.is_dir() {
                 let rel = format!("{rel}/");
                 stack.push((path.clone(), rel.clone()));
                 entries.push(Entry { rel, path, size: 0, mtime: meta.modified().ok() });
-            } else if meta.is_file() {
+            } else if kind.is_file() {
                 files += 1;
                 if files > cap {
                     return Some(Planned::TooMany);
@@ -423,6 +430,16 @@ mod tests {
         let (buf, len) = zip_of(&root, |p| p.zip64_at = 1);
         assert_eq!(buf.len() as u64, len);
         assert_extracts_like(&root, &buf, "zip-64-out");
+    }
+
+    #[test]
+    fn zip64_and_plain_entries_mix_in_one_archive() {
+        let root = temp_dir("zip-mixed");
+        make_tree(&root);
+        // b.bin (100 KiB) crosses the threshold, the small files do not.
+        let (buf, len) = zip_of(&root, |p| p.zip64_at = 50 * 1024);
+        assert_eq!(buf.len() as u64, len);
+        assert_extracts_like(&root, &buf, "zip-mixed-out");
     }
 
     #[test]

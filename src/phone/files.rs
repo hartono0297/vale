@@ -159,7 +159,7 @@ pub(crate) mod tests {
             .args(["/C", "mklink", "/J"])
             .arg(&junction)
             .arg(&dir)
-            .creation_flags(0x0800_0000)
+            .creation_flags(windows::Win32::System::Threading::CREATE_NO_WINDOW.0)
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false);

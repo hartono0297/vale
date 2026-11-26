@@ -814,6 +814,7 @@ fn a_phone_lists_downloads_resumes_and_is_cut_off_by_the_shared_files() {
     std::fs::remove_file(&swap).expect("remove");
     std::fs::create_dir(&swap).expect("dir");
     let zipped = send(r.addr, "GET", &format!("/api/file/{swap_id}"), Some(&vs), "");
+    assert_eq!(zipped.status, 200);
     assert_eq!(zipped.header("content-type"), Some("application/zip"));
 
     // Session end drops every id.
@@ -1141,7 +1142,7 @@ fn a_shelf_folder_downloads_as_a_zip() {
     let listing = std::process::Command::new("tar")
         .arg("-tf")
         .arg(&zip)
-        .creation_flags(0x0800_0000)
+        .creation_flags(windows::Win32::System::Threading::CREATE_NO_WINDOW.0)
         .output()
         .expect("tar");
     let names = String::from_utf8_lossy(&listing.stdout).replace('\\', "/");

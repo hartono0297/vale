@@ -6,7 +6,7 @@
 //! stage (`PhoneStage`) and which button was hit.
 //!
 //! There is no approval: a phone that scans the QR joins at once, and the
-//! whole shelf (every file card, no folders, no missing files) is shared with
+//! whole shelf (every card that is there: files and folders) is shared with
 //! the phones that joined (`phone_sync_shared`). The QR view stays on screen
 //! while the session runs and its code renews itself every five minutes.
 //!
@@ -32,7 +32,7 @@ use crate::phone::session::TOKEN_TTL;
 use crate::phone::{
     DeviceKind, EndReason, FailReason, Handle, NewLink, NoteShare, PhoneEvent, QrMatrix, Refusal,
 };
-use crate::shelf::{self, Landing, ShelfCard, ShelfKind};
+use crate::shelf::{self, Landing, ShelfCard};
 use crate::ui::phone_view::{CodeView, PhoneView, QrView, RecvView, RowStatus, RowView, Warn};
 
 /// One-shot: the QR view's countdown, once a second while it shows. 42-47
@@ -69,19 +69,19 @@ struct Mirror {
 #[derive(Debug, PartialEq, Eq)]
 struct SyncPlan {
     /// The ids to stop sharing: their card left the shelf, went stale (the
-    /// file is gone) or is no longer a file.
+    /// file or folder is gone).
     unshare: Vec<String>,
     /// The cards (by place on the shelf) to share: files that are there, not
     /// shared yet and not on the loop guard's list.
     share: Vec<usize>,
 }
 
-/// The whole shelf is shared: every card that is a file (no folder) and is
-/// not stale, once. `skipped` holds the keys of cards that could not be
+/// The whole shelf is shared: every card (file or folder) that is not stale,
+/// once. `skipped` holds the keys of cards that could not be
 /// shared (or whose id was revoked as gone): they are not tried again while
 /// the card stays.
 fn sync_plan(cards: &[ShelfCard], mirror: &[Mirror], skipped: &[String]) -> SyncPlan {
-    let shareable = |c: &ShelfCard| c.kind != ShelfKind::Folder && !c.stale;
+    let shareable = |c: &ShelfCard| !c.stale;
     let unshare = mirror
         .iter()
         .filter(|m| !cards.iter().any(|c| c.key == m.key && shareable(c)))
@@ -401,7 +401,7 @@ impl App {
     }
 
     /// The whole shelf is shared with the phones while a session listens:
-    /// every card that is a file and is there, once; what left the shelf or
+    /// every card that is there (file or folder), once; what left the shelf or
     /// went missing stops being shared at once (and "Kosongkan" stops
     /// everything). Runs at `Ready` and at every look at the shelf
     /// (`shelf_look`, which every change of the shelf ends with).
@@ -894,6 +894,7 @@ impl App {
 mod tests {
     use std::time::Duration;
     use super::*;
+    use crate::shelf::ShelfKind;
 
     #[test]
     fn progress_never_reads_100_before_the_file_is_whole() {
@@ -985,7 +986,7 @@ mod tests {
     }
 
     #[test]
-    fn every_file_card_is_listed_and_folders_and_stale_cards_are_not() {
+    fn every_card_but_stale_ones_is_listed() {
         let cards = [
             card("a.pdf", ShelfKind::Document, false),
             card("b.png", ShelfKind::Image, false),
@@ -994,7 +995,7 @@ mod tests {
             card(r"\\srv\x\d.mp4", ShelfKind::Video, false),
         ];
         let plan = sync_plan(&cards, &[], &[]);
-        assert_eq!(plan.share, [0, 1, 4], "files that are there, a network one too");
+        assert_eq!(plan.share, [0, 1, 2, 4], "files and folders that are there, a network one too");
         assert!(plan.unshare.is_empty());
         // The empty shelf lists nothing.
         assert_eq!(sync_plan(&[], &[], &[]), SyncPlan { unshare: vec![], share: vec![] });
@@ -1040,13 +1041,13 @@ mod tests {
             card("c.txt", ShelfKind::Document, false),
         ];
         assert_eq!(sync_plan(&cards, &shared, &[]).unshare, ["id1"]);
-        // A path that became a folder is not shared either.
+        // A path that became a folder stays shared (a folder card is shared).
         let cards = [
             card("a.pdf", ShelfKind::Folder, false),
             card("b.png", ShelfKind::Image, false),
             card("c.txt", ShelfKind::Document, false),
         ];
-        assert_eq!(sync_plan(&cards, &shared, &[]).unshare, ["id1"]);
+        assert!(sync_plan(&cards, &shared, &[]).unshare.is_empty());
         // Kosongkan: all of them, in order.
         assert_eq!(sync_plan(&[], &shared, &[]).unshare, ["id1", "id2", "id3"]);
         assert!(sync_plan(&cards, &[], &[]).unshare.is_empty());

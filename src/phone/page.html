@@ -176,7 +176,7 @@ function fileRow(f){
   act=h("button",{type:"button",class:"dl"+(f.saved?" ghost":"")},f.saved?t("saved"):(f.busy||f.wait)?t("savingOne"):t("save"));
   if(f.busy||f.wait||saveRun)act.disabled=true;
   act.onclick=function(){saveOne(f.id)}}
- return h("div",{class:"row"},th,h("div",{class:"n"},h("div",{class:"fn"},f.name),h("div",{class:"sz"},size(f.size))),act)}
+ return h("div",{class:"row"},th,h("div",{class:"n"},h("div",{class:"fn"},f.name),f.big?null:h("div",{class:"sz"},size(f.size))),act)}
 
 function hint(){
  var a=[];
