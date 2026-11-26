@@ -2458,7 +2458,7 @@ fn set_cursor(hwnd: HWND) -> bool {
             Target::Bar(BarHit::Bar) => Some(IDC_ARROW),
             Target::Bar(_) | Target::Image(_) | Target::ImageRemove(_) => Some(IDC_HAND),
             Target::Header if !s.prefs.lock => Some(IDC_SIZEALL),
-            Target::Grip if !s.prefs.lock => Some(IDC_SIZENWSE),
+            Target::Resize(_) if !s.prefs.lock => Some(IDC_SIZENWSE),
             _ => Some(IDC_ARROW),
         }
     })
@@ -2821,12 +2821,12 @@ fn left_down(hwnd: HWND, x: i32, y: i32) {
                 s.wins[i].image_press = Some((n, remove, (pt.x, pt.y)));
                 Some(Down::Capture)
             }
-            Target::Header | Target::Grip if lock => Some(Down::Nothing),
+            Target::Header | Target::Resize(_) if lock => Some(Down::Nothing),
             Target::Header => {
                 start_move(s, i, (pt.x, pt.y));
                 Some(Down::Capture)
             }
-            Target::Grip => {
+            Target::Resize(_) => {
                 begin_drag(s, i, DragKind::Resize, (pt.x, pt.y));
                 Some(Down::Capture)
             }
@@ -5243,6 +5243,7 @@ fn move_vertical(parent: HWND, edit_hwnd: HWND, up: bool, extend: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widgets::snap::Edges;
     use crate::arrange::Monitor;
     use crate::widgets::paint::margins;
     use crate::widgets::sticky::ROLLED_H;
@@ -5614,12 +5615,12 @@ mod tests {
         // Where the grip's corner and the strip's end are drawn, the targets are
         // still the grip and the strip.
         let (gx, gy) = client_of(236.0, 204.0);
-        let (sx, sy) = client_of(6.0, 8.0);
+        let (sx, sy) = client_of(14.0, 16.0);
         let at = |x: i32, y: i32| {
             let pt = screen_point(hwnd, x, y);
             with(|s| target_at(&s.wins[0], pt.x, pt.y)).unwrap()
         };
-        assert_eq!(at(gx, gy), Target::Grip);
+        assert_eq!(at(gx, gy), Target::Resize(Edges::BOTTOM_RIGHT));
         assert_eq!(at(sx, sy), Target::Header);
         // The window is bigger than a straight note's by the overhang.
         let (straight, leaning) = with(|s| {
@@ -5633,7 +5634,7 @@ mod tests {
         assert_eq!(with(|s| s.wins[0].lean()).unwrap(), 0.0);
         assert_eq!(with(|s| s.wins[0].margins()).unwrap(), leaning, "the window keeps its size");
         let (gx, gy) = client_of(236.0, 204.0);
-        assert_eq!(at(gx, gy), Target::Grip);
+        assert_eq!(at(gx, gy), Target::Resize(Edges::BOTTOM_RIGHT));
         // Tilt off: straight, the usual margin.
         let mut off = ctx(&notes, &displays);
         off.prefs.tilt = false;
@@ -5839,7 +5840,7 @@ mod tests {
         assert!(note_bottom >= area.bottom() - 1, "fills the area");
         // The grip is where the shown note ends, inside the area.
         let grip = paint::target(p.view.w - 4.0, p.view.h - 4.0, p.view.w, p.view.h, false, None, 0.0, true);
-        assert_eq!(grip, Target::Grip);
+        assert_eq!(grip, Target::Resize(Edges::BOTTOM_RIGHT));
         let grip_y = p.rect.y + ((p.view.h - 4.0) * k).round() as i32;
         assert!(grip_y < area.bottom());
         // The text area is the shown one.
@@ -7346,7 +7347,7 @@ mod tests {
         };
         assert_eq!(t((100.0, 100.0)), Target::Body);
         assert_eq!(t((20.0, 10.0)), Target::Header);
-        assert_eq!(t((237.0, 205.0)), Target::Grip);
+        assert_eq!(t((237.0, 205.0)), Target::Resize(Edges::BOTTOM_RIGHT));
         // Left of where the scaled note reaches: not the note.
         let (x, y) = drawn_px(0, (240.0, 100.0), at);
         let left = with(|s| target_at_in(&s.wins[0], x - 150, y, at)).unwrap();

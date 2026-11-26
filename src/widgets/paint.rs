@@ -43,6 +43,7 @@ use crate::widgets::sticky::{
     Deco, DipRect, NoteFont, Pattern, ROLLED_H, Stamp, TextSize, Tones, chip_tones, tangan_family,
 };
 use crate::widgets::styles::{self, Hl, Run};
+use crate::widgets::snap::Edges;
 use crate::widgets::toolbar::{self, BAR_BLOCK, BarHit, Tool};
 use crate::widgets::tuck::{self, Edge};
 
@@ -56,6 +57,8 @@ pub const PAD_X: f32 = 12.0;
 pub const BTN: f32 = 20.0;
 pub const BTN_GAP: f32 = 1.0;
 pub const GRIP: f32 = 16.0;
+/// How far inside the note's edge a resize starts.
+pub const EDGE: f32 = 6.0;
 pub const RADIUS: f32 = 10.0;
 /// A checklist item's box, and the indent of its text; a bullet's dot has a
 /// smaller indent.
@@ -276,7 +279,8 @@ pub enum Target {
     /// The box of the item on this line.
     Check(usize),
     Body,
-    Grip,
+    /// An edge or corner: dragging it resizes the note.
+    Resize(Edges),
     /// The footer's text.
     Footer,
     /// The format bar (only while the note has the keyboard): a button, or the
@@ -299,6 +303,19 @@ fn grown(r: Rect, by: f32) -> Rect {
         y: r.y - by,
         w: r.w + 2.0 * by,
         h: r.h + 2.0 * by,
+    }
+}
+
+/// The edges whose band holds a point: a band also takes the side next to it
+/// within `GRIP` of a corner.
+fn edges_at(x: f32, y: f32, w: f32, h: f32) -> Edges {
+    let (l, t) = (x < EDGE, y < EDGE);
+    let (r, b) = (x >= w - EDGE, y >= h - EDGE);
+    Edges {
+        left: l || ((t || b) && x < GRIP),
+        top: t || ((l || r) && y < GRIP),
+        right: r || ((t || b) && x >= w - GRIP),
+        bottom: b || ((l || r) && y >= h - GRIP),
     }
 }
 
@@ -359,9 +376,13 @@ pub fn target_full(
                 }
             }
         }
-        return Target::Header;
     }
     if rolled {
+        let left = x < EDGE;
+        let right = x >= w - EDGE;
+        if left || right {
+            return Target::Resize(Edges { left, right, ..Edges::default() });
+        }
         return Target::Header;
     }
     let area = body_rect_in(w, h, extra.bar);
@@ -373,8 +394,15 @@ pub fn target_full(
     {
         return Target::Bar(hit);
     }
+    let edges = edges_at(x, y, w, h);
+    if edges != Edges::default() {
+        return Target::Resize(edges);
+    }
     if inside(grip_rect(w, h), x, y) {
-        return Target::Grip;
+        return Target::Resize(Edges::BOTTOM_RIGHT);
+    }
+    if y < HEADER_H {
+        return Target::Header;
     }
     if extra.bar && y >= h - BAR_BLOCK {
         // The bar's margin is as inert as its background.
@@ -2585,7 +2613,7 @@ mod tests {
         let close = button_rect(Btn::Close, w);
         assert_eq!(t(close.x + 2.0, close.y + 2.0), Target::Button(Btn::Close));
         assert_eq!(t(100.0, 100.0), Target::Body);
-        assert_eq!(t(w - 3.0, h - 3.0), Target::Grip);
+        assert_eq!(t(w - 3.0, h - 3.0), Target::Resize(Edges::BOTTOM_RIGHT));
         assert_eq!(t(40.0, h - 8.0), Target::Footer);
         assert_eq!(t(-1.0, 5.0), Target::Outside);
         assert_eq!(t(5.0, h + 1.0), Target::Outside);
@@ -2595,12 +2623,64 @@ mod tests {
         assert_eq!(r(20.0, 80.0), Target::Outside);
     }
 
+    fn edges(l: bool, t: bool, r: bool, b: bool) -> Target {
+        Target::Resize(Edges { left: l, top: t, right: r, bottom: b })
+    }
+
+    #[test]
+    fn every_side_and_corner_is_a_resize_target() {
+        let (w, h) = (240.0, 208.0);
+        let t = |x, y| target(x, y, w, h, false, None, 0.0, true);
+        assert_eq!(t(120.0, 2.0), edges(false, true, false, false));
+        assert_eq!(t(120.0, 206.0), edges(false, false, false, true));
+        assert_eq!(t(2.0, 100.0), edges(true, false, false, false));
+        assert_eq!(t(238.0, 100.0), edges(false, false, true, false));
+        assert_eq!(t(2.0, 2.0), edges(true, true, false, false));
+        assert_eq!(t(238.0, 2.0), edges(false, true, true, false));
+        assert_eq!(t(2.0, 206.0), edges(true, false, false, true));
+        assert_eq!(t(237.0, 205.0), Target::Resize(Edges::BOTTOM_RIGHT));
+        assert_eq!(t(10.0, 100.0), Target::Body);
+        assert_eq!(t(button_rect(Btn::List, w).x - 3.0, 20.0), Target::Header);
+    }
+
+    #[test]
+    fn a_rolled_note_resizes_only_from_left_and_right() {
+        let (w, h) = (240.0, 208.0);
+        let r = |x, y| target(x, y, w, h, true, None, 0.0, true);
+        assert_eq!(r(2.0, 30.0), edges(true, false, false, false));
+        assert_eq!(r(238.0, 30.0), edges(false, false, true, false));
+        assert_eq!(r(120.0, 2.0), Target::Header);
+        assert_eq!(r(120.0, ROLLED_H - 2.0), Target::Header);
+    }
+
+    #[test]
+    fn buttons_win_over_the_edge_bands() {
+        let (w, h) = (240.0, 208.0);
+        for b in Btn::ALL {
+            let r = button_rect(b, w);
+            let t = target(r.x + r.w / 2.0, r.y + r.h / 2.0, w, h, false, None, 0.0, true);
+            assert_eq!(t, Target::Button(b));
+        }
+        for b in [Btn::Prev, Btn::Next] {
+            let r = button_rect(b, w);
+            let t = target_in(r.x + r.w / 2.0, r.y + r.h / 2.0, w, h, false, None, 0.0, true, true);
+            assert_eq!(t, Target::Button(b));
+        }
+        let l = toolbar::layout(w);
+        let bar = Extras { bar: true, images: &[] };
+        for tool in Tool::ALL {
+            let Some(r) = toolbar::rect_of(&l, tool) else { continue };
+            let (x, y) = (r.x + r.w / 2.0, h - BAR_BLOCK + r.y + r.h / 2.0);
+            assert_eq!(target_with(x, y, w, h, &bar), Target::Bar(BarHit::Tool(tool)));
+        }
+    }
+
     #[test]
     fn hidden_buttons_take_no_press_and_the_whole_strip_drags() {
         for w in [160.0f32, 240.0, 640.0] {
-            let mut x = 0.0;
-            while x < w {
-                for y in [0.0, 10.0, HEADER_H - 0.5] {
+            let mut x = EDGE;
+            while x < w - EDGE {
+                for y in [EDGE, 10.0, HEADER_H - 0.5] {
                     assert_eq!(
                         target(x, y, w, 208.0, false, None, 0.0, false),
                         Target::Header,
@@ -2626,15 +2706,14 @@ mod tests {
         }
         let first = button_rect(Btn::List, w);
         assert_eq!(target(first.x - 3.0, 10.0, w, 208.0, false, None, 0.0, true), Target::Header);
-        assert_eq!(target(20.0, 3.0, w, 208.0, false, None, 0.0, true), Target::Header);
+        assert_eq!(target(20.0, EDGE + 1.0, w, 208.0, false, None, 0.0, true), Target::Header);
         // Above and under the buttons, still inside the strip: the strip.
-        assert_eq!(target(first.x + 5.0, 1.0, w, 208.0, false, None, 0.0, true), Target::Header);
+        assert_eq!(target(first.x + 5.0, EDGE + 1.0, w, 208.0, false, None, 0.0, true), Target::Header);
         assert_eq!(
             target(first.x + 5.0, HEADER_H - 1.0, w, 208.0, false, None, 0.0, true),
             Target::Header
         );
     }
-
 
     /// How wide `label` is laid out with tabular figures, dip.
     fn counter_width(res: &Res, label: &str) -> f32 {
@@ -2988,7 +3067,7 @@ mod tests {
         // The bar's background and margin are inert (never the footer's text
         // press, which would move the caret).
         assert_eq!(target_with(x + 100.0, y, w, h, &bar), Target::Bar(BarHit::Bar));
-        assert_eq!(target_with(2.0, h - 2.0, w, h, &bar), Target::Bar(BarHit::Bar));
+        assert_eq!(target_with(8.0, h - 8.0, w, h, &bar), Target::Bar(BarHit::Bar));
         // The text area above it is the text.
         assert_eq!(target_with(30.0, HEADER_H + 5.0, w, h, &bar), Target::Body);
         // Just above the block is still the body; the block starts at h - 42.
@@ -3012,9 +3091,9 @@ mod tests {
         assert!(inside(Rect { x: last.x, y: h - BAR_BLOCK + last.y, w: last.w, h: last.h }, bx, by));
         assert_eq!(target_with(bx, by, w, h, &bar), Target::Bar(BarHit::Tool(Tool::Image)));
         // Where the grip is but no button: the grip.
-        assert_eq!(target_with(w - 3.0, h - 3.0, w, h, &bar), Target::Grip);
+        assert_eq!(target_with(w - 3.0, h - 3.0, w, h, &bar), Target::Resize(Edges::BOTTOM_RIGHT));
         // The bar's background left of the grip is the bar.
-        assert_eq!(target_with(w - 40.0, h - 3.0, w, h, &bar), Target::Bar(BarHit::Bar));
+        assert_eq!(target_with(w - 40.0, h - 8.0, w, h, &bar), Target::Bar(BarHit::Bar));
     }
 
     #[test]

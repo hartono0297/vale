@@ -643,6 +643,7 @@ pub fn draw_clock(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widgets::snap::Edges;
     use crate::widgets::paint::{GRIP, Target, body_rect, button_rect, grip_rect, margins, target};
     use crate::theme::{Accent, Surface, island};
     use crate::widgets::sticky::{MAX_H, MAX_W, MIN_H, MIN_W, Paper, contrast, tones};
@@ -701,8 +702,8 @@ mod tests {
                 target(x, y, w, h, false, None, 0.0, true)
             };
             // The grip's corner, the strip's left end, a button, the text.
-            assert_eq!(hit(drawn(w - 4.0, h - 4.0)), Target::Grip, "{deg}");
-            assert_eq!(hit(drawn(6.0, 8.0)), Target::Header, "{deg}");
+            assert_eq!(hit(drawn(w - 4.0, h - 4.0)), Target::Resize(Edges::BOTTOM_RIGHT), "{deg}");
+            assert_eq!(hit(drawn(14.0, 16.0)), Target::Header, "{deg}");
             let close = button_rect(crate::widgets::paint::Btn::Close, w);
             assert_eq!(
                 hit(drawn(close.x + close.w / 2.0, close.y + close.h / 2.0)),
