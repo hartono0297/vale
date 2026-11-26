@@ -208,39 +208,93 @@ pub fn snap_move_for(
     Snapped { rect, guides }
 }
 
+/// One axis of a resize: the edge at the low end (`low`, left or top) or the
+/// high end moves by `d` while the other stays. The moving edge goes to the
+/// nearest of `cands` (`None`: exact), else the length goes to the grid; the
+/// length then stays inside `limits` and the area `area`. Returns the start
+/// and the length.
+fn resize_axis(
+    pos: f32,
+    len: f32,
+    d: f32,
+    low: bool,
+    area: (f32, f32),
+    limits: (f32, f32),
+    cands: Option<&[f32]>,
+) -> (f32, f32) {
+    let fixed = if low { pos + len } else { pos };
+    let want = if low { len - d } else { len + d };
+    let mut got = want;
+    if let Some(c) = cands {
+        let edge = if low { fixed - want } else { fixed + want };
+        got = match nearest(edge, c) {
+            Some(e) if low => fixed - e,
+            Some(e) => e - fixed,
+            None => grid(want),
+        };
+    }
+    let max = limits.1.min(area.1 - area.0).max(0.0);
+    let min = limits.0.min(max);
+    let room = if low { fixed - area.0 } else { area.1 - fixed };
+    let got = got.clamp(min, max).min(room.max(min));
+    (if low { fixed - got } else { fixed }, got)
+}
+
+/// A widget resized from `edges` by the pointer's `delta` since `start`: the
+/// moved edges follow it and the opposite ones stay. Each moved edge snaps to
+/// the area's edges and to other widgets (the 12 dip gap, or edge to edge),
+/// else the size goes to the grid; the size is kept inside the limits and the
+/// area. `rolled` keeps the height (`ROLLED_H`) and ignores top and bottom.
+pub fn snap_resize_edges(
+    start: DipRect,
+    delta: (f32, f32),
+    edges: Edges,
+    area: &DipRect,
+    others: &[DipRect],
+    alt: bool,
+    rolled: bool,
+) -> Snapped {
+    let (dx, dy) = delta;
+    let (top, bottom) = (edges.top && !rolled, edges.bottom && !rolled);
+    // Where the edges would be without snapping, for the neighbour reach.
+    let (x0, x1) = (
+        start.x + if edges.left { dx } else { 0.0 },
+        start.right() + if edges.right && !edges.left { dx } else { 0.0 },
+    );
+    let (y0, y1) = (
+        start.y + if top { dy } else { 0.0 },
+        start.bottom() + if bottom && !top { dy } else { 0.0 },
+    );
+    let (mut x, mut w, mut y, mut h) = (start.x, start.w, start.y, start.h);
+    if edges.left || edges.right {
+        let low = edges.left;
+        let mut xs = vec![if low { area.x } else { area.right() }];
+        for o in others.iter().filter(|o| near(y0, y1, o.y, o.bottom())) {
+            xs.extend(if low { [o.right() + GAP, o.x] } else { [o.x - GAP, o.right()] });
+        }
+        let cands = if alt { None } else { Some(xs.as_slice()) };
+        (x, w) = resize_axis(start.x, start.w, dx, low, (area.x, area.right()), (MIN_W, MAX_W), cands);
+    }
+    if top || bottom {
+        let low = top;
+        let mut ys = vec![if low { area.y } else { area.bottom() }];
+        for o in others.iter().filter(|o| near(x0, x1, o.x, o.right())) {
+            ys.extend(if low { [o.bottom() + GAP, o.y] } else { [o.y - GAP, o.bottom()] });
+        }
+        let cands = if alt { None } else { Some(ys.as_slice()) };
+        let limits = (min_h_of(rolled), MAX_H);
+        (y, h) = resize_axis(start.y, start.h, dy, low, (area.y, area.bottom()), limits, cands);
+    }
+    let rect = clamp_rect_for(DipRect { x, y, w, h }, area, rolled);
+    let guides = if alt { Vec::new() } else { guides_of(&rect, area, others) };
+    Snapped { rect, guides }
+}
+
 /// A widget resized by its bottom-right grip to `want` (its top-left stays):
 /// the size snaps to the grid, to the area's edges and to other widgets, and
 /// is kept inside the limits and the area.
 pub fn snap_resize(want: DipRect, area: &DipRect, others: &[DipRect], alt: bool) -> Snapped {
-    let limited = |w: f32, h: f32| {
-        let room_w = (area.right() - want.x).max(0.0);
-        let room_h = (area.bottom() - want.y).max(0.0);
-        let (mut w, mut h) = clamp_size(w, h, area);
-        w = w.min(room_w.max(MIN_W.min(area.w)));
-        h = h.min(room_h.max(MIN_H.min(area.h)));
-        (w, h)
-    };
-    let (mut w, mut h) = limited(want.w, want.h);
-    if !alt {
-        let right = want.x + want.w;
-        let bottom = want.y + want.h;
-        let mut xs = vec![area.right()];
-        let mut ys = vec![area.bottom()];
-        for o in others {
-            if near(want.y, bottom, o.y, o.bottom()) {
-                xs.extend([o.x - GAP, o.right()]);
-            }
-            if near(want.x, right, o.x, o.right()) {
-                ys.extend([o.y - GAP, o.bottom()]);
-            }
-        }
-        let snapped_right = nearest(right, &xs).unwrap_or_else(|| want.x + grid(want.w));
-        let snapped_bottom = nearest(bottom, &ys).unwrap_or_else(|| want.y + grid(want.h));
-        (w, h) = limited(snapped_right - want.x, snapped_bottom - want.y);
-    }
-    let rect = clamp_rect(DipRect { x: want.x, y: want.y, w, h }, area);
-    let guides = if alt { Vec::new() } else { guides_of(&rect, area, others) };
-    Snapped { rect, guides }
+    snap_resize_edges(want, (0.0, 0.0), Edges::BOTTOM_RIGHT, area, others, alt, false)
 }
 
 /// Whether `r` fits at its place without touching any of `others` (with the gap).
@@ -440,6 +494,58 @@ mod tests {
         let other = r(500.0, 100.0, 200.0, 200.0);
         let s = snap_resize(r(100.0, 100.0, 385.0, 208.0), &AREA, &[other], false);
         assert_eq!(s.rect.right(), 488.0, "12 before the neighbour");
+    }
+
+    #[test]
+    fn left_edge_moves_with_the_right_edge_fixed() {
+        let e = Edges { left: true, ..Edges::default() };
+        let s = snap_resize_edges(r(400.0, 100.0, 240.0, 208.0), (-37.0, 0.0), e, &AREA, &[], false, false);
+        assert_eq!((s.rect.right(), s.rect.w), (640.0, 280.0));
+        assert_eq!((s.rect.y, s.rect.h), (100.0, 208.0));
+    }
+
+    #[test]
+    fn top_edge_moves_with_the_bottom_edge_fixed() {
+        let e = Edges { top: true, ..Edges::default() };
+        let s = snap_resize_edges(r(400.0, 300.0, 240.0, 208.0), (0.0, -50.0), e, &AREA, &[], false, false);
+        assert_eq!((s.rect.bottom(), s.rect.h), (508.0, 256.0));
+    }
+
+    #[test]
+    fn left_edge_stops_at_the_minimum_with_the_right_edge_fixed() {
+        let e = Edges { left: true, ..Edges::default() };
+        let s = snap_resize_edges(r(400.0, 100.0, 240.0, 208.0), (500.0, 0.0), e, &AREA, &[], false, false);
+        assert_eq!((s.rect.w, s.rect.right()), (MIN_W, 640.0));
+    }
+
+    #[test]
+    fn left_and_top_edges_stop_at_the_area() {
+        let e = Edges { left: true, top: true, ..Edges::default() };
+        let s = snap_resize_edges(r(20.0, 20.0, 240.0, 208.0), (-500.0, -500.0), e, &AREA, &[], false, false);
+        assert_eq!((s.rect.x, s.rect.y), (AREA.x, AREA.y));
+        assert_eq!((s.rect.right(), s.rect.bottom()), (260.0, 228.0));
+    }
+
+    #[test]
+    fn a_left_edge_snaps_to_a_neighbour_with_the_gap() {
+        let other = r(100.0, 100.0, 200.0, 200.0);
+        let e = Edges { left: true, ..Edges::default() };
+        let s = snap_resize_edges(r(320.0, 100.0, 240.0, 208.0), (-6.0, 0.0), e, &AREA, &[other], false, false);
+        assert_eq!((s.rect.x, s.rect.right()), (312.0, 560.0));
+    }
+
+    #[test]
+    fn a_rolled_resize_keeps_the_rolled_height() {
+        let e = Edges { right: true, bottom: true, ..Edges::default() };
+        let s = snap_resize_edges(r(400.0, 100.0, 240.0, ROLLED_H), (40.0, 90.0), e, &AREA, &[], false, true);
+        assert_eq!((s.rect.h, s.rect.w), (ROLLED_H, 280.0));
+    }
+
+    #[test]
+    fn alt_resizes_without_snapping() {
+        let e = Edges { left: true, ..Edges::default() };
+        let s = snap_resize_edges(r(400.0, 100.0, 240.0, 208.0), (-37.0, 0.0), e, &AREA, &[], true, false);
+        assert_eq!(s.rect.x, 363.0);
     }
 
     #[test]
