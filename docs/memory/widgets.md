@@ -266,8 +266,8 @@ And:
   `SC_KEYMENU` (no menu mode, no beep). A note that does not have the
   keyboard never sees the Alt key at all: the foreground app does.
 - Cursor: `IDC_SIZEALL` over the strip (not when locked) and during a Move,
-  `IDC_SIZENWSE` for the grip and a resize, `IDC_HAND` over shown buttons and
-  boxes.
+  a direction cursor over a resize band and during a resize (see
+  [[sticky-resize-edges]]), `IDC_HAND` over shown buttons and boxes.
 - Unchanged: snap (8 dip grid, 12 dip gap, work-area clamp), Kunci posisi,
   double click on the strip rolls up.
 - Every creation path was checked (Settings (+), tray, hotkey, the Notes pin,
