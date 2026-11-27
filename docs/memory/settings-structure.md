@@ -1,6 +1,6 @@
 ---
 tags: [decision, settings, layout, v3.8]
-date: 2026-11-04
+date: 2026-11-27
 ---
 
 # Settings: ten sections, titled cards (v3.8, Tombol pintas and Widget added later)
@@ -124,3 +124,26 @@ Run B adds a seventh row to "Di desktop": **Isi dari clipboard** / Fill from
 clipboard (a toggle after "Miring sedikit", `WidgetsClipFill`), described as
 "Catatan baru dari hotkey atau tray berisi teks yang disalin". The section still
 scrolls at 720x520 and not in a tall window ([[widgets]], Run B).
+
+## Widget: the gallery and the Catatan tempel page (2026-11-27)
+
+The sticky-note settings moved off the Widget page into their own page (spec
+`docs/superpowers/specs/2026-11-27-widget-settings-sticky-design.md`, mockup
+`docs/design/widget-settings-rapi.html`). The Widget page is now a bare card
+with **Tampilkan widget** (no eyebrow, the only untitled card in Settings, the
+titled-cards test skips it) and **Galeri**; it fits 720x520, so Widget left
+`SCROLLING` (seven sections). The gallery card says **Atur ›** / *Settings ›*
+under its description (`TILE_PREVIEW_H` 92 to make room), its tip is "Atur
+catatan tempel", and it is clickable at any count: a click opens the page and,
+only when notes exist, still flashes them (`widget_card_after`).
+
+The page is window state, not a Section: `Settings.sticky_page` passed into the
+layout `State` (the `arrange_edit` pattern on Fitur). Header card: ← back
+(`Hit::WidgetBack`, tip "Widget"), "Catatan tempel" with "n di desktop" (or the
+cap reason in warn), the one `WidgetAdd` (+) so the template menu anchors under
+it. Then **Posisi** (Lapisan, Saat layar penuh, Kunci posisi), **Tampilan**
+(Miring sedikit, Kucing ngintip), **Catatan baru** (Isi dari clipboard). Open
+and back reset scroll and hover; `switch_section` away from Widget and a new
+window start on the gallery. Clicking Widget in the sidebar while on the page
+does nothing (same as Fitur's editor). The page scrolls about 100 px at
+720x520. `WidgetPrefs` and the config did not change. See [[widgets]].

@@ -316,6 +316,15 @@ pub enum Action {
     Closed,
 }
 
+/// The gallery card opens the notes page; it flashes the notes only if there are some.
+fn widget_card_after(sticky_count: usize) -> Vec<After> {
+    if sticky_count > 0 {
+        vec![After::Post(Action::WidgetHighlight)]
+    } else {
+        Vec::new()
+    }
+}
+
 /// "Halaman panel": the pages after a click on a page's "Sembunyikan" /
 /// "Tampilkan", its up or down button (among the pages shown) or "Kembalikan
 /// bawaan", or `None` when it changes nothing (or is not such a click).
@@ -999,6 +1008,8 @@ struct Settings {
     drag: Option<Drag>,
     /// The template editor (or the rename field) while it is open.
     arrange_edit: Option<ArrangeEdit>,
+    /// Widget shows the Catatan tempel page (window state, not saved; reset on leaving the section).
+    sticky_page: bool,
     /// What the Rekaman card's device rows show (`rec_device_labels`), read
     /// when the window opens and when a choice or the language changes.
     rec_devices: [String; 2],
@@ -1483,6 +1494,7 @@ pub fn open(owner: HWND, model: Model, section: Option<Section>) -> Result<HWND>
         tile_note: None,
         drag: None,
         arrange_edit: None,
+        sticky_page: false,
         rec_devices,
         transcript_choose: false,
         transcript_confirm: None,
@@ -1877,6 +1889,7 @@ impl Settings {
             hotkey_failed: m.hotkey_failed,
             widgets: m.widgets,
             sticky_count: m.sticky_count,
+            sticky_page: self.sticky_page,
             hotkey_recording: self.recording,
             hotkey_error: self.hotkey_error,
             arrange: m.arrange.clone(),
@@ -2781,7 +2794,18 @@ impl Settings {
             // It opens the template menu under the button (`After::TemplateMenu`),
             // which posts `WidgetAdd` with the choice.
             Hit::WidgetAdd => self.template_menu_after(),
-            Hit::WidgetCard => post(Action::WidgetHighlight),
+            Hit::WidgetCard => {
+                self.sticky_page = true;
+                self.scroll = 0.0;
+                self.hover = None;
+                widget_card_after(m.sticky_count)
+            }
+            Hit::WidgetBack => {
+                self.sticky_page = false;
+                self.scroll = 0.0;
+                self.hover = None;
+                Vec::new()
+            }
             Hit::Robot => post(Action::Robot(!m.robot)),
             Hit::Motion(v) if v != m.robot_motion => post(Action::RobotMotion(v)),
             Hit::RobotSleep(dir) => {
@@ -3352,6 +3376,9 @@ impl Settings {
         // form's Nama field: leaving Fitur closes it, as Batal would.
         if self.section == Section::Features {
             self.arrange_edit = None;
+        }
+        if self.section == Section::Widgets {
+            self.sticky_page = false;
         }
         // A checked import file does not wait on another section.
         if let Some(cancel) =
@@ -5403,6 +5430,12 @@ pub fn run_demo(args: &[String]) {
 mod tests {
     use super::*;
     use crate::model::Page;
+
+    #[test]
+    fn the_card_flashes_the_notes_only_when_there_are_some() {
+        assert!(widget_card_after(0).is_empty());
+        assert!(matches!(widget_card_after(3).as_slice(), [After::Post(Action::WidgetHighlight)]));
+    }
 
     #[test]
     fn picking_a_mascot_keeps_each_coat() {

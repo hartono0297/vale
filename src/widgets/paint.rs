@@ -30,7 +30,7 @@ use windows_numerics::{Matrix3x2, Vector2};
 use crate::arrange_overlay::Canvas;
 use crate::config::UiFont;
 use crate::shot_edit::gfx::{Gfx, color};
-use crate::theme::{CatAccessory, CatColor};
+use crate::theme::CatAccessory;
 use crate::ui::cat_style::CatLook;
 use crate::i18n::{Key, Lang, text};
 use crate::ui::fonts::{self, Face, Role};
@@ -2449,13 +2449,12 @@ fn text_width(res: &Res, text: &str, size: f32, weight: u16) -> f32 {
         .unwrap_or(0.0)
 }
 
-/// The coat the peek uses: the configured coat, no accessory (a hat would be
-/// cut by the note's edge).
-pub fn peek_look(coat: CatColor) -> CatLook {
+/// The chosen mascot in its coat, no accessory (a hat would be cut by the
+/// note's edge).
+pub fn peek_look(look: CatLook) -> CatLook {
     CatLook {
-        color: coat,
         accessory: CatAccessory::None,
-        ..CatLook::default()
+        ..look
     }
 }
 
@@ -2837,9 +2836,20 @@ mod tests {
     }
 
     #[test]
-    fn the_peek_has_the_coat_and_no_accessory() {
-        assert_eq!(peek_look(CatColor::Calico).accessory, CatAccessory::None);
-        assert_eq!(peek_look(CatColor::Calico).color, CatColor::Calico);
+    fn the_peek_is_the_chosen_mascot_in_its_coat_with_no_accessory() {
+        use crate::theme::{CatColor, FalkColor, Mascot, OctopusColor};
+        let chosen = CatLook {
+            mascot: Mascot::Falk,
+            color: CatColor::Calico,
+            falk: FalkColor::WhiteFace,
+            octopus: OctopusColor::Blue,
+            accessory: CatAccessory::Bow,
+        };
+        assert_eq!(peek_look(chosen), CatLook { accessory: CatAccessory::None, ..chosen });
+        let octopus = CatLook { mascot: Mascot::Octopus, ..chosen };
+        assert_eq!(peek_look(octopus).mascot, Mascot::Octopus);
+        assert_eq!(peek_look(octopus).octopus, OctopusColor::Blue);
+        assert_eq!(peek_look(octopus).accessory, CatAccessory::None);
     }
 
     #[test]

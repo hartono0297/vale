@@ -1209,7 +1209,7 @@ impl Painter<'_> {
     /// A gallery card: its plate, and on it the still picture of a note (a
     /// cream sticky note with a title and two checklist lines; never animated).
     fn widget_tile(&self, t: &WidgetTile, s: &Scene) {
-        let hover = t.active && s.hover == Some(Hit::WidgetCard);
+        let hover = s.hover == Some(Hit::WidgetCard);
         self.fill_round(t.rect, CONTROL_RADIUS + 2.0, self.p.bg, 1.0);
         if hover {
             self.set(self.p.accent, 1.0);
