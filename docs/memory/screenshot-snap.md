@@ -141,7 +141,10 @@ window glue: `capture/overlay.rs` (Pick phase, `finish`, `finish_inline`) and
 - **Setting.** Settings → Clipboard → Screenshot → *Setelah capture*
   (`screenshot.after_capture`, `config::AfterCapture`: `Editor` default,
   `Inline`; read case-insensitively, a missing value, an unknown name, a number
-  or null reads as Editor and the rest of the file stays). Row 2 of 6, a
+  or null reads as Editor and the rest of the file stays). Since 2026-11-27 a
+  first run (`Config::fresh()`, no or blank `config.json`) starts on `Inline`;
+  `ScreenshotSettings::default()` stays `Editor` on purpose, so an old file
+  without the field and a corrupt file (`Config::default()`) keep the editor. Row 2 of 6, a
   segmented control, never faded ([[settings-structure]]). `App` stores it with
   `capture::set_after_capture` in `clip_start` and `clip_follow_config`
   (every Settings change goes `on_shot_setting` -> `save_config` ->
