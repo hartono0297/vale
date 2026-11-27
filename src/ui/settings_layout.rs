@@ -501,8 +501,10 @@ pub enum Hit {
     WidgetsClipFill,
     /// The (+) of a gallery card: one new empty sticky note.
     WidgetAdd,
-    /// The gallery's active card: the notes flash on the desktop.
+    /// The gallery's card: opens the Catatan tempel page.
     WidgetCard,
+    /// The back button of the Catatan tempel page.
+    WidgetBack,
     /// Settings -> Tombol pintas: a row's field (click to record, again to
     /// cancel), its reset button, and "Kembalikan semua".
     HotkeyField(HotkeyId),
@@ -1309,13 +1311,12 @@ pub struct TranscriptView {
     pub problem: Option<String>,
 }
 
-/// One card of the widget gallery: its plate, the still picture in it, and
-/// whether one is on the desktop (a click then makes them flash).
+/// One card of the widget gallery: its plate and the still picture in it (a
+/// click opens its settings page).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WidgetTile {
     pub rect: Rect,
     pub preview: Rect,
-    pub active: bool,
 }
 
 /// A list the owner reorders: by dragging a handle or with the buttons.
@@ -1576,6 +1577,8 @@ pub struct State<'a> {
     /// are on the desktop.
     pub widgets: WidgetPrefs,
     pub sticky_count: usize,
+    /// Settings -> Widget shows the Catatan tempel page instead of the gallery.
+    pub sticky_page: bool,
     /// The row being recorded, and why the last combo typed was refused
     /// (window state, not saved).
     pub hotkey_recording: Option<HotkeyId>,
@@ -4268,10 +4271,62 @@ const TILE_PREVIEW_H: f32 = 104.0;
 const TILE_H: f32 = 190.0;
 const TILE_PAD: f32 = 12.0;
 
-/// Widget: "Di desktop" (seven settings), then "Galeri" with the card of the
-/// one widget there is, the sticky notes.
+/// Widget: the gallery, or the Catatan tempel page once its card is opened.
 fn widgets_page(b: &mut Builder, s: &State) {
+    if s.sticky_page {
+        sticky_settings_page(b, s);
+    } else {
+        widgets_gallery_page(b, s);
+    }
+}
+
+/// The gallery: the "Tampilkan widget" switch, then "Galeri" with the card
+/// of the one widget there is, the sticky notes.
+fn widgets_gallery_page(b: &mut Builder, s: &State) {
+    let card = b.card(ROW_H);
+    let x = b.toggle(Hit::WidgetsShow, b.g.right, card.y + ROW_H / 2.0, s.widgets.show);
+    let desc = Some((b.t(Key::WidgetsShowDesc), Tone::Secondary));
+    b.row_text(card, card.y, b.t(Key::WidgetsShow), desc, false, x);
+
+    // The gallery: its eyebrow with how many are on the desktop at the right.
+    let eyebrow_y = b.eyebrow(Key::GroupWidgetsGallery, b.g.content_w - 4.0);
+    let count = crate::widgets::sticky::on_desktop_label(b.lang, s.sticky_count);
+    let count_w = b.w(&count, Font::Desc);
+    let count_rect = Rect {
+        x: b.g.content_x + b.g.content_w - 2.0 - count_w,
+        y: eyebrow_y,
+        w: count_w,
+        h: EYEBROW_H,
+    };
+    b.text(count_rect, count, Font::Desc, Tone::Secondary, Align::Left);
+    let grid = b.card(TILE_H + 2.0 * TILE_PAD);
+    widget_tile(b, grid, s);
+}
+
+/// Catatan tempel: a header with the back button and the (+), then "Posisi",
+/// "Tampilan" and "Catatan baru".
+fn sticky_settings_page(b: &mut Builder, s: &State) {
     let p = s.widgets;
+    let n = s.sticky_count;
+
+    let head = b.card(ROW_H);
+    let cy = head.y + ROW_H / 2.0;
+    let back_right = head.x + INSET + STEP_BUTTON;
+    b.icon_button(back_right, cy, Hit::WidgetBack, Icon::Back, true);
+    let can = can_add(n);
+    let plus_x = b.icon_button(head.right() - INSET, cy, Hit::WidgetAdd, Icon::Plus, can);
+    let desc = if can {
+        (crate::widgets::sticky::on_desktop_label(b.lang, n), Tone::Secondary)
+    } else {
+        (b.t(Key::StickyMax), Tone::Warn)
+    };
+    let text_card = Rect {
+        x: head.x + STEP_BUTTON + 10.0,
+        w: head.w - STEP_BUTTON - 10.0,
+        ..head
+    };
+    b.row_text(text_card, head.y, b.t(Key::StickyName), Some(desc), false, plus_x);
+
     let layer_items = vec![
         (Hit::WidgetsLayer(WidgetLayer::Desktop), b.t(Key::WidgetsLayerDesktop)),
         (Hit::WidgetsLayer(WidgetLayer::Top), b.t(Key::WidgetsLayerTop)),
@@ -4293,71 +4348,43 @@ fn widgets_page(b: &mut Builder, s: &State) {
     };
     let layer_desc = wrapped(b, &layer_items, Key::WidgetsLayerDesc);
     let full_desc = wrapped(b, &full_items, Key::WidgetsFullscreenDesc);
-    let heights = [
-        ROW_H,
-        wrapped_row_h(layer_desc.len()),
-        wrapped_row_h(full_desc.len()),
-        ROW_H,
-        ROW_H,
-        ROW_H,
-        ROW_H,
-    ];
+    let layer_h = wrapped_row_h(layer_desc.len());
+    let full_h = wrapped_row_h(full_desc.len());
 
-    titled(b, Key::GroupWidgetsDesktop);
-    let card = b.card(heights.iter().sum());
-    let mut rows = [card.y; 7];
-    for i in 1..7 {
-        rows[i] = rows[i - 1] + heights[i - 1];
-    }
-    let cy = |i: usize| rows[i] + heights[i] / 2.0;
-
-    let x = b.toggle(Hit::WidgetsShow, b.g.right, cy(0), p.show);
-    let desc = Some((b.t(Key::WidgetsShowDesc), Tone::Secondary));
-    b.row_text(card, rows[0], b.t(Key::WidgetsShow), desc, false, x);
+    titled(b, Key::GroupStickyPlace);
+    let card = b.card(layer_h + full_h + ROW_H);
+    let (y1, y2, y3) = (card.y, card.y + layer_h, card.y + layer_h + full_h);
 
     let selected = index_of(&WidgetLayer::ALL, &p.layer);
-    let x = b.segmented(Group::WidgetLayer, b.g.right, cy(1), layer_items, selected);
-    b.row_text_lines(card, rows[1], b.t(Key::WidgetsLayer), layer_desc, Tone::Secondary, x);
-    b.divider(card, rows[1]);
+    let x = b.segmented(Group::WidgetLayer, b.g.right, y1 + layer_h / 2.0, layer_items, selected);
+    b.row_text_lines(card, y1, b.t(Key::WidgetsLayer), layer_desc, Tone::Secondary, x);
 
     let selected = index_of(&FullscreenRule::ALL, &p.fullscreen);
-    let x = b.segmented(Group::WidgetFullscreen, b.g.right, cy(2), full_items, selected);
-    b.row_text_lines(card, rows[2], b.t(Key::WidgetsFullscreen), full_desc, Tone::Secondary, x);
-    b.divider(card, rows[2]);
+    let x = b.segmented(Group::WidgetFullscreen, b.g.right, y2 + full_h / 2.0, full_items, selected);
+    b.divider(card, y2);
+    b.row_text_lines(card, y2, b.t(Key::WidgetsFullscreen), full_desc, Tone::Secondary, x);
 
-    let x = b.toggle(Hit::WidgetsLock, b.g.right, cy(3), p.lock);
+    b.divider(card, y3);
+    let x = b.toggle(Hit::WidgetsLock, b.g.right, y3 + ROW_H / 2.0, p.lock);
     let desc = Some((b.t(Key::WidgetsLockDesc), Tone::Secondary));
-    b.row_text(card, rows[3], b.t(Key::WidgetsLock), desc, false, x);
-    b.divider(card, rows[3]);
+    b.row_text(card, y3, b.t(Key::WidgetsLock), desc, false, x);
 
-    let x = b.toggle(Hit::WidgetsPeek, b.g.right, cy(4), p.cat_peek);
-    let desc = Some((b.t(Key::WidgetsPeekDesc), Tone::Secondary));
-    b.row_text(card, rows[4], b.t(Key::WidgetsPeek), desc, false, x);
-    b.divider(card, rows[4]);
-
-    let x = b.toggle(Hit::WidgetsTilt, b.g.right, cy(5), p.tilt);
+    titled(b, Key::GroupStickyLook);
+    let card = b.card(2.0 * ROW_H);
+    let x = b.toggle(Hit::WidgetsTilt, b.g.right, card.y + ROW_H / 2.0, p.tilt);
     let desc = Some((b.t(Key::WidgetsTiltDesc), Tone::Secondary));
-    b.row_text(card, rows[5], b.t(Key::WidgetsTilt), desc, false, x);
-    b.divider(card, rows[5]);
+    b.row_text(card, card.y, b.t(Key::WidgetsTilt), desc, false, x);
+    let y = card.y + ROW_H;
+    b.divider(card, y);
+    let x = b.toggle(Hit::WidgetsPeek, b.g.right, y + ROW_H / 2.0, p.cat_peek);
+    let desc = Some((b.t(Key::WidgetsPeekDesc), Tone::Secondary));
+    b.row_text(card, y, b.t(Key::WidgetsPeek), desc, false, x);
 
-    let x = b.toggle(Hit::WidgetsClipFill, b.g.right, cy(6), p.clip_fill);
+    titled(b, Key::GroupStickyNew);
+    let card = b.card(ROW_H);
+    let x = b.toggle(Hit::WidgetsClipFill, b.g.right, card.y + ROW_H / 2.0, p.clip_fill);
     let desc = Some((b.t(Key::WidgetsClipFillDesc), Tone::Secondary));
-    b.row_text(card, rows[6], b.t(Key::WidgetsClipFill), desc, false, x);
-    b.divider(card, rows[6]);
-
-    // The gallery: its eyebrow with how many are on the desktop at the right.
-    let eyebrow_y = b.eyebrow(Key::GroupWidgetsGallery, b.g.content_w - 4.0);
-    let count = crate::widgets::sticky::on_desktop_label(b.lang, s.sticky_count);
-    let count_w = b.w(&count, Font::Desc);
-    let count_rect = Rect {
-        x: b.g.content_x + b.g.content_w - 2.0 - count_w,
-        y: eyebrow_y,
-        w: count_w,
-        h: EYEBROW_H,
-    };
-    b.text(count_rect, count, Font::Desc, Tone::Secondary, Align::Left);
-    let grid = b.card(TILE_H + 2.0 * TILE_PAD);
-    widget_tile(b, grid, s);
+    b.row_text(card, card.y, b.t(Key::WidgetsClipFill), desc, false, x);
 }
 
 /// The sticky notes' card: the first cell of the two-column grid.
@@ -4375,8 +4402,7 @@ fn widget_tile(b: &mut Builder, grid: Rect, s: &State) {
         w: rect.w - 16.0,
         h: TILE_PREVIEW_H,
     };
-    let active = s.sticky_count > 0;
-    b.l.tiles.push(WidgetTile { rect, preview, active });
+    b.l.tiles.push(WidgetTile { rect, preview });
     let room_right = rect.right() - 12.0 - STEP_BUTTON - 8.0;
     let title_y = preview.bottom() + 8.0;
     let title = Rect {
@@ -4403,7 +4429,7 @@ fn widget_tile(b: &mut Builder, grid: Rect, s: &State) {
         b.text(r, line, Font::Desc, tone, Align::Left);
     }
     // The count on the picture, when there is one.
-    if active {
+    if s.sticky_count > 0 {
         let label = s.sticky_count.to_string();
         let cx = preview.right() - 8.0;
         let chip_w = 2.0 * CHIP_PAD + DOT + DOT_GAP + b.w(&label, Font::Desc);
@@ -4412,12 +4438,10 @@ fn widget_tile(b: &mut Builder, grid: Rect, s: &State) {
     // The (+), above the card's own click area so it wins.
     let plus_cy = rect.bottom() - 12.0 - STEP_BUTTON / 2.0;
     b.icon_button(rect.right() - 12.0, plus_cy, Hit::WidgetAdd, Icon::Plus, can);
-    if active {
-        b.l.controls.push(Control::Area {
-            hit: Hit::WidgetCard,
-            rect,
-        });
-    }
+    b.l.controls.push(Control::Area {
+        hit: Hit::WidgetCard,
+        rect,
+    });
 }
 
 /// Fitur: "Pomodoro" (its four steppers and the running note), "Musik",
@@ -6732,6 +6756,7 @@ mod tests {
                             WidgetPrefs::default()
                         },
                         sticky_count: if locked { 20 } else { 0 },
+                        sticky_page: false,
                         hotkey_recording: locked.then_some(HotkeyId::Devices),
                         hotkey_error: locked.then_some((
                             HotkeyId::Clipboard,
@@ -7108,6 +7133,10 @@ mod tests {
             let hits = l.hits();
             for (i, (ha, a)) in hits.iter().enumerate() {
                 for (hb, b) in &hits[i + 1..] {
+                    // The gallery card holds its own (+), which wins the click.
+                    if matches!((ha, hb), (Hit::WidgetAdd, Hit::WidgetCard) | (Hit::WidgetCard, Hit::WidgetAdd)) {
+                        continue;
+                    }
                     assert!(
                         !overlaps(*a, *b),
                         "{section:?} {lang:?}: {ha:?} overlaps {hb:?}"
@@ -7278,13 +7307,10 @@ mod tests {
     /// and eight rows, past the margin at the minimum size) and Fitur
     /// (five cards), and Tentang (the logo, "Tautan" and "Pindah ke PC lain":
     /// 50 px past the margin at the minimum size).
-    // Widget holds the seven settings and the gallery's card: 460 px of
-    // content in a 400 px high viewport at the minimum size, so it scrolls.
-    const SCROLLING: [Section; 8] = [
+    const SCROLLING: [Section; 7] = [
         Section::Appearance,
         Section::Cat,
         Section::Panel,
-        Section::Widgets,
         Section::Clipboard,
         Section::Hotkeys,
         Section::Features,
@@ -12317,41 +12343,47 @@ mod tests {
             lang,
             widgets: WidgetPrefs::default(),
             sticky_count: count,
+            sticky_page: false,
             scroll: 0.0,
             ..states()[0].clone()
         }
     }
 
+    fn sticky_page(lang: Lang, count: usize) -> State<'static> {
+        State {
+            sticky_page: true,
+            ..widgets_state(lang, count)
+        }
+    }
+
+    fn plus_of(l: &Layout) -> (Rect, bool) {
+        l.controls
+            .iter()
+            .find_map(|c| match c {
+                Control::IconButton { hit: Hit::WidgetAdd, rect, enabled, .. } => Some((*rect, *enabled)),
+                _ => None,
+            })
+            .expect("the +")
+    }
+
     #[test]
-    fn widget_has_its_settings_and_a_gallery_with_one_card() {
+    fn widget_page_has_the_show_switch_and_the_gallery_only() {
         for lang in [Lang::Id, Lang::En] {
             let l = layout_in(Section::Widgets, &widgets_state(lang, 0), &Estimate, TALL);
-            // The seven settings, then the gallery's grid, each under its eyebrow.
             assert_eq!(l.cards.len(), 2, "{lang:?}");
             let has = |t: &str| l.texts.iter().any(|x| x.text == t);
-            assert!(has(&text(lang, Key::GroupWidgetsDesktop).to_uppercase()));
+            assert!(has(text(lang, Key::WidgetsShow)) && has(text(lang, Key::StickyName)));
             assert!(has(&text(lang, Key::GroupWidgetsGallery).to_uppercase()));
-            for key in [Key::WidgetsShow, Key::WidgetsLayer, Key::WidgetsFullscreen, Key::WidgetsLock, Key::WidgetsPeek, Key::WidgetsTilt, Key::WidgetsClipFill, Key::StickyName] {
-                assert!(has(text(lang, key)), "{lang:?} {key:?}");
+            for key in [Key::WidgetsLayer, Key::WidgetsFullscreen, Key::WidgetsLock, Key::WidgetsPeek, Key::WidgetsTilt, Key::WidgetsClipFill] {
+                assert!(!has(text(lang, key)), "{lang:?} {key:?} moved to the sticky page");
             }
             assert_eq!(l.title.as_ref().unwrap().text, text(lang, Key::SecWidgets));
-            // The two segmented controls and their choices.
-            let (_, layer, sel) = l.segmented(Group::WidgetLayer).expect("Lapisan");
-            assert_eq!(layer.len(), 2);
-            assert_eq!(layer[sel].hit, Hit::WidgetsLayer(WidgetLayer::Desktop));
-            assert_eq!(layer[1].hit, Hit::WidgetsLayer(WidgetLayer::Top));
-            let (_, full, sel) = l.segmented(Group::WidgetFullscreen).expect("Layar penuh");
-            assert_eq!(full[sel].hit, Hit::WidgetsFullscreen(FullscreenRule::Hide));
-            assert_eq!(full[1].hit, Hit::WidgetsFullscreen(FullscreenRule::Keep));
-            // The five toggles and the gallery's (+).
             let hits: Vec<Hit> = l.hits().into_iter().map(|(h, _)| h).collect();
-            for h in [Hit::WidgetsShow, Hit::WidgetsLock, Hit::WidgetsPeek, Hit::WidgetsTilt, Hit::WidgetsClipFill, Hit::WidgetAdd] {
-                assert!(hits.contains(&h), "{lang:?} {h:?}");
-            }
-            // The gallery has exactly one card, with its picture; none is on
-            // the desktop yet, so a click on it does nothing and there is no badge.
+            assert!(hits.contains(&Hit::WidgetsShow) && hits.contains(&Hit::WidgetAdd));
+            // The card opens the page at any count, 0 included.
             assert_eq!(l.tiles.len(), 1);
-            assert!(!l.tiles[0].active && !hits.contains(&Hit::WidgetCard));
+            let tile = l.tiles[0].rect;
+            assert_eq!(l.hit(tile.x + 20.0, tile.y + 20.0), Some(Hit::WidgetCard));
             assert!(l.chips.is_empty());
             // "0 di desktop" at the gallery's right.
             let count = crate::widgets::sticky::on_desktop_label(lang, 0);
@@ -12366,44 +12398,69 @@ mod tests {
     }
 
     #[test]
-    fn the_gallery_card_is_clickable_once_a_note_is_on_the_desktop() {
+    fn gallery_tile_shows_the_count_and_its_plus_adds() {
         for lang in [Lang::Id, Lang::En] {
             let l = layout_in(Section::Widgets, &widgets_state(lang, 3), &Estimate, TALL);
-            assert!(l.tiles[0].active);
-            let tile = l.tiles[0].rect;
-            // A click on the card flashes the notes; one on its (+) adds a note.
-            assert_eq!(l.hit(tile.x + 20.0, tile.y + 20.0), Some(Hit::WidgetCard));
-            let plus = l
-                .controls
-                .iter()
-                .find_map(|c| match c {
-                    Control::IconButton { hit: Hit::WidgetAdd, rect, enabled, .. } => Some((*rect, *enabled)),
-                    _ => None,
-                })
-                .expect("the +");
-            assert!(plus.1, "enabled below the cap");
-            assert_eq!(l.hit(plus.0.x + 4.0, plus.0.y + 4.0), Some(Hit::WidgetAdd));
-            // The count badge shows "3".
+            let (plus, enabled) = plus_of(&l);
+            assert!(enabled, "enabled below the cap");
+            assert_eq!(l.hit(plus.x + 4.0, plus.y + 4.0), Some(Hit::WidgetAdd));
             assert!(l.chips.iter().any(|c| c.label.text == "3"), "{lang:?}");
-            let count = crate::widgets::sticky::on_desktop_label(lang, 3);
-            assert!(l.texts.iter().any(|t| t.text == count));
         }
     }
 
     #[test]
-    fn the_plus_is_off_at_the_cap_and_the_description_says_why() {
+    fn sticky_page_has_back_add_and_three_groups() {
         for lang in [Lang::Id, Lang::En] {
-            let l = layout_in(Section::Widgets, &widgets_state(lang, 20), &Estimate, TALL);
-            let plus = l.controls.iter().find_map(|c| match c {
-                Control::IconButton { hit: Hit::WidgetAdd, rect, enabled, .. } => Some((*rect, *enabled)),
-                _ => None,
-            });
-            let (rect, enabled) = plus.expect("the + is still drawn");
+            let l = layout_in(Section::Widgets, &sticky_page(lang, 3), &Estimate, TALL);
+            assert_eq!(l.cards.len(), 4, "{lang:?}");
+            let has = |t: &str| l.texts.iter().any(|x| x.text == t);
+            for key in [Key::GroupStickyPlace, Key::GroupStickyLook, Key::GroupStickyNew] {
+                assert!(has(&text(lang, key).to_uppercase()), "{lang:?} {key:?}");
+            }
+            for key in [Key::StickyName, Key::WidgetsLayer, Key::WidgetsFullscreen, Key::WidgetsLock, Key::WidgetsPeek, Key::WidgetsTilt, Key::WidgetsClipFill] {
+                assert!(has(text(lang, key)), "{lang:?} {key:?}");
+            }
+            assert!(has(&crate::widgets::sticky::on_desktop_label(lang, 3)));
+            assert!(!has(text(lang, Key::WidgetsShow)) && l.tiles.is_empty());
+            let hits: Vec<Hit> = l.hits().into_iter().map(|(h, _)| h).collect();
+            for h in [Hit::WidgetBack, Hit::WidgetAdd, Hit::WidgetsLock, Hit::WidgetsPeek, Hit::WidgetsTilt, Hit::WidgetsClipFill] {
+                assert!(hits.contains(&h), "{lang:?} {h:?}");
+            }
+            assert_eq!(hits.iter().filter(|h| **h == Hit::WidgetAdd).count(), 1, "one (+) for the template menu");
+            // Back left of the title, (+) at the right edge of the header card.
+            let back = l
+                .controls
+                .iter()
+                .find_map(|c| match c {
+                    Control::IconButton { hit: Hit::WidgetBack, rect, .. } => Some(*rect),
+                    _ => None,
+                })
+                .unwrap();
+            let name = l.texts.iter().find(|t| t.text == text(lang, Key::StickyName)).unwrap();
+            assert!(back.right() <= name.rect.x, "{back:?} {:?}", name.rect);
+            let (plus, _) = plus_of(&l);
+            assert!(plus.right() <= l.cards[0].right() && plus.right() > l.cards[0].right() - 20.0);
+            // Posisi above Tampilan above Catatan baru.
+            let y = |key: Key| {
+                l.texts
+                    .iter()
+                    .find(|t| t.text == text(lang, key).to_uppercase())
+                    .unwrap()
+                    .rect
+                    .y
+            };
+            assert!(y(Key::GroupStickyPlace) < y(Key::GroupStickyLook) && y(Key::GroupStickyLook) < y(Key::GroupStickyNew));
+        }
+    }
+
+    #[test]
+    fn sticky_page_plus_is_off_at_the_cap_with_the_reason() {
+        for lang in [Lang::Id, Lang::En] {
+            let l = layout_in(Section::Widgets, &sticky_page(lang, 20), &Estimate, TALL);
+            let (rect, enabled) = plus_of(&l);
             assert!(!enabled);
             assert_ne!(l.hit(rect.x + 4.0, rect.y + 4.0), Some(Hit::WidgetAdd), "no click");
             let reason = text(lang, Key::StickyMax);
-            let words: Vec<&str> = reason.split(' ').collect();
-            // The reason may be wrapped: every word is there, in the warning tone.
             let said: String = l
                 .texts
                 .iter()
@@ -12411,14 +12468,14 @@ mod tests {
                 .map(|t| t.text.as_str())
                 .collect::<Vec<_>>()
                 .join(" ");
-            for w in words {
+            for w in reason.split(' ') {
                 assert!(said.contains(w), "{lang:?}: {said:?} lacks {w:?}");
             }
         }
     }
 
     #[test]
-    fn the_widget_controls_show_the_saved_choices() {
+    fn sticky_page_controls_show_the_saved_choices() {
         let prefs = WidgetPrefs {
             show: false,
             layer: WidgetLayer::Top,
@@ -12428,39 +12485,39 @@ mod tests {
             tilt: true,
             clip_fill: true,
         };
-        let s = State {
-            widgets: prefs,
-            ..widgets_state(Lang::En, 1)
-        };
-        let l = layout_in(Section::Widgets, &s, &Estimate, TALL);
-        let (_, layer, sel) = l.segmented(Group::WidgetLayer).unwrap();
-        assert_eq!(layer[sel].hit, Hit::WidgetsLayer(WidgetLayer::Top));
-        let (_, full, sel) = l.segmented(Group::WidgetFullscreen).unwrap();
-        assert_eq!(full[sel].hit, Hit::WidgetsFullscreen(FullscreenRule::Keep));
-        let on = |hit: Hit| {
+        let on = |l: &Layout, hit: Hit| {
             l.controls.iter().find_map(|c| match c {
                 Control::Toggle { hit: h, on, .. } if *h == hit => Some(*on),
                 _ => None,
             })
         };
-        assert_eq!(on(Hit::WidgetsShow), Some(false));
-        assert_eq!(on(Hit::WidgetsLock), Some(true));
-        assert_eq!(on(Hit::WidgetsPeek), Some(false));
-        assert_eq!(on(Hit::WidgetsTilt), Some(true));
-        assert_eq!(on(Hit::WidgetsClipFill), Some(true));
+        let gallery = State {
+            widgets: prefs,
+            ..widgets_state(Lang::En, 1)
+        };
+        let l = layout_in(Section::Widgets, &gallery, &Estimate, TALL);
+        assert_eq!(on(&l, Hit::WidgetsShow), Some(false));
+        let s = State {
+            sticky_page: true,
+            ..gallery
+        };
+        let l = layout_in(Section::Widgets, &s, &Estimate, TALL);
+        let (_, layer, sel) = l.segmented(Group::WidgetLayer).unwrap();
+        assert_eq!(layer[sel].hit, Hit::WidgetsLayer(WidgetLayer::Top));
+        assert_eq!(layer[0].hit, Hit::WidgetsLayer(WidgetLayer::Desktop));
+        let (_, full, sel) = l.segmented(Group::WidgetFullscreen).unwrap();
+        assert_eq!(full[sel].hit, Hit::WidgetsFullscreen(FullscreenRule::Keep));
+        assert_eq!(full[0].hit, Hit::WidgetsFullscreen(FullscreenRule::Hide));
+        assert_eq!(on(&l, Hit::WidgetsLock), Some(true));
+        assert_eq!(on(&l, Hit::WidgetsPeek), Some(false));
+        assert_eq!(on(&l, Hit::WidgetsTilt), Some(true));
+        assert_eq!(on(&l, Hit::WidgetsClipFill), Some(true));
     }
 
     #[test]
-    fn the_widget_section_scrolls_at_the_minimum_size_and_not_in_a_tall_window() {
-        // At 720 x 520 the seven settings and the gallery are taller than the
-        // viewport (see SCROLLING); a tall window shows them whole.
-        let s = widgets_state(Lang::Id, 2);
-        let small = layout(Section::Widgets, &s, &Estimate);
-        assert!(small.viewport.is_some() && small.scroll_max > 0.0);
-        let tall = layout_in(Section::Widgets, &s, &Estimate, TALL);
-        assert!(tall.viewport.is_none() && tall.scroll_max == 0.0);
-        let last = tall.cards.last().unwrap();
-        assert!(last.bottom() <= 900.0 - PAD + 0.01, "{last:?}");
+    fn widget_gallery_page_fits_at_the_minimum_size() {
+        let l = layout(Section::Widgets, &widgets_state(Lang::Id, 2), &Estimate);
+        assert!(l.viewport.is_none() && l.scroll_max == 0.0);
     }
 
     #[test]
@@ -12952,6 +13009,10 @@ mod tests {
                     l.texts.iter().filter(|t| t.font == Font::Eyebrow).collect();
                 for card in &l.cards {
                     if l.preview == Some(*card) || l.cat_preview == Some(*card) {
+                        continue;
+                    }
+                    // The Widget gallery opens with the "Tampilkan widget" card, no eyebrow.
+                    if section == Section::Widgets && *card == l.cards[0] {
                         continue;
                     }
                     // A card's title is the eyebrow just above it, or (a list

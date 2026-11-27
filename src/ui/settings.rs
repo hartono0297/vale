@@ -1873,6 +1873,7 @@ impl Settings {
             hotkey_failed: m.hotkey_failed,
             widgets: m.widgets,
             sticky_count: m.sticky_count,
+            sticky_page: false,
             hotkey_recording: self.recording,
             hotkey_error: self.hotkey_error,
             arrange: m.arrange.clone(),
@@ -3209,7 +3210,8 @@ impl Settings {
             | Hit::ShotIgnore(_)
             | Hit::ShotTool(_)
             | Hit::ShotAfterCapture(_)
-            | Hit::NotifToastStyle(_) => Vec::new(),
+            | Hit::NotifToastStyle(_)
+            | Hit::WidgetBack => Vec::new(),
         };
         self.relayout();
         after

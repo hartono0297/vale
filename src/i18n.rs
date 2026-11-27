@@ -1343,6 +1343,9 @@ keys! {
     SecWidgets => "Widget", "Widgets";
     GroupWidgetsDesktop => "Di desktop", "On the desktop";
     GroupWidgetsGallery => "Galeri", "Gallery";
+    GroupStickyPlace => "Posisi", "Position";
+    GroupStickyLook => "Tampilan", "Look";
+    GroupStickyNew => "Catatan baru", "New notes";
     WidgetsShow => "Tampilkan widget", "Show widgets";
     WidgetsShowDesc => "Semua widget di desktop", "Every widget on the desktop";
     WidgetsLayer => "Lapisan", "Layer";
