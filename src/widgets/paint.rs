@@ -30,7 +30,7 @@ use windows_numerics::{Matrix3x2, Vector2};
 use crate::arrange_overlay::Canvas;
 use crate::config::UiFont;
 use crate::shot_edit::gfx::{Gfx, color};
-use crate::theme::{CatAccessory, CatColor};
+use crate::theme::CatAccessory;
 use crate::ui::cat_style::CatLook;
 use crate::i18n::{Key, Lang, text};
 use crate::ui::fonts::{self, Face, Role};
@@ -2837,7 +2837,7 @@ mod tests {
 
     #[test]
     fn the_peek_is_the_chosen_mascot_in_its_coat_with_no_accessory() {
-        use crate::theme::{FalkColor, Mascot, OctopusColor};
+        use crate::theme::{CatColor, FalkColor, Mascot, OctopusColor};
         let chosen = CatLook {
             mascot: Mascot::Falk,
             color: CatColor::Calico,
