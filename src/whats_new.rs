@@ -16,6 +16,21 @@ pub struct Entry {
 /// Newest first. Add the entry for a version before bumping it.
 pub static ENTRIES: &[Entry] = &[
     Entry {
+        version: "5.6.4",
+        id: &[
+            "Jam 01.00 sampai 04.00 maskot menguap dan mengajakmu tidur (Pengaturan → Maskot).",
+            "Maskot di catatan tempel kini sesuai pilihanmu: kucing, falk, atau gurita.",
+            "Pengaturan catatan tempel punya halaman sendiri: Widget → Catatan tempel → Atur.",
+            "Instalasi baru: screenshot langsung digambari di layar, tanpa membuka editor.",
+        ],
+        en: &[
+            "From 1 to 4 a.m. the mascot yawns and tells you to sleep (Settings → Mascot).",
+            "The mascot on sticky notes now matches yours: cat, cockatiel or octopus.",
+            "Sticky note settings have their own page: Widgets → Sticky notes → Settings.",
+            "New installs: you draw on a screenshot right on screen, without the editor.",
+        ],
+    },
+    Entry {
         version: "5.6.3",
         id: &[
             "Folder di shelf kini muncul di link HP dan laptop, diunduh sebagai satu file zip.",
