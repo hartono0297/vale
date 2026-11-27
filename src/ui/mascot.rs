@@ -87,6 +87,10 @@ pub fn crest_pose(expr: Expr, pose: &Pose) -> CrestPose {
         Expr::Sleep => (62.0, 0.8),
         Expr::Sad => (46.0, 0.75),
         Expr::Wave => (10.0 + if pose.waving { 10.0 * pose.wave } else { 0.0 }, 1.0),
+        // The sleep reminder's hours droop it toward the Sleep angle.
+        Expr::Drowsy => (30.0, 0.92),
+        Expr::Yawn => (38.0, 0.9),
+        Expr::Doze => (50.0, 0.85),
     };
     CrestPose { rot_deg, scale }
 }
@@ -146,6 +150,9 @@ pub fn beak_open(expr: Expr, pose: &Pose) -> bool {
     match expr {
         Expr::Sing | Expr::Alert => true,
         Expr::Music => pose.dancing,
+        // The falk yawns with its beak: open in the still pose, and while
+        // the yawn is more than a crack open.
+        Expr::Yawn => pose.yawn.is_none_or(|a| a > 0.3),
         _ => false,
     }
 }
@@ -290,6 +297,9 @@ pub fn arms(expr: Expr, pose: &Pose) -> [Arm; 6] {
                     curl = 1.8;
                     end = (mx(e.0 + 4.0), e.1 - 1.0);
                 }
+                // The sleep reminder's hours curl them more, toward Sleep's coil.
+                Expr::Drowsy | Expr::Yawn => curl = 1.2,
+                Expr::Doze => curl = 1.5,
                 _ => {}
             }
             if pose.dancing && matches!(expr, Expr::Music | Expr::Sing) {
@@ -650,6 +660,26 @@ mod tests {
         assert!((crest_pose(Expr::Music, &dancing).rot_deg - 15.0).abs() < 1e-4); // 6 + 9·sin
         let waving = Pose { waving: true, wave: -1.0, ..Pose::default() };
         assert!((crest_pose(Expr::Wave, &waving).rot_deg - 0.0).abs() < 1e-4); // 10 + 10·wave
+    }
+
+    #[test]
+    fn the_falk_crest_droops_by_the_hour() {
+        let p = Pose::default();
+        let c = |e| (crest_pose(e, &p).rot_deg, crest_pose(e, &p).scale);
+        assert_eq!(c(Expr::Drowsy), (30.0, 0.92));
+        assert_eq!(c(Expr::Yawn), (38.0, 0.9));
+        assert_eq!(c(Expr::Doze), (50.0, 0.85));
+        assert_eq!(c(Expr::Sleep), (62.0, 0.8));
+        assert!(beak_open(Expr::Yawn, &Pose::default()));
+        assert!(!beak_open(Expr::Yawn, &Pose { yawn: Some(0.1), ..Pose::default() }));
+    }
+
+    #[test]
+    fn the_octopus_curls_more_each_hour() {
+        let p = Pose::default();
+        for (e, curl) in [(Expr::Drowsy, 1.2), (Expr::Yawn, 1.2), (Expr::Doze, 1.5), (Expr::Sleep, 1.8)] {
+            assert!(arms(e, &p).iter().all(|a| a.curl == curl), "{e:?}");
+        }
     }
 
     #[test]

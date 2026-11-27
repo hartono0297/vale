@@ -1920,7 +1920,7 @@ mod tests {
             Part::Dot { ink, .. } => *ink == Ink::Cream,
             Part::Stroke(line) => line.ink() == Ink::Cream,
             Part::Heart { .. } => true,
-            Part::Pill { .. } => false,
+            Part::Pill { .. } | Part::Mouth { .. } => false,
         }
     }
 
@@ -2095,7 +2095,7 @@ mod tests {
     fn every_mascot_stays_in_the_notice_badge() {
         use crate::theme::CatAccessory;
         use crate::ui::cat_style::accessory_corners;
-        use crate::ui::robot::{Expr, HOP_PX, Pose, face, mark_bounds};
+        use crate::ui::robot::{DOZE_NOD_DIP, DOZE_TILT_DEG, Expr, HOP_PX, Pose, face, mark_bounds};
         let mut checked = 0u32;
         for style in [Style::Pill, Style::Notch] {
             for size in sizes() {
@@ -2105,25 +2105,39 @@ mod tests {
                 for &m in Mascot::ALL {
                     // The faces notices show: the greeting's Wave swings the
                     // octopus's arm and the falk's crest, the falk hops on a
-                    // done notice.
-                    for expr in [Expr::Alert, Expr::Wave, Expr::Happy, Expr::Sad, Expr::Sleep, Expr::Idle] {
+                    // done notice; the sleep reminder's faces at rest, with
+                    // the yawn wide open and at the doze's deepest sink.
+                    let sleepy = [Expr::Drowsy, Expr::Yawn, Expr::Doze];
+                    for expr in [Expr::Alert, Expr::Wave, Expr::Happy, Expr::Sad, Expr::Sleep, Expr::Idle]
+                        .into_iter()
+                        .chain(sleepy)
+                    {
                         let f = face(expr, false);
                         let waves: &[f32] = if expr == Expr::Wave { &[-1.0, 0.0, 1.0] } else { &[0.0] };
                         let hops: &[f32] = if m == Mascot::Falk { &[0.0, HOP_PX] } else { &[0.0] };
+                        let motions: &[Pose] = if sleepy.contains(&expr) {
+                            &[
+                                Pose::default(),
+                                Pose { yawn: Some(1.0), ..Pose::default() },
+                                Pose { nod_dip: DOZE_NOD_DIP, tilt_deg: DOZE_TILT_DEG, ..Pose::default() },
+                            ]
+                        } else {
+                            &[Pose::default()]
+                        };
                         for &wave in waves {
-                            for &hop in hops {
+                            for (&hop, &motion) in hops.iter().flat_map(|h| motions.iter().map(move |p| (h, p))) {
                                 let pose = Pose {
                                     waving: expr == Expr::Wave,
                                     wave,
                                     hop_px: hop,
-                                    ..Pose::default()
+                                    ..motion
                                 };
                                 let check = |what: &str, p: (f32, f32), mark: bool| {
                                     let (x, y) = drawn(badge, &f, pose, p, mark);
                                     let y = y - hop;
                                     assert!(
                                         shape_contains(style, n, x, y),
-                                        "{m:?} {style:?} {size:?} {expr:?} wave {wave} hop {hop} {what}: ({x}, {y}) leaves the notice {n:?}"
+                                        "{m:?} {style:?} {size:?} {expr:?} wave {wave} hop {hop} yawn {:?} nod {} {what}: ({x}, {y}) leaves the notice {n:?}", pose.yawn, pose.nod_dip
                                     );
                                 };
                                 for p in body_outline(m, &f, expr, &pose, 0.0) {
