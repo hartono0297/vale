@@ -170,7 +170,8 @@ and the (+) in a note's header. Each makes an
 empty Krem note (a right click on the header (+) or the gallery's (+) picks a
 template, run A below), gives it the keyboard (except the card icon, the note has
 text), opens it on top of other windows ([[sticky-note-on-top]]) and turns
-`show` back on. Settings -> Widget: [[settings-structure]]. The hotkey:
+`show` back on. Settings -> Widget: [[settings-structure]] (since 2026-11-27 the
+note settings live on the gallery card's own Catatan tempel page). The hotkey:
 [[hotkeys]].
 
 The sticky note list (a header button, a tray item and an eighth hotkey row open
