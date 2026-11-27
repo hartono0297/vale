@@ -76,12 +76,18 @@ pub enum Expr {
     Wave,
     /// "Mengetik": work runs; the cat types on a laptop beside it.
     Typing,
+    /// "Sayu": the sleep reminder at 01: heavy lids over half-closed eyes.
+    Drowsy,
+    /// "Menguap": the sleep reminder at 02: eyes shut, mouth open.
+    Yawn,
+    /// "Terkantuk": the sleep reminder at 03: eyes shut, head sunk.
+    Doze,
 }
 
 impl Expr {
     // The demo sheet (debug builds) and tests list and name every face.
     #[cfg_attr(not(debug_assertions), allow(dead_code))]
-    pub const ALL: [Expr; 11] = [
+    pub const ALL: [Expr; 14] = [
         Expr::Idle,
         Expr::Happy,
         Expr::Focus,
@@ -93,13 +99,22 @@ impl Expr {
         Expr::Sad,
         Expr::Wave,
         Expr::Typing,
+        Expr::Drowsy,
+        Expr::Yawn,
+        Expr::Doze,
     ];
 
     /// Its eyes are open (pills or round): a blink shows. Arcs do not blink.
     pub fn blinks(self) -> bool {
         matches!(
             self,
-            Expr::Idle | Expr::Focus | Expr::Alert | Expr::Think | Expr::Sad | Expr::Typing
+            Expr::Idle
+                | Expr::Focus
+                | Expr::Alert
+                | Expr::Think
+                | Expr::Sad
+                | Expr::Typing
+                | Expr::Drowsy
         )
     }
 
@@ -110,7 +125,15 @@ impl Expr {
     pub fn looks(self) -> bool {
         !matches!(
             self,
-            Expr::Think | Expr::Sleep | Expr::Music | Expr::Sing | Expr::Wave | Expr::Typing
+            Expr::Think
+                | Expr::Sleep
+                | Expr::Music
+                | Expr::Sing
+                | Expr::Wave
+                | Expr::Typing
+                | Expr::Drowsy
+                | Expr::Yawn
+                | Expr::Doze
         )
     }
 
@@ -140,6 +163,9 @@ impl Expr {
             Expr::Sad => Key::ExprSad,
             Expr::Wave => Key::ExprWave,
             Expr::Typing => Key::ExprTyping,
+            Expr::Drowsy => Key::ExprDrowsy,
+            Expr::Yawn => Key::ExprYawn,
+            Expr::Doze => Key::ExprDoze,
         }
     }
 }
@@ -219,6 +245,9 @@ pub struct Pose {
     pub waving: bool,
     /// The octopus's flush, 0 to 1.
     pub flush: f32,
+    /// How far the yawning mouth is open, 0 to 1, while the yawn plays;
+    /// `None` is the still pose, the mouth fully open.
+    pub yawn: Option<f32>,
     /// A story's crest for the falk, in place of the face's own
     /// (`mascot::crest_pose`).
     pub crest: Option<crate::ui::mascot::CrestPose>,
@@ -302,6 +331,8 @@ pub enum Line {
     Zz,
     /// A music note's stem and beam, its foot at (x, y).
     Note { x: f32, y: f32 },
+    /// Heavy lids: a level line along the top of each eye.
+    Lids,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -321,6 +352,7 @@ impl Line {
         match self {
             Line::Happy | Line::Blink => 2.4,
             Line::Sleep => 2.2,
+            Line::Lids => 2.0,
             Line::Note { .. } => 1.6,
             Line::Zz => 1.5,
         }
@@ -380,6 +412,13 @@ impl Line {
                 To(x + 5.0, y - 9.5),
                 To(x + 5.0, y - 1.5),
             ],
+            // M L-3.6 Y h7.2, twice.
+            Line::Lids => vec![
+                Move(L - 3.6, Y),
+                To(L + 3.6, Y),
+                Move(R - 3.6, Y),
+                To(R + 3.6, Y),
+            ],
         }
     }
 }
@@ -409,6 +448,13 @@ pub enum Part {
     Heart {
         x: f32,
         y: f32,
+    },
+    /// The yawning mouth: a filled espresso ellipse, `r` wide, opened down
+    /// by `Pose::yawn`. The falk opens its beak instead.
+    Mouth {
+        cx: f32,
+        cy: f32,
+        r: f32,
     },
 }
 
@@ -470,6 +516,12 @@ fn note(x: f32, y: f32) -> [Part; 3] {
 /// (grid units), so the idle pills' centres land at (20.5, 41) and (36.5, 41).
 const TYPING_TILT: f32 = -4.0;
 const TYPING_EYE_SHIFT: (f32, f32) = (-3.5, 1.0);
+/// The yawning mouth, under the eyes.
+const YAWN_MOUTH: Part = Part::Mouth {
+    cx: 32.0,
+    cy: 48.5,
+    r: 3.6,
+};
 
 /// The marks of `expr`: its eyes first, then what floats beside the head.
 /// With `blink`, open eyes (pills and round ones) become the design's
@@ -545,6 +597,35 @@ pub fn face(expr: Expr, blink: bool) -> Face {
             0.0,
             TYPING_TILT,
         ),
+        Expr::Drowsy => {
+            let mut eyes = open(5.0, 5.6, 2.5).to_vec();
+            eyes.push(Part::Stroke(Line::Lids));
+            let ears = Ears {
+                up: 0.0,
+                droop: 2.0,
+            };
+            (eyes, vec![], ears, 0.5, 0.0)
+        }
+        Expr::Yawn => (
+            vec![Part::Stroke(Line::Sleep), YAWN_MOUTH],
+            vec![],
+            Ears {
+                up: 0.0,
+                droop: 2.0,
+            },
+            0.0,
+            -4.0,
+        ),
+        Expr::Doze => (
+            vec![Part::Stroke(Line::Sleep)],
+            vec![],
+            Ears {
+                up: 0.0,
+                droop: 4.0,
+            },
+            1.5,
+            6.0,
+        ),
     };
     let eyes = if blink && expr.blinks() {
         vec![Part::Stroke(Line::Blink)]
@@ -599,7 +680,7 @@ pub fn mark_bounds(part: &Part) -> (f32, f32, f32, f32) {
     };
     match *part {
         Part::Pill { x, y, w, h, .. } => (x, y, x + w, y + h),
-        Part::Dot { cx, cy, r, .. } => (cx - r, cy - r, cx + r, cy + r),
+        Part::Dot { cx, cy, r, .. } | Part::Mouth { cx, cy, r } => (cx - r, cy - r, cx + r, cy + r),
         Part::Stroke(line) => points(line.segments(), line.width() / 2.0),
         Part::Heart { x, y } => points(heart(x, y), 0.0),
     }
@@ -826,7 +907,8 @@ const FACE_HEART_RGB: u32 = 0xD23F6A;
 /// The marks of `expr` on the face notch: its eyes as `face(expr, blink)`
 /// draws them; the z's, the wave's heart and the thought dots smaller and
 /// beside the eyes, never above them; no music note (the face nods
-/// instead). The typing face is the idle eyes: no laptop, no paws.
+/// instead) and no yawning mouth (it would hang below the notch). The
+/// typing face is the idle eyes: no laptop, no paws.
 pub fn face_marks(expr: Expr, blink: bool) -> Vec<FaceMark> {
     let shown = match expr {
         Expr::Typing => Expr::Idle,
@@ -836,6 +918,9 @@ pub fn face_marks(expr: Expr, blink: bool) -> Vec<FaceMark> {
         .parts
         .into_iter()
         .filter_map(|part| {
+            if matches!(part, Part::Mouth { .. }) {
+                return None;
+            }
             let (k, at) = if is_eye(&part) {
                 (1.0, (0.0, 0.0))
             } else {
@@ -1501,6 +1586,21 @@ impl RobotPainter {
                             rt.FillGeometry(&g, brush, None);
                         }
                     }
+                    // The falk yawns with its beak.
+                    Part::Mouth { cx, cy, r } => {
+                        let open = pose.yawn.unwrap_or(1.0);
+                        if look.mascot != Mascot::Falk && open > 0.0 {
+                            brush.SetColor(&color(look.eye_rgb(), 1.0));
+                            rt.FillEllipse(
+                                &D2D1_ELLIPSE {
+                                    point: Vector2::new(cx, cy),
+                                    radiusX: r,
+                                    radiusY: r * open,
+                                },
+                                brush,
+                            );
+                        }
+                    }
                 }
             }
             // The falk's beak is a face mark too.
@@ -1760,6 +1860,8 @@ impl RobotPainter {
                             rt.FillGeometry(&g, brush, None);
                         }
                     }
+                    // `face_marks` leaves the mouth out.
+                    Part::Mouth { .. } => {}
                 }
             }
             rt.SetTransform(&previous);
@@ -2275,6 +2377,56 @@ pub fn flush_amount(elapsed: Duration) -> f32 {
     (std::f32::consts::PI * ms as f32 / FLUSH_MS as f32).sin()
 }
 
+/// The sleep reminder's one-shot on its Drowsy, Yawn and Doze faces: it
+/// plays this long, then the face holds still.
+pub const DROWSE_MS: u64 = 6_000;
+/// The Drowsy face's two slow blinks: shut over these spans, in ms.
+const DROWSY_BLINKS: [(u64, u64); 2] = [(1_200, 1_440), (3_000, 3_240)];
+/// The doze's deepest sink: the whole mascot down this far (dip) and tilted
+/// this many degrees further, on top of the face's own.
+pub const DOZE_NOD_DIP: f32 = 2.5;
+pub const DOZE_TILT_DEG: f32 = 6.0;
+
+/// 0 to 1 over `t` from 0 to 1, easing in and out.
+fn ease(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// The Drowsy face's eyes are shut by its one-shot `elapsed` after it began.
+fn drowsy_blink(elapsed: Duration) -> bool {
+    let ms = elapsed.as_millis() as u64;
+    DROWSY_BLINKS.iter().any(|&(a, b)| (a..b).contains(&ms))
+}
+
+/// How far the yawn's mouth is open, 0 to 1, `elapsed` after it began:
+/// shut until 600 ms, open by 1 400, held to 2 400, shut again by 3 000.
+fn yawn_open(elapsed: Duration) -> f32 {
+    let ms = elapsed.as_millis() as f32;
+    if ms < 1_400.0 {
+        ease((ms - 600.0) / 800.0)
+    } else if ms < 2_400.0 {
+        1.0
+    } else {
+        1.0 - ease((ms - 2_400.0) / 600.0)
+    }
+}
+
+/// How deep the doze has sunk, 0 to 1, `elapsed` after it began: two
+/// 3 000 ms cycles of a 2 400 ms sink and a 200 ms jerk back, then 0.
+fn doze_sink(elapsed: Duration) -> f32 {
+    let ms = elapsed.as_millis() as u64;
+    if ms >= DROWSE_MS {
+        return 0.0;
+    }
+    let p = (ms % 3_000) as f32;
+    if p < 2_400.0 {
+        ease(p / 2_400.0)
+    } else {
+        (1.0 - (p - 2_400.0) / 200.0).max(0.0).powi(2)
+    }
+}
+
 /// The hover lift `elapsed` after the pointer arrived: eases up to `LIFT_PX`.
 pub fn lift_offset(elapsed: Duration) -> f32 {
     let t = (elapsed.as_millis() as f32 / LIFT_MS as f32).clamp(0.0, 1.0);
@@ -2399,7 +2551,7 @@ fn is_note(part: &Part) -> bool {
 /// The cream extras beside the head stay at their grid places.
 fn is_eye(part: &Part) -> bool {
     match *part {
-        Part::Pill { .. } => true,
+        Part::Pill { .. } | Part::Mouth { .. } => true,
         Part::Dot { ink, .. } => ink == Ink::Espresso,
         Part::Stroke(line) => line.ink() == Ink::Espresso,
         Part::Heart { .. } => false,
@@ -2628,6 +2780,8 @@ pub struct Brain {
     hop: Option<Instant>,
     /// The greeting's wave began; kept while the Wave face shows.
     wave: Option<Instant>,
+    /// The sleep reminder's one-shot began; kept while a sleepy face shows.
+    drowse: Option<Instant>,
     /// The notice token last observed (see `observe`).
     notice: Option<u64>,
     /// The face last drawn.
@@ -2648,6 +2802,7 @@ impl Brain {
             flush: None,
             hop: None,
             wave: None,
+            drowse: None,
             notice: None,
             shown: None,
         }
@@ -2757,7 +2912,8 @@ impl Brain {
     /// (and the octopus's flush) when motion is allowed. True when a bounce
     /// started. `notice` is a token that changes with every notice shown
     /// (`None` for any other view): a new token with a Happy face starts the
-    /// falk's hop, with the Wave face the greeting's wave. Hover never has one.
+    /// falk's hop, with the Wave face the greeting's wave, with a Drowsy, Yawn
+    /// or Doze face the sleep reminder's one-shot. Hover never has one.
     pub fn observe(
         &mut self,
         expr: Option<Expr>,
@@ -2776,8 +2932,12 @@ impl Brain {
             match expr {
                 Some(Expr::Happy) => self.hop = Some(now),
                 Some(Expr::Wave) => self.wave = Some(now),
+                Some(Expr::Drowsy | Expr::Yawn | Expr::Doze) => self.drowse = Some(now),
                 _ => {}
             }
+        }
+        if !matches!(expr, Some(Expr::Drowsy | Expr::Yawn | Expr::Doze)) {
+            self.drowse = None;
         }
         if expr != Some(Expr::Alert) {
             self.bounce = None;
@@ -2800,7 +2960,8 @@ impl Brain {
 
     /// Lift and bounce at `spot` and `now` (none without motion), the
     /// mascot's own one-shots (falk hop, falk and octopus wave, octopus
-    /// flush), and the blink.
+    /// flush), the sleepy faces' one-shot (Drowsy's slow blinks, the yawn, the
+    /// doze's sink), and the blink.
     pub fn pose(
         &self,
         spot: Spot,
@@ -2817,8 +2978,13 @@ impl Brain {
         }
         let since = |at: Instant| now.saturating_duration_since(at);
         let waves = mascot != Mascot::Cat;
+        let drowse = |face: Expr| self.drowse.filter(|_| self.shown == Some(face)).map(since);
+        let sink = drowse(Expr::Doze).map_or(0.0, doze_sink);
         Pose {
-            blink,
+            blink: blink || drowse(Expr::Drowsy).is_some_and(drowsy_blink),
+            yawn: drowse(Expr::Yawn).map(yawn_open),
+            nod_dip: DOZE_NOD_DIP * sink,
+            tilt_deg: DOZE_TILT_DEG * sink,
             lift_px: self.lift_since(spot).map_or(0.0, |at| lift_offset(since(at))),
             bounce_px: self.bounce.map_or(0.0, |at| bounce_offset(since(at))),
             hop_px: self
@@ -2850,7 +3016,8 @@ impl Brain {
                 || within(self.bounce, BOUNCE_MS * BOUNCES)
                 || (mascot == Mascot::Falk && within(self.hop, HOP_MS))
                 || (mascot != Mascot::Cat && within(self.wave, WAVE_MS))
-                || (mascot == Mascot::Octopus && within(self.flush, FLUSH_MS)))
+                || (mascot == Mascot::Octopus && within(self.flush, FLUSH_MS))
+                || within(self.drowse, DROWSE_MS))
     }
 
     /// The next moment the face may change by itself (falling asleep, a
@@ -3989,6 +4156,80 @@ mod tests {
     }
 
     #[test]
+    fn the_sleepy_faces_are_listed_and_named() {
+        assert_eq!(Expr::ALL.len(), 14);
+        assert!(Expr::Drowsy.blinks());
+        assert!(!Expr::Yawn.blinks() && !Expr::Doze.blinks());
+        for e in [Expr::Drowsy, Expr::Yawn, Expr::Doze] {
+            assert!(!e.looks(), "{e:?}");
+        }
+        assert_eq!(Expr::Drowsy.key(), Key::ExprDrowsy);
+        assert_eq!(Expr::Yawn.key(), Key::ExprYawn);
+        assert_eq!(Expr::Doze.key(), Key::ExprDoze);
+    }
+
+    #[test]
+    fn the_sleepy_faces_have_their_marks() {
+        let drowsy = face(Expr::Drowsy, false).parts;
+        for pill in open(5.0, 5.6, 2.5) {
+            assert!(drowsy.contains(&pill), "{pill:?}");
+        }
+        assert!(drowsy.contains(&Part::Stroke(Line::Lids)));
+        let yawn = face(Expr::Yawn, false).parts;
+        assert!(yawn.contains(&Part::Stroke(Line::Sleep)));
+        assert_eq!(yawn.iter().filter(|p| matches!(p, Part::Mouth { .. })).count(), 1);
+        let doze = face(Expr::Doze, false).parts;
+        assert!(doze.contains(&Part::Stroke(Line::Sleep)));
+        assert!(!doze.contains(&Part::Stroke(Line::Zz)));
+        assert!(face(Expr::Drowsy, true).parts.contains(&Part::Stroke(Line::Blink)));
+    }
+
+    #[test]
+    fn the_yawn_opens_then_closes() {
+        let t0 = Instant::now();
+        let mut b = Brain::new(t0);
+        let r = Spot::Notice(NoticeSort::Reminder);
+        b.observe(Some(Expr::Yawn), Some(1), t0, true);
+        let at = |ms| b.pose(r, t0 + Duration::from_millis(ms), true, false, Mascot::Cat);
+        assert_eq!(at(0).yawn, Some(0.0));
+        assert_eq!(at(1_800).yawn, Some(1.0));
+        assert_eq!(at(3_200).yawn, Some(0.0));
+        assert!(b.moving(r, t0 + Duration::from_millis(5_900), true, Mascot::Cat));
+        assert!(!b.moving(r, t0 + Duration::from_millis(6_100), true, Mascot::Cat));
+        // The still pose: the mouth fully open.
+        assert_eq!(b.pose(r, t0 + Duration::from_millis(1_800), false, false, Mascot::Cat).yawn, None);
+    }
+
+    #[test]
+    fn the_doze_sinks_and_jerks_back_twice() {
+        let t0 = Instant::now();
+        let mut b = Brain::new(t0);
+        let r = Spot::Notice(NoticeSort::Reminder);
+        b.observe(Some(Expr::Doze), Some(1), t0, true);
+        let at = |ms| b.pose(r, t0 + Duration::from_millis(ms), true, false, Mascot::Falk);
+        assert_eq!((at(0).nod_dip, at(0).tilt_deg), (0.0, 0.0));
+        let deep = at(2_400);
+        assert!(deep.nod_dip > 0.0 && deep.tilt_deg > 0.0);
+        for ms in (0..6_000).step_by(50) {
+            assert!(at(ms).nod_dip <= deep.nod_dip && at(ms).tilt_deg <= deep.tilt_deg, "{ms}");
+        }
+        assert!(at(1_200).nod_dip < deep.nod_dip);
+        assert_eq!((at(2_700).nod_dip, at(2_700).tilt_deg), (0.0, 0.0));
+        assert_eq!((at(5_400).nod_dip, at(5_400).tilt_deg), (deep.nod_dip, deep.tilt_deg));
+    }
+
+    #[test]
+    fn the_drowsy_face_blinks_slowly() {
+        let t0 = Instant::now();
+        let mut b = Brain::new(t0);
+        let r = Spot::Notice(NoticeSort::Reminder);
+        b.observe(Some(Expr::Drowsy), Some(1), t0, true);
+        let at = |ms| b.pose(r, t0 + Duration::from_millis(ms), true, false, Mascot::Octopus);
+        assert!(at(1_300).blink && at(3_100).blink);
+        assert!(!at(500).blink && !at(2_000).blink);
+    }
+
+    #[test]
     fn hover_lifts_two_pixels() {
         let t0 = Instant::now();
         let idle = Spot::Idle;
@@ -4504,7 +4745,7 @@ mod tests {
             }
         }
         assert!(Expr::ALL.contains(&Expr::Think));
-        assert_eq!(Expr::ALL.len(), 11);
+        assert_eq!(Expr::ALL.len(), 14);
         assert_eq!(Expr::ALL[10], Expr::Typing);
     }
 

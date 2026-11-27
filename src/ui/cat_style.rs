@@ -1912,7 +1912,7 @@ mod tests {
             for blink in [false, true] {
                 for part in face(expr, blink).parts {
                     let (ink, eye) = match part {
-                        Part::Pill { .. } => (None, true),
+                        Part::Pill { .. } | Part::Mouth { .. } => (None, true),
                         Part::Dot { ink, .. } => (Some(ink), ink == Ink::Espresso),
                         Part::Stroke(line) => (Some(line.ink()), line.ink() == Ink::Espresso),
                         Part::Heart { .. } => (None, false),
@@ -2309,7 +2309,7 @@ mod tests {
                     .parts
                     .iter()
                     .filter(|part| match part {
-                        Part::Pill { .. } => false,
+                        Part::Pill { .. } | Part::Mouth { .. } => false,
                         Part::Dot { ink, .. } => *ink == Ink::Cream,
                         Part::Stroke(line) => line.ink() == Ink::Cream,
                         Part::Heart { .. } => true,

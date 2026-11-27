@@ -1029,6 +1029,9 @@ keys! {
     ExprSad => "Lesu", "Low";
     ExprWave => "Menyapa", "Waving";
     ExprTyping => "Mengetik", "Typing";
+    ExprDrowsy => "Sayu", "Drowsy";
+    ExprYawn => "Menguap", "Yawning";
+    ExprDoze => "Terkantuk", "Dozing";
     ExprBlink => "Kedip", "Blink";
 
     // The Clipboard page, its notice and Settings → Clipboard.
