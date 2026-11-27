@@ -57,13 +57,14 @@ use crate::config::UiFont;
 use crate::i18n::{self, Key, Lang, text};
 use crate::notch_monitor::Display;
 use crate::notes::Note;
-use crate::theme::{self, CatColor};
+use crate::theme;
 use crate::widgets::art;
 use crate::widgets::checklist::{self, Edit};
 use crate::widgets::drop;
 use crate::widgets::mood::{self, Mood};
 use crate::widgets::edit::{self, EditEvent};
 use crate::widgets::clip_io;
+use crate::ui::cat_style::CatLook;
 use crate::ui::tooltip;
 use crate::widgets::fmt_pop;
 use crate::widgets::tips;
@@ -171,7 +172,8 @@ pub struct Ctx<'a> {
     pub displays: &'a [Display],
     pub lang: Lang,
     pub font: UiFont,
-    pub coat: CatColor,
+    /// The chosen mascot and its coat, for the peek.
+    pub look: CatLook,
     /// Fades and the highlight move (Motion Full, Windows animations on);
     /// otherwise they are instant.
     pub animate: bool,
@@ -704,7 +706,7 @@ struct State {
     res: Option<Res>,
     font: UiFont,
     lang: Lang,
-    coat: CatColor,
+    look: CatLook,
     animate: bool,
     prefs: WidgetPrefs,
     displays: Vec<Display>,
@@ -822,7 +824,7 @@ impl WidgetHost {
                 res: None,
                 font: UiFont::Sans,
                 lang: Lang::Id,
-                coat: CatColor::Terracotta,
+                look: CatLook::default(),
                 animate: true,
                 prefs: WidgetPrefs::default(),
                 displays: Vec::new(),
@@ -1395,7 +1397,7 @@ fn sync(ctx: &Ctx) {
     let _ = with(|s| {
         s.displays = ctx.displays.to_vec();
         s.lang = ctx.lang;
-        s.coat = ctx.coat;
+        s.look = ctx.look;
         s.animate = ctx.animate;
         let prefs_changed = s.prefs != ctx.prefs;
         s.prefs = ctx.prefs;
@@ -1865,7 +1867,7 @@ fn draw(s: &mut State, i: usize) {
         wins,
         prefs,
         lang,
-        coat,
+        look,
         peek,
         images_dir,
         last_hl,
@@ -2056,7 +2058,7 @@ fn draw(s: &mut State, i: usize) {
         highlight,
         drop_hover: w.drop_hover,
         peek: peek_on.then(|| mood::expr(cat_mood)),
-        cat: paint::peek_look(*coat),
+        cat: paint::peek_look(*look),
         frame_accent: tones.accent,
         stack,
         tuck: tuck_scene,
@@ -5301,7 +5303,7 @@ mod tests {
             displays,
             lang: Lang::Id,
             font: UiFont::Sans,
-            coat: CatColor::Terracotta,
+            look: CatLook::default(),
             animate: false,
         }
     }

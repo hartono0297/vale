@@ -181,8 +181,12 @@ gap since then (seven of them).
 ## Assumptions
 
 - No drag-out-of-the-notch in phase 1.
-- The cat peek paints the coat only, no accessory (a hat would be cut by the
-  note's edge); on the note with an overdue reminder, else the note touched last
+- The cat peek paints the chosen mascot (cat, falk or octopus) in its coat,
+  no accessory (a hat would be cut by the note's edge): `Ctx.look` is
+  `CatLook::of(config)`, `paint::peek_look` drops only the accessory (until
+  2026-11-27 only `cat_color` was passed, so it was always the cat). The falk's
+  beak sits under the paper and its crest tip is clipped ~1 dip by the 30 dip
+  room (owner accepted, visual `docs/design/sticky-peek-maskot.html`); on the note with an overdue reminder, else the note touched last
   (run A: Clock, Happy, Asleep, Looking, Idle moods), a still picture.
 - Delete from the right-click menu is two clicks (the menu item reads "Klik
   lagi untuk hapus" on the next opening and the footer says it); it disarms on

@@ -33,6 +33,7 @@ use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
 use super::App;
 use crate::i18n::{self, Key, tr};
 use crate::model::Event;
+use crate::ui::cat_style::CatLook;
 use crate::widgets::apply::{apply, set_reminder, settle, stack_out, sticky_for};
 use crate::widgets::cliptext;
 use crate::widgets::host::{Ctx, WidgetEvent, WidgetHost};
@@ -128,7 +129,7 @@ impl App {
             displays,
             lang: i18n::lang(),
             font: config.font,
-            coat: config.cat_color,
+            look: CatLook::of(config),
             animate,
         });
         // A reminder may have changed: the notices are settled and the one
