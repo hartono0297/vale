@@ -28,6 +28,15 @@ pub fn next_ms(hour: u32, min: u32, sec: u32) -> u32 {
     (target - now) * 1000 + ARM_MARGIN_MS
 }
 
+/// Milliseconds to arm the timer: soon when the clock is inside a window not yet done, else `next_ms`.
+pub fn arm_ms(hour: u32, min: u32, sec: u32, done_this_hour: bool) -> u32 {
+    if in_window(hour, min, sec).is_some() && !done_this_hour {
+        ARM_MARGIN_MS
+    } else {
+        next_ms(hour, min, sec)
+    }
+}
+
 /// The reminder hour and time since it started, when inside the window.
 pub fn in_window(hour: u32, min: u32, sec: u32) -> Option<(u8, Duration)> {
     if !is_reminder_hour(hour) {
@@ -116,6 +125,16 @@ mod tests {
         assert_eq!(next_ms(3, 30, 0), 1_801_000);
         assert_eq!(next_ms(4, 0, 0), 75_601_000);
         assert_eq!(next_ms(23, 0, 0), 7_201_000);
+    }
+
+    #[test]
+    fn arm_ms_retries_at_once_inside_an_unfinished_window() {
+        assert_eq!(arm_ms(1, 3, 0, false), 1_000);
+        assert_eq!(arm_ms(1, 3, 0, true), 3_421_000);
+        assert_eq!(arm_ms(2, 20, 0, false), 2_401_000);
+        assert_eq!(arm_ms(0, 50, 0, false), 601_000);
+        assert_eq!(arm_ms(4, 9, 59, false), 1_000);
+        assert_eq!(arm_ms(4, 10, 0, false), 75_001_000);
     }
 
     #[test]

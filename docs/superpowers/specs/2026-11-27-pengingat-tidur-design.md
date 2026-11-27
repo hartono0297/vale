@@ -76,14 +76,17 @@ The owner left the how to me ("u atur terbaik gimana"); approach 1 is my call.
 Timer: armed while `config.sleep_reminder && config.robot` for the next hour in
 {1, 2, 3, 4} at hh:00:01 (same 1 s margin as `HOUR_ARM_MARGIN`; after 04:00 the
 next is 01:00 tomorrow). Re-synced on: the toggle, the mascot on/off, a clock
-jump (`on_clock_jump`: stop + sync, no catch-up), and after each hour is done.
+jump or wake (`on_clock_jump`: stop + sync), and after each hour is done. A
+clock jump or a wake re-arms; if the clock is still inside an hour's window that
+is not yet done (shown or dropped), it tries again at once; otherwise the next
+hour (no catch-up after the window).
 
 On fire, the reminder shows at the first check where all of these hold, checked
 now and then every 30 s until 10 min past the hour (`HOUR_WINDOW`,
 `HOUR_RETRY`):
 
 - the local time is inside [hh:00, hh:10) for hh in 1..=4 (a late fire after a
-  wake or clock change shows nothing; no catch-up)
+  wake or clock change after the window shows nothing; no catch-up)
 - session not locked and display on (`screen_away()` false)
 - no fullscreen window
 - no recording (sound or screen)

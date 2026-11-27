@@ -3892,25 +3892,26 @@ fn cat_page(b: &mut Builder, s: &State) {
     titled(b, Key::GroupGreeting);
     let line = crate::i18n::greeting_periods_line(b.lang);
     let periods = b.wrap(&line, Font::Desc, b.g.content_w - 2.0 * INSET);
-    let card = b.card(2.0 * ROW_H + note_h(periods.len()));
+    let n_lines = periods.len();
+    let card = b.card(2.0 * ROW_H + note_h(n_lines));
     let x = b.toggle_if(Hit::Greeting, b.g.right, cy(card.y), s.greeting, on);
     let desc = Some((b.t(Key::MorningGreetingDesc), Tone::Secondary));
     b.row_text(card, card.y, b.t(Key::CatGreeting), desc, false, x);
     b.divider(card, card.y + ROW_H);
-    let y = card.y + ROW_H;
-    let x = b.toggle_if(Hit::SleepReminder, b.g.right, cy(y), s.sleep_reminder, on);
-    let desc = Some((b.t(Key::SleepReminderDesc), Tone::Secondary));
-    b.row_text(card, y, b.t(Key::SleepReminder), desc, false, x);
-    b.divider(card, y + ROW_H);
     for (i, line) in periods.into_iter().enumerate() {
         let rect = Rect {
             x: card.x + INSET,
-            y: card.y + 2.0 * ROW_H + NOTE_PAD + i as f32 * DESC_LINE_H,
+            y: card.y + ROW_H + NOTE_PAD + i as f32 * DESC_LINE_H,
             w: b.g.content_w - 2.0 * INSET,
             h: 16.0,
         };
         b.text(rect, line, Font::Desc, Tone::Secondary, Align::Left);
     }
+    let y = card.y + ROW_H + note_h(n_lines);
+    b.divider(card, y);
+    let x = b.toggle_if(Hit::SleepReminder, b.g.right, cy(y), s.sleep_reminder, on);
+    let desc = Some((b.t(Key::SleepReminderDesc), Tone::Secondary));
+    b.row_text(card, y, b.t(Key::SleepReminder), desc, false, x);
 }
 
 /// "Otomatis": "Animasi maskot otomatis" with an info button at its right,
@@ -12844,22 +12845,28 @@ mod tests {
                 // Sapaan: the toggle, then the five periods as one wrapped
                 // static line under it, inside the last card.
                 assert_eq!(toggle(Hit::Greeting), Some((true, true)));
-                // "Pengingat tidur": a second toggle row under Sapaan, above
-                // the periods note, with its own description.
+                // "Pengingat tidur": a second toggle row under the periods
+                // note, with its own description.
                 let card = *l.cards.last().unwrap();
                 assert_eq!(toggle(Hit::SleepReminder), Some((true, true)));
                 let label = text(lang, Key::SleepReminder);
                 let row = l.texts.iter().find(|t| t.text == label).unwrap();
                 assert!(inside(row.rect, card));
-                assert!(row.rect.y >= card.y + ROW_H && row.rect.y < card.y + 2.0 * ROW_H);
+                assert!(row.rect.y >= card.y + ROW_H);
                 assert!(says(Key::SleepReminderDesc), "{lang:?}");
                 let periods = crate::i18n::greeting_periods_line(lang);
                 let lines: Vec<&Text> = l
                     .texts
                     .iter()
-                    .filter(|t| inside(t.rect, card) && t.rect.y >= card.y + 2.0 * ROW_H)
+                    .filter(|t| {
+                        inside(t.rect, card)
+                            && t.rect.y >= card.y + ROW_H
+                            && t.rect.y < row.rect.y
+                            && periods.contains(t.text.as_str())
+                    })
                     .collect();
                 assert!(!lines.is_empty());
+                assert!(lines.iter().all(|t| t.rect.bottom() <= row.rect.y));
                 assert_eq!(
                     lines
                         .iter()
@@ -13861,18 +13868,25 @@ mod tests {
                 monitors: three(),
                 ..states()[0].clone()
             };
-            // Kucing: the Sapaan periods line, then the accessory tiles.
+            // Kucing: the Sapaan periods line under its toggle, then the
+            // sleep row, then the accessory tiles.
             let l = layout(Section::Cat, &s, &Estimate);
             let card = *l.cards.last().unwrap();
+            let periods = crate::i18n::greeting_periods_line(lang);
             let lines: Vec<&Text> = l
                 .texts
                 .iter()
-                .filter(|t| inside(t.rect, card) && t.rect.y >= card.y + 2.0 * ROW_H)
+                .filter(|t| {
+                    inside(t.rect, card)
+                        && t.rect.y >= card.y + ROW_H
+                        && periods.contains(t.text.as_str())
+                })
                 .collect();
-            assert!(divider_at(&l, card.y + 2.0 * ROW_H), "{lang:?}");
-            assert_eq!(lines[0].rect.y, card.y + 2.0 * ROW_H + NOTE_PAD, "{lang:?}");
+            assert!(divider_at(&l, card.y + ROW_H), "{lang:?}");
+            assert_eq!(lines[0].rect.y, card.y + ROW_H + NOTE_PAD, "{lang:?}");
             let last = lines.last().unwrap().rect;
-            assert_eq!(card.bottom(), last.bottom() + NOTE_PAD, "{lang:?}");
+            assert!(divider_at(&l, last.bottom() + NOTE_PAD), "{lang:?}");
+            assert_eq!(card.bottom(), last.bottom() + NOTE_PAD + ROW_H, "{lang:?}");
             let tiles = l
                 .controls
                 .iter()

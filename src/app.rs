@@ -642,6 +642,7 @@ pub fn run(media_log_flag: bool, start: Start) {
             hour_timer: false,
             hour_deadline: None,
             sleep_timer: false,
+            sleep_done: None,
             greeting_up: false,
             pending: None,
             play_clock_jumped: false,
@@ -799,6 +800,7 @@ pub fn run(media_log_flag: bool, start: Start) {
         app.update_start(&start);
         app.rec_split_folders();
         app.transcribe_init();
+        app.sync_mascot_timer(now);
         unsafe {
             SetTimer(Some(hwnd), TIMER_SYSTEM, SYSTEM_MS, None);
             SetTimer(Some(hwnd), TIMER_BATTERY, BATTERY_MS, None);
@@ -1161,6 +1163,8 @@ struct App {
     hour_deadline: Option<Instant>,
     /// `TIMER_SLEEP_REMINDER` is set.
     sleep_timer: bool,
+    /// Local date and reminder hour already shown or dropped (not persisted).
+    sleep_done: Option<(NaiveDate, u8)>,
     /// A greeting notice was on screen at the last refresh.
     greeting_up: bool,
     /// The next fire of `TIMER_MASCOT_PLAY` is this moment's (the greeting's,
@@ -2525,7 +2529,8 @@ impl App {
         match timer_change(self.sleep_timer, wanted) {
             Some(true) => {
                 let t = Local::now();
-                let ms = sleep_reminder::next_ms(t.hour(), t.minute(), t.second());
+                let done = self.sleep_done == Some((t.date_naive(), t.hour() as u8));
+                let ms = sleep_reminder::arm_ms(t.hour(), t.minute(), t.second(), done);
                 self.set_sleep_timer(ms);
             }
             Some(false) => self.kill_sleep_timer(),
@@ -2592,13 +2597,17 @@ impl App {
                     View::Notice(n) if matches!(n.kind, NoticeKind::SleepReminder { .. })
                 );
                 if shown {
+                    self.sleep_done = Some((t.date_naive(), hour));
                     self.sync_sleep_timer();
                 } else {
                     self.set_sleep_timer(retry);
                 }
             }
             sleep_reminder::Step::Retry => self.set_sleep_timer(retry),
-            sleep_reminder::Step::Drop => self.sync_sleep_timer(),
+            sleep_reminder::Step::Drop => {
+                self.sleep_done = Some((t.date_naive(), hour));
+                self.sync_sleep_timer();
+            }
         }
     }
 
