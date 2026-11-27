@@ -183,6 +183,7 @@ pub enum Action {
     MascotPlay(MascotPlay),
     MascotHours(u8),
     Greeting(bool),
+    SleepReminder(bool),
     /// Settings → Maskot: the mascot, each mascot's own coat, the accessory
     /// (shared by all three), "Ikuti kursor" and "Mengecil jadi mata".
     Mascot(Mascot),
@@ -603,6 +604,7 @@ pub struct Model {
     pub mascot_play: MascotPlay,
     pub mascot_hours: u8,
     pub greeting: bool,
+    pub sleep_reminder: bool,
     pub cat_color: CatColor,
     /// Which mascot, and the falk's and octopus's coats.
     pub mascot: Mascot,
@@ -704,6 +706,7 @@ impl Model {
             mascot_play: cfg.mascot_play,
             mascot_hours: cfg.mascot_hours,
             greeting: cfg.morning_greeting,
+            sleep_reminder: cfg.sleep_reminder,
             cat_color: cfg.cat_color,
             mascot: cfg.mascot,
             falk_color: cfg.falk_color,
@@ -1852,6 +1855,7 @@ impl Settings {
             play_info_open: self.play_info_open,
             mascot_hours: m.mascot_hours,
             greeting: m.greeting,
+            sleep_reminder: m.sleep_reminder,
             cat_color: m.cat_color,
             mascot: m.mascot,
             falk_color: m.falk_color,
@@ -2187,6 +2191,14 @@ impl Settings {
         if old.greeting != new.greeting {
             self.anims
                 .slide_toggle(Hit::Greeting, old.greeting, new.greeting, now);
+        }
+        if old.sleep_reminder != new.sleep_reminder {
+            self.anims.slide_toggle(
+                Hit::SleepReminder,
+                old.sleep_reminder,
+                new.sleep_reminder,
+                now,
+            );
         }
         if old.mole_protect != new.mole_protect {
             self.anims
@@ -2792,6 +2804,7 @@ impl Settings {
                 after
             }
             Hit::Greeting => post(Action::Greeting(!m.greeting)),
+            Hit::SleepReminder => post(Action::SleepReminder(!m.sleep_reminder)),
             Hit::Mascot(v) if v != m.mascot => post(Action::Mascot(v)),
             Hit::CatColor(v) if v != m.cat_color => post(Action::CatColor(v)),
             Hit::FalkColor(v) if v != m.falk_color => post(Action::FalkColor(v)),
@@ -5005,6 +5018,7 @@ pub fn run_demo(args: &[String]) {
             Action::MascotPlay(v) => m.mascot_play = v,
             Action::MascotHours(v) => m.mascot_hours = v,
             Action::Greeting(v) => m.greeting = v,
+            Action::SleepReminder(v) => m.sleep_reminder = v,
             Action::Mascot(_)
             | Action::CatColor(_)
             | Action::FalkColor(_)

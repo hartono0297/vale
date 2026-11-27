@@ -95,6 +95,11 @@ pub enum NoticeKind {
     Greeting {
         period: DayPeriod,
     },
+    /// The mascot's nudge to bed at `hour` (1 to 4, by the clock): it gets
+    /// sleepier each hour. Shows `SLEEP_REMINDER_DURATION`, never in fullscreen.
+    SleepReminder {
+        hour: u8,
+    },
     /// A fixed drive below the disk limit, or RAM above its limit for a
     /// minute (`system::WarnMonitor`). Clicking it opens the panel on the
     /// System page.

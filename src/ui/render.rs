@@ -1945,11 +1945,11 @@ impl Renderer {
         let name = i18n::text(lang, i18n::Key::SourceVale);
         self.text(name, &self.fonts.heading, title, 1.0);
         let pose = Pose::default();
-        // Six to a row: the eleven faces fit the two rows the sizes row
-        // leaves room for (the typing cat's laptop needs the wider cells).
-        let col = (card.w - 40.0) / 6.0;
+        // Seven to a row: the fourteen faces fit the two rows the sizes row
+        // leaves room for.
+        let col = (card.w - 40.0) / 7.0;
         for (i, expr) in Expr::ALL.into_iter().enumerate() {
-            let (row, c) = (i / 6, i % 6);
+            let (row, c) = (i / 7, i % 7);
             let x = card.x + 20.0 + c as f32 * col;
             let y = card.y + 56.0 + row as f32 * 118.0;
             let cell = Rect {

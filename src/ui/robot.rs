@@ -1992,6 +1992,8 @@ pub enum NoticeSort {
     /// A Mole clean failed or stopped.
     MoleFailed,
     Greeting(DayPeriod),
+    /// The sleep reminder of this hour (1 to 4).
+    SleepReminder(u8),
     /// "Disalin" after a copy.
     Copied,
     /// The preview of a copy made elsewhere (text or files): Bata happy.
@@ -2041,6 +2043,7 @@ impl NoticeSort {
             NoticeKind::MoleDone => NoticeSort::MoleDone,
             NoticeKind::MoleFailed => NoticeSort::MoleFailed,
             NoticeKind::Greeting { period } => NoticeSort::Greeting(*period),
+            NoticeKind::SleepReminder { hour } => NoticeSort::SleepReminder(*hour),
             NoticeKind::Copied => NoticeSort::Copied,
             NoticeKind::ClipPreview { .. } => NoticeSort::ClipPreview,
             NoticeKind::Screenshot { .. } => NoticeSort::Screenshot,
@@ -2197,6 +2200,12 @@ pub fn choose_expr(i: &RobotInputs) -> Option<Expr> {
                 | NoticeSort::RecFailed
                 | NoticeSort::UpdateFailed => Some(Expr::Sad),
                 NoticeSort::Greeting(period) => Some(greeting::face(period)),
+                NoticeSort::SleepReminder(hour) => Some(match hour {
+                    1 => Expr::Drowsy,
+                    2 => Expr::Yawn,
+                    3 => Expr::Doze,
+                    _ => Expr::Sleep,
+                }),
             };
         }
         compact => compact,
@@ -3595,6 +3604,10 @@ mod tests {
             (NoticeSort::Greeting(DayPeriod::Afternoon), Expr::Wave),
             (NoticeSort::Greeting(DayPeriod::Evening), Expr::Happy),
             (NoticeSort::Greeting(DayPeriod::Night), Expr::Sleep),
+            (NoticeSort::SleepReminder(1), Expr::Drowsy),
+            (NoticeSort::SleepReminder(2), Expr::Yawn),
+            (NoticeSort::SleepReminder(3), Expr::Doze),
+            (NoticeSort::SleepReminder(4), Expr::Sleep),
             (NoticeSort::Copied, Expr::Happy),
             (NoticeSort::ClipPreview, Expr::Happy),
             (NoticeSort::Screenshot, Expr::Happy),
@@ -3713,6 +3726,10 @@ mod tests {
                 period: DayPeriod::Evening
             }))),
             Spot::Notice(NoticeSort::Greeting(DayPeriod::Evening))
+        );
+        assert_eq!(
+            Spot::of(&View::Notice(n(NoticeKind::SleepReminder { hour: 3 }))),
+            Spot::Notice(NoticeSort::SleepReminder(3))
         );
         assert_eq!(Spot::of(&View::MediaLyric), Spot::Lyric);
         assert_eq!(Spot::of(&View::Panel(crate::model::Page::Cli)), Spot::Panel);

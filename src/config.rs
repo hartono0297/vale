@@ -97,6 +97,8 @@ pub struct Config {
     /// The cat's greeting by time of day: once per period per day, with a
     /// summary of the events and reminders that fit the period.
     pub morning_greeting: bool,
+    /// The mascot nudges the owner to bed at 01:00 to 04:00 (a notice).
+    pub sleep_reminder: bool,
     /// The day and period the greeting last showed, "2026-10-31 evening". A
     /// plain old "2026-10-27" reads as that day's Morning; an unreadable
     /// value reads as none.
@@ -843,6 +845,7 @@ impl Default for Config {
             robot_animation: Motion::Full,
             robot_sleep_minutes: 10,
             morning_greeting: true,
+            sleep_reminder: true,
             last_greeting: None,
             media_log: false,
             disk_warn_gb: 10,
@@ -1003,6 +1006,7 @@ pub fn merge_owned(disk: Config, mem: &Config) -> Config {
         robot_animation: mem.robot_animation,
         robot_sleep_minutes: mem.robot_sleep_minutes,
         morning_greeting: mem.morning_greeting,
+        sleep_reminder: mem.sleep_reminder,
         last_greeting: mem.last_greeting,
         clean_mode: mem.clean_mode,
         mole_protect_defaults: mem.mole_protect_defaults,
@@ -1242,6 +1246,18 @@ mod tests {
     }
 
     #[test]
+    fn sleep_reminder_defaults_on_and_survives_merge_owned() {
+        assert!(Config::default().sleep_reminder);
+        let c: Config = serde_json::from_str("{}").unwrap();
+        assert!(c.sleep_reminder);
+        let mem = Config {
+            sleep_reminder: false,
+            ..Config::default()
+        };
+        assert!(!merge_owned(Config::default(), &mem).sleep_reminder);
+    }
+
+    #[test]
     fn robot_fields_round_trip_and_hand_edits_fall_back() {
         let c = Config {
             robot: false,
@@ -1397,6 +1413,7 @@ mod tests {
             robot_animation: Motion::Off,
             robot_sleep_minutes: 5,
             morning_greeting: false,
+            sleep_reminder: false,
             last_greeting: mark(2026, 1, 2, DayPeriod::Night),
             media_log: true,
             disk_warn_gb: 25,

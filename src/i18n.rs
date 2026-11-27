@@ -1330,6 +1330,9 @@ keys! {
     CatDance => "Joget ikut musik", "Dance to music";
     CatDanceDesc => "Mengangguk ikut irama saat musik diputar", "Nods to the beat while music plays";
     CatGreeting => "Sapaan", "Greeting";
+    SleepReminder => "Pengingat tidur", "Sleep reminder";
+    SleepReminderDesc => "Jam 01.00 sampai 04.00, maskot ngajak tidur",
+        "1 to 4 AM, the mascot nudges you to bed";
 
     // Monitor choice (Settings -> Tampilan -> Notch, the tray, the Identify plates).
     MonitorChoice => "Monitor", "Monitor";
@@ -1805,6 +1808,34 @@ pub fn greeting_title(lang: Lang, period: DayPeriod) -> &'static str {
         (DayPeriod::Evening, Lang::En) => "Good evening",
         (DayPeriod::Night, Lang::Id) => "Masih begadang?",
         (DayPeriod::Night, Lang::En) => "Up late?",
+    }
+}
+
+/// The sleep reminder's title for `hour` (1 to 3; anything else reads as 4).
+pub fn sleep_reminder_title(lang: Lang, hour: u8) -> &'static str {
+    match (hour, lang) {
+        (1, Lang::Id) => "Sudah jam 1",
+        (1, Lang::En) => "It's 1 AM",
+        (2, Lang::Id) => "Jam 2, masih melek?",
+        (2, Lang::En) => "2 AM, still up?",
+        (3, Lang::Id) => "Jam 3 pagi",
+        (3, Lang::En) => "3 AM",
+        (_, Lang::Id) => "Sebentar lagi subuh",
+        (_, Lang::En) => "Almost dawn",
+    }
+}
+
+/// The sleep reminder's body for `hour`, same rule as the title.
+pub fn sleep_reminder_body(lang: Lang, hour: u8) -> &'static str {
+    match (hour, lang) {
+        (1, Lang::Id) => "Yuk mulai siap-siap tidur",
+        (1, Lang::En) => "Time to start winding down",
+        (2, Lang::Id) => "Tidur yuk, besok lanjut lagi",
+        (2, Lang::En) => "Let's sleep, pick it up tomorrow",
+        (3, Lang::Id) => "Aku sudah ngantuk berat. Tidur yuk",
+        (3, Lang::En) => "I can't keep my eyes open. Bed?",
+        (_, Lang::Id) => "Tidur dulu, walau sebentar",
+        (_, Lang::En) => "Get some sleep, even a little",
     }
 }
 
@@ -4815,6 +4846,10 @@ mod tests {
                 all.push(hours_label(lang, step));
                 all.push(hours_line(lang, step));
             }
+            for hour in 1..=4 {
+                all.push(sleep_reminder_title(lang, hour).into());
+                all.push(sleep_reminder_body(lang, hour).into());
+            }
             for period in ALL_PERIODS {
                 all.push(greeting_title(lang, period).into());
                 all.push(greeting_period_name(lang, period).into());
@@ -5224,6 +5259,35 @@ mod tests {
                 "Maskot bermain tepat di jam bulat, dihitung dari 00.00",
                 "The mascot plays on round hours, counted from 00:00"
             ]
+        );
+    }
+
+    #[test]
+    fn the_sleep_reminder_texts_in_both_languages() {
+        let rows = [
+            (1, "Sudah jam 1", "Yuk mulai siap-siap tidur", "It's 1 AM", "Time to start winding down"),
+            (2, "Jam 2, masih melek?", "Tidur yuk, besok lanjut lagi", "2 AM, still up?", "Let's sleep, pick it up tomorrow"),
+            (3, "Jam 3 pagi", "Aku sudah ngantuk berat. Tidur yuk", "3 AM", "I can't keep my eyes open. Bed?"),
+            (4, "Sebentar lagi subuh", "Tidur dulu, walau sebentar", "Almost dawn", "Get some sleep, even a little"),
+        ];
+        for (hour, it, ib, et, eb) in rows {
+            assert_eq!(sleep_reminder_title(Lang::Id, hour), it);
+            assert_eq!(sleep_reminder_body(Lang::Id, hour), ib);
+            assert_eq!(sleep_reminder_title(Lang::En, hour), et);
+            assert_eq!(sleep_reminder_body(Lang::En, hour), eb);
+        }
+        // Outside 1..=3 reads as 4.
+        assert_eq!(sleep_reminder_title(Lang::En, 0), "Almost dawn");
+        assert_eq!(sleep_reminder_body(Lang::Id, 9), "Tidur dulu, walau sebentar");
+        assert_eq!(text(Lang::Id, Key::SleepReminder), "Pengingat tidur");
+        assert_eq!(text(Lang::En, Key::SleepReminder), "Sleep reminder");
+        assert_eq!(
+            text(Lang::Id, Key::SleepReminderDesc),
+            "Jam 01.00 sampai 04.00, maskot ngajak tidur"
+        );
+        assert_eq!(
+            text(Lang::En, Key::SleepReminderDesc),
+            "1 to 4 AM, the mascot nudges you to bed"
         );
     }
 

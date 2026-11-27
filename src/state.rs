@@ -28,6 +28,8 @@ pub const ACTIVITY_LINGER: Duration = Duration::from_secs(4);
 pub const NOTICE_DURATION: Duration = Duration::from_secs(5);
 /// The morning greeting goes a little sooner.
 pub const GREETING_DURATION: Duration = Duration::from_secs(4);
+/// The sleep reminder stays long enough to read the nudge.
+pub const SLEEP_REMINDER_DURATION: Duration = Duration::from_secs(6);
 /// "Disalin" is only a confirmation.
 pub const COPIED_DURATION: Duration = Duration::from_millis(1500);
 /// The copy preview (text lines, a thumbnail) needs a little more to be read.
@@ -53,6 +55,7 @@ pub const SHOT_LEAVE_GRACE: Duration = Duration::from_secs(2);
 fn duration_of(notice: &Notice) -> Duration {
     match notice.kind {
         NoticeKind::Greeting { .. } => GREETING_DURATION,
+        NoticeKind::SleepReminder { .. } => SLEEP_REMINDER_DURATION,
         NoticeKind::Copied => COPIED_DURATION,
         NoticeKind::ClipPreview { .. } => CLIP_NOTICE_DURATION,
         NoticeKind::Screenshot { secs, .. } => Duration::from_secs(u64::from(secs)),
@@ -767,7 +770,7 @@ impl IslandState {
                 }
                 // Never over a fullscreen app (`App` checks first and tries
                 // again later; this only guards a race).
-                NoticeKind::Greeting { .. } => {
+                NoticeKind::Greeting { .. } | NoticeKind::SleepReminder { .. } => {
                     if !self.fullscreen {
                         self.queue.push_back(notice);
                     }
@@ -3880,6 +3883,67 @@ mod tests {
         let effects = s.apply(Event::Click(Hit::Body), t0);
         assert!(effects.is_empty());
         assert_eq!(s.view(), View::Idle);
+    }
+
+    fn sleep_reminder() -> Notice {
+        Notice {
+            key: "sleep-reminder".into(),
+            source: "Vale".into(),
+            title: "Jam 2, masih melek?".into(),
+            body: "Tidur yuk, besok lanjut lagi".into(),
+            kind: NoticeKind::SleepReminder { hour: 2 },
+        }
+    }
+
+    #[test]
+    fn a_sleep_reminder_shows_six_seconds() {
+        assert_eq!(duration_of(&sleep_reminder()), secs(6));
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Notice(sleep_reminder()), t0);
+        assert_eq!(s.view(), View::Notice(sleep_reminder()));
+        assert_eq!(s.next_deadline(), Some(t0 + secs(6)));
+        s.apply(Event::Tick, t0 + secs(6));
+        assert_eq!(s.view(), View::Idle);
+    }
+
+    #[test]
+    fn a_sleep_reminder_is_dropped_in_fullscreen() {
+        let t0 = Instant::now();
+        let mut s = st();
+        s.apply(Event::Fullscreen(true), t0);
+        s.apply(Event::Notice(sleep_reminder()), t0);
+        assert_eq!(s.view(), View::Hidden);
+        s.apply(Event::Fullscreen(false), t0);
+        assert_eq!(s.view(), View::Idle);
+        // A click dismisses it like any timed notice.
+        s.apply(Event::Notice(sleep_reminder()), t0);
+        let effects = s.apply(Event::Click(Hit::Body), t0);
+        assert!(effects.is_empty());
+        assert_eq!(s.view(), View::Idle);
+    }
+
+    #[test]
+    fn a_sleep_reminder_shows_over_a_sticky_notice() {
+        let t0 = Instant::now();
+        let mut s = st();
+        let sticky = Notice {
+            key: "claude-waiting".into(),
+            source: "Claude".into(),
+            title: "Claude butuh respon".into(),
+            body: "x".into(),
+            kind: NoticeKind::ClaudeWaiting {
+                session_id: "s1".into(),
+            },
+        };
+        s.apply(Event::Notice(sticky.clone()), t0);
+        s.apply(Event::Tick, t0 + secs(5));
+        assert_eq!(s.view(), View::Notice(sticky.clone()));
+        let t1 = t0 + secs(60);
+        s.apply(Event::Notice(sleep_reminder()), t1);
+        assert_eq!(s.view(), View::Notice(sleep_reminder()));
+        s.apply(Event::Tick, t1 + secs(6));
+        assert_eq!(s.view(), View::Notice(sticky));
     }
 
     // ---- v1 behaviour, adapted to v2 views ----
@@ -12589,6 +12653,7 @@ mod tests {
             NoticeKind::Greeting {
                 period: crate::greeting::DayPeriod::Morning,
             },
+            NoticeKind::SleepReminder { hour: 2 },
             NoticeKind::SystemLow,
             NoticeKind::CleanDone,
             NoticeKind::MoleDone,

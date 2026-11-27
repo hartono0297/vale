@@ -704,6 +704,8 @@ enum DemoNotice {
     AppNoLogo,
     /// The morning greeting.
     Greeting,
+    /// The mascot's nudge to bed (`DI_SLEEP_HOUR`, 1 to 4).
+    SleepReminder,
     /// Claude at work (the design's "Claude Code" state).
     ClaudeWorking,
     /// Disk C: low (keputusan-v3.1.html p4): Bata low, "Buka".
@@ -1591,7 +1593,7 @@ const fn arrange_page(name: &'static str, which: ArrangeDemo) -> Scene {
     }
 }
 
-const SCENES: [Scene; 247] = [
+const SCENES: [Scene; 248] = [
     Scene {
         name: "idle",
         kind: ShapeKind::Idle,
@@ -2360,6 +2362,12 @@ const SCENES: [Scene; 247] = [
         ShapeKind::Notice,
         View0::Notice(DemoNotice::Greeting),
         Expr::Wave,
+    ),
+    bata(
+        "bata-pengingat-tidur",
+        ShapeKind::Notice,
+        View0::Notice(DemoNotice::SleepReminder),
+        Expr::Yawn,
     ),
     Scene {
         pomo: Pomo::Running,
@@ -4213,6 +4221,21 @@ fn demo_notice(which: DemoNotice, renderer: &Renderer) -> Notice {
                 crate::i18n::greeting_title(lang, period),
                 crate::i18n::greeting_body(lang, period, counts),
                 NoticeKind::Greeting { period },
+            )
+        }
+        DemoNotice::SleepReminder => {
+            // DI_SLEEP_HOUR: 1 to 4 (default 2).
+            let hour = std::env::var("DI_SLEEP_HOUR")
+                .ok()
+                .and_then(|v| v.trim().parse::<u8>().ok())
+                .filter(|h| (1..=4).contains(h))
+                .unwrap_or(2);
+            let lang = crate::i18n::lang();
+            notice(
+                tr(Key::SourceVale),
+                crate::i18n::sleep_reminder_title(lang, hour),
+                crate::i18n::sleep_reminder_body(lang, hour).to_string(),
+                NoticeKind::SleepReminder { hour },
             )
         }
         DemoNotice::Copied => notice(

@@ -576,6 +576,8 @@ pub enum Hit {
     MascotHours(u8),
     /// "Sapaan".
     Greeting,
+    /// "Pengingat tidur", the second row of the Sapaan card.
+    SleepReminder,
     /// Settings → Clipboard: "Riwayat clipboard", "Jumlah item" (−1 / +1),
     /// "Simpan setelah restart", "Hapus saat layar dikunci",
     /// "Notifikasi salinan", "Disalin" for every copy, and "Hapus riwayat".
@@ -1541,6 +1543,7 @@ pub struct State<'a> {
     /// "Tiap jam": every N hours, 0 for off.
     pub mascot_hours: u8,
     pub greeting: bool,
+    pub sleep_reminder: bool,
     /// The cat's coat and accessory, "Ikuti kursor" and "Mengecil jadi mata".
     pub cat_color: CatColor,
     pub mascot: Mascot,
@@ -3889,15 +3892,20 @@ fn cat_page(b: &mut Builder, s: &State) {
     titled(b, Key::GroupGreeting);
     let line = crate::i18n::greeting_periods_line(b.lang);
     let periods = b.wrap(&line, Font::Desc, b.g.content_w - 2.0 * INSET);
-    let card = b.card(ROW_H + note_h(periods.len()));
+    let card = b.card(2.0 * ROW_H + note_h(periods.len()));
     let x = b.toggle_if(Hit::Greeting, b.g.right, cy(card.y), s.greeting, on);
     let desc = Some((b.t(Key::MorningGreetingDesc), Tone::Secondary));
     b.row_text(card, card.y, b.t(Key::CatGreeting), desc, false, x);
     b.divider(card, card.y + ROW_H);
+    let y = card.y + ROW_H;
+    let x = b.toggle_if(Hit::SleepReminder, b.g.right, cy(y), s.sleep_reminder, on);
+    let desc = Some((b.t(Key::SleepReminderDesc), Tone::Secondary));
+    b.row_text(card, y, b.t(Key::SleepReminder), desc, false, x);
+    b.divider(card, y + ROW_H);
     for (i, line) in periods.into_iter().enumerate() {
         let rect = Rect {
             x: card.x + INSET,
-            y: card.y + ROW_H + NOTE_PAD + i as f32 * DESC_LINE_H,
+            y: card.y + 2.0 * ROW_H + NOTE_PAD + i as f32 * DESC_LINE_H,
             w: b.g.content_w - 2.0 * INSET,
             h: 16.0,
         };
@@ -6660,6 +6668,7 @@ mod tests {
                         play_info_open: false,
                         mascot_hours: if locked { 0 } else { 1 },
                         greeting: locked,
+                        sleep_reminder: locked,
                         mascot,
                         falk_color: if locked {
                             FalkColor::WhiteFace
@@ -8593,11 +8602,23 @@ mod tests {
                 Hit::Motion(_)
                     | Hit::RobotSleep(_)
                     | Hit::Greeting
+                    | Hit::SleepReminder
                     | Hit::CatFollow
                     | Hit::CatDance
             )));
             assert!(hits.contains(&Hit::NotchPeek));
-            // With it on they all take clicks.
+            // With it on they all take clicks (Gerak's row one row above the
+            // end, the rest scrolled to the end).
+            let l = layout(Section::Cat, &on, &Estimate);
+            let l = layout(
+                Section::Cat,
+                &State {
+                    scroll: l.scroll_max - ROW_H,
+                    ..on.clone()
+                },
+                &Estimate,
+            );
+            assert!(hit_list(&l).contains(&Hit::Motion(Motion::Full)));
             let l = layout(
                 Section::Cat,
                 &State {
@@ -8608,8 +8629,8 @@ mod tests {
             );
             let hits = hit_list(&l);
             for hit in [
-                Hit::Motion(Motion::Full),
                 Hit::Greeting,
+                Hit::SleepReminder,
                 Hit::CatFollow,
                 Hit::CatDance,
             ] {
@@ -12796,6 +12817,7 @@ mod tests {
                     notch_peek: peek,
                     stay_behind: behind,
                     greeting: true,
+                    sleep_reminder: true,
                     scroll: 1e6,
                     ..states()[0].clone()
                 };
@@ -12822,12 +12844,20 @@ mod tests {
                 // Sapaan: the toggle, then the five periods as one wrapped
                 // static line under it, inside the last card.
                 assert_eq!(toggle(Hit::Greeting), Some((true, true)));
+                // "Pengingat tidur": a second toggle row under Sapaan, above
+                // the periods note, with its own description.
                 let card = *l.cards.last().unwrap();
+                assert_eq!(toggle(Hit::SleepReminder), Some((true, true)));
+                let label = text(lang, Key::SleepReminder);
+                let row = l.texts.iter().find(|t| t.text == label).unwrap();
+                assert!(inside(row.rect, card));
+                assert!(row.rect.y >= card.y + ROW_H && row.rect.y < card.y + 2.0 * ROW_H);
+                assert!(says(Key::SleepReminderDesc), "{lang:?}");
                 let periods = crate::i18n::greeting_periods_line(lang);
                 let lines: Vec<&Text> = l
                     .texts
                     .iter()
-                    .filter(|t| inside(t.rect, card) && t.rect.y >= card.y + ROW_H)
+                    .filter(|t| inside(t.rect, card) && t.rect.y >= card.y + 2.0 * ROW_H)
                     .collect();
                 assert!(!lines.is_empty());
                 assert_eq!(
@@ -13837,10 +13867,10 @@ mod tests {
             let lines: Vec<&Text> = l
                 .texts
                 .iter()
-                .filter(|t| inside(t.rect, card) && t.rect.y >= card.y + ROW_H)
+                .filter(|t| inside(t.rect, card) && t.rect.y >= card.y + 2.0 * ROW_H)
                 .collect();
-            assert!(divider_at(&l, card.y + ROW_H), "{lang:?}");
-            assert_eq!(lines[0].rect.y, card.y + ROW_H + NOTE_PAD, "{lang:?}");
+            assert!(divider_at(&l, card.y + 2.0 * ROW_H), "{lang:?}");
+            assert_eq!(lines[0].rect.y, card.y + 2.0 * ROW_H + NOTE_PAD, "{lang:?}");
             let last = lines.last().unwrap().rect;
             assert_eq!(card.bottom(), last.bottom() + NOTE_PAD, "{lang:?}");
             let tiles = l

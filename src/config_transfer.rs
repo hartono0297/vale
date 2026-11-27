@@ -57,6 +57,7 @@ pub const EXPORTED: &[&str] = &[
     "robot_animation",
     "robot_sleep_minutes",
     "morning_greeting",
+    "sleep_reminder",
     "mascot",
     "cat_color",
     "falk_color",

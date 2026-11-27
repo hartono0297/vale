@@ -1555,7 +1555,9 @@ pub fn badge_style(notice: &Notice, p: &Palette, pomo_next: Phase) -> BadgeStyle
         NoticeKind::UpdateFailed => tint(p.ochre, Icon::Download),
         NoticeKind::UpdateInfo | NoticeKind::WhatsNew => tint(p.sage, Icon::Check),
         // Drawn by the robot; this badge only shows if it is turned off meanwhile.
-        NoticeKind::Greeting { .. } => tint(p.accent, Icon::Sparkle),
+        NoticeKind::Greeting { .. } | NoticeKind::SleepReminder { .. } => {
+            tint(p.accent, Icon::Sparkle)
+        }
         // With the robot off: the Clipboard icon, as on the Pintasan tile.
         NoticeKind::Copied => tint(p.accent, Icon::Clipboard),
         // Text and files with the robot off, or an image whose entry is gone.

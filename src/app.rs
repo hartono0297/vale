@@ -7421,6 +7421,10 @@ impl App {
                 self.config.morning_greeting = on;
                 self.save_config();
             }
+            SettingsAction::SleepReminder(on) => {
+                self.config.sleep_reminder = on;
+                self.save_config();
+            }
             SettingsAction::Hotkey(id, hk) => self.set_hotkey(id, hk),
             SettingsAction::HotkeysResetAll => self.reset_all_hotkeys(),
             SettingsAction::HotkeyRecording(on) => {
