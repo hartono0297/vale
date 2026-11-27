@@ -46,7 +46,8 @@ use crate::config::{NotchMonitor, UiFont};
 use crate::i18n;
 use crate::notch_monitor::Display;
 use crate::notes::NotesStore;
-use crate::theme::{self, CatColor};
+use crate::theme;
+use crate::ui::cat_style::CatLook;
 use crate::ui::frame_clock::{FrameClock, WM_APP_FRAME};
 use crate::ui::tray;
 use crate::widgets::apply::{Outcome, apply, set_reminder, settle, stack_out, sticky_for};
@@ -483,7 +484,7 @@ impl Demo {
             displays,
             lang: i18n::lang(),
             font: *font,
-            coat: CatColor::Terracotta,
+            look: CatLook::default(),
             animate: true,
         });
         crate::widgets::set_sticky_count(store.sticky_count());
