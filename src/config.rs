@@ -2795,7 +2795,10 @@ mod tests {
             style: Style::Pill,
             panel_pages: vec![],
             shortcut_tiles: vec![],
-            screenshot: ScreenshotSettings::default(),
+            screenshot: ScreenshotSettings {
+                after_capture: AfterCapture::Editor,
+                ..Config::fresh().screenshot
+            },
             ..Config::fresh()
         };
         assert_eq!(rest, Config::default(), "nothing else differs");
