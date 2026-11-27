@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maskot di sticky note</title>
+<style>
+  :root { --bg:#16130F; --ink:#F3ECE3; --mute:#A89C8F; --line:#2E2822; --bad:#E2683C; --ok:#7FB77E; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.5 "Segoe UI", system-ui, sans-serif; padding:28px 16px 60px; }
+  main { max-width:1240px; margin:0 auto; }
+  h1 { font-size:24px; margin:0 0 4px; }
+  h2 { font-size:17px; margin:40px 0 4px; }
+  p.lead, p.note { color:var(--mute); margin:0 0 16px; max-width:760px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:18px 14px; }
+  .cell { margin:0; }
+  .cell svg { width:100%; height:auto; display:block; }
+  .cell figcaption { font-size:13px; color:var(--mute); margin-top:2px; }
+  .cell figcaption b { color:var(--ink); font-weight:600; }
+  .pair { display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:18px; max-width:640px; }
+  .tag { display:inline-block; font-size:12px; font-weight:600; padding:1px 8px; border-radius:99px; margin-bottom:6px; }
+  .tag.bad { background:#3A1F15; color:#F4A383; }
+  .tag.ok { background:#1E2E1D; color:#A9D6A7; }
+  .coats .cell svg { max-width:220px; }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <clipPath id="cat-headclip"><path d="M13 216.5V175Q13 97 128 97Q243 97 243 175V216.5Q243 235 224.6 235H31.4Q13 235 13 216.5Z"/></clipPath>
+  <symbol id="cat-idle" viewBox="0 0 256 256"><g fill="none" stroke-linejoin="round" style="stroke:var(--rim)"><path d="M22 157L36 32.5L105 106Z" stroke-width="33"/><path d="M234 157L220 32.5L151 106Z" stroke-width="33"/><path d="M13 216.5V175Q13 97 128 97Q243 97 243 175V216.5Q243 235 224.6 235H31.4Q13 235 13 216.5Z" stroke-width="10"/></g><path d="M22 157L36 32.5L105 106Z" stroke-width="23" stroke-linejoin="round" style="fill:var(--earl);stroke:var(--earl)"/><path d="M234 157L220 32.5L151 106Z" stroke-width="23" stroke-linejoin="round" style="fill:var(--earr);stroke:var(--earr)"/><path d="M13 216.5V175Q13 97 128 97Q243 97 243 175V216.5Q243 235 224.6 235H31.4Q13 235 13 216.5Z" style="fill:var(--coat)"/><g clip-path="url(#cat-headclip)" style="opacity:var(--pa)"><circle cx="60" cy="118" r="62" fill="#E2683C"/><circle cx="214" cy="226" r="46" fill="#2B2420"/></g><rect x="78" y="147.5" width="26" height="46" rx="13" style="fill:var(--eye)"/><rect x="152" y="147.5" width="26" height="46" rx="13" style="fill:var(--eye)"/></symbol>
+  <symbol id="cat-happy" viewBox="0 0 256 256"><g fill="none" stroke-linejoin="round" style="stroke:var(--rim)"><path d="M22 157L36 32.5L105 106Z" stroke-width="33"/><path d="M234 157L220 32.5L151 106Z" stroke-width="33"/><path d="M13 216.5V175Q13 97 128 97Q243 97 243 175V216.5Q243 235 224.6 235H31.4Q13 235 13 216.5Z" stroke-width="10"/></g><path d="M22 157L36 32.5L105 106Z" stroke-width="23" stroke-linejoin="round" style="fill:var(--earl);stroke:var(--earl)"/><path d="M234 157L220 32.5L151 106Z" stroke-width="23" stroke-linejoin="round" style="fill:var(--earr);stroke:var(--earr)"/><path d="M13 216.5V175Q13 97 128 97Q243 97 243 175V216.5Q243 235 224.6 235H31.4Q13 235 13 216.5Z" style="fill:var(--coat)"/><g clip-path="url(#cat-headclip)" style="opacity:var(--pa)"><circle cx="60" cy="118" r="62" fill="#E2683C"/><circle cx="214" cy="226" r="46" fill="#2B2420"/></g><path d="M76 176Q91 150 106 176M150 176Q165 150 180 176" fill="none" stroke-width="14" stroke-linecap="round" style="stroke:var(--eye)"/></symbol>
+  <symbol id="cat-sleep" viewBox="0 0 256 256"><g fill="none" stroke-linejoin="round" style="stroke:var(--rim)"><path d="M22 157L36 32.5L105 106Z" stroke-width="33"/><path d="M234 157L220 32.5L151 106Z" stroke-width="33"/><path d="M13 216.5V175Q13 97 128 97Q243 97 243 175V216.5Q243 235 224.6 235H31.4Q13 235 13 216.5Z" stroke-width="10"/></g><path d="M22 157L36 32.5L105 106Z" stroke-width="23" stroke-linejoin="round" style="fill:var(--earl);stroke:var(--earl)"/><path d="M234 157L220 32.5L151 106Z" stroke-width="23" stroke-linejoin="round" style="fill:var(--earr);stroke:var(--earr)"/><path d="M13 216.5V175Q13 97 128 97Q243 97 243 175V216.5Q243 235 224.6 235H31.4Q13 235 13 216.5Z" style="fill:var(--coat)"/><g clip-path="url(#cat-headclip)" style="opacity:var(--pa)"><circle cx="60" cy="118" r="62" fill="#E2683C"/><circle cx="214" cy="226" r="46" fill="#2B2420"/></g><path d="M72 172Q91 192 110 172M146 172Q165 192 184 172" fill="none" stroke-width="14" stroke-linecap="round" style="stroke:var(--eye)"/></symbol>
+  <clipPath id="falk-clip"><path d="M36 172Q36 88 128 88Q220 88 220 172Q220 228 128 228Q36 228 36 172Z"/></clipPath>
+  <symbol id="falk-idle" viewBox="0 0 256 256"><g transform="rotate(10 128 108)" style="fill:var(--fk-crest)"><ellipse cx="128" cy="104" rx="22" ry="16"/><path d="M112 108Q107.2 76.2 108 44Q84.8 77.6 112 108Z"/><path d="M122 104Q123.9 56.6 140 12Q98.8 51.7 122 104Z"/><path d="M132 104Q143.4 61 168 24Q120.1 50.5 132 104Z"/><path d="M142 108Q160.2 79.7 184 56Q144 66.7 142 108Z"/></g><path d="M36 172Q36 88 128 88Q220 88 220 172Q220 228 128 228Q36 228 36 172Z" style="fill:var(--fk-body)"/><ellipse cx="128" cy="132" rx="88" ry="68" clip-path="url(#falk-clip)" style="fill:var(--fk-face)"/><circle cx="62" cy="178" r="17.6" style="fill:var(--fk-cheek)"/><circle cx="194" cy="178" r="17.6" style="fill:var(--fk-cheek)"/><g fill="#17120F"><rect x="84.8" y="140" width="22.4" height="40" rx="11.2"/><rect x="148.8" y="140" width="22.4" height="40" rx="11.2"/></g><path d="M117.6 176.8Q128 169.6 138.4 176.8Q137.6 193.6 128 199.2Q118.4 193.6 117.6 176.8Z" fill="#D9978F"/></symbol>
+  <symbol id="falk-happy" viewBox="0 0 256 256"><g transform="rotate(10 128 108)" style="fill:var(--fk-crest)"><ellipse cx="128" cy="104" rx="22" ry="16"/><path d="M112 108Q107.2 76.2 108 44Q84.8 77.6 112 108Z"/><path d="M122 104Q123.9 56.6 140 12Q98.8 51.7 122 104Z"/><path d="M132 104Q143.4 61 168 24Q120.1 50.5 132 104Z"/><path d="M142 108Q160.2 79.7 184 56Q144 66.7 142 108Z"/></g><path d="M36 172Q36 88 128 88Q220 88 220 172Q220 228 128 228Q36 228 36 172Z" style="fill:var(--fk-body)"/><ellipse cx="128" cy="132" rx="88" ry="68" clip-path="url(#falk-clip)" style="fill:var(--fk-face)"/><circle cx="62" cy="178" r="17.6" style="fill:var(--fk-cheek)"/><circle cx="194" cy="178" r="17.6" style="fill:var(--fk-cheek)"/><path d="M80.8 167.2q15.2 -21.6 30.4 0M144.8 167.2q15.2 -21.6 30.4 0" fill="none" stroke="#17120F" stroke-width="9.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M117.6 176.8Q128 169.6 138.4 176.8Q137.6 193.6 128 199.2Q118.4 193.6 117.6 176.8Z" fill="#D9978F"/></symbol>
+  <symbol id="falk-sleep" viewBox="0 0 256 256"><g transform="rotate(10 128 108)" style="fill:var(--fk-crest)"><ellipse cx="128" cy="104" rx="22" ry="16"/><path d="M112 108Q107.2 76.2 108 44Q84.8 77.6 112 108Z"/><path d="M122 104Q123.9 56.6 140 12Q98.8 51.7 122 104Z"/><path d="M132 104Q143.4 61 168 24Q120.1 50.5 132 104Z"/><path d="M142 108Q160.2 79.7 184 56Q144 66.7 142 108Z"/></g><path d="M36 172Q36 88 128 88Q220 88 220 172Q220 228 128 228Q36 228 36 172Z" style="fill:var(--fk-body)"/><ellipse cx="128" cy="132" rx="88" ry="68" clip-path="url(#falk-clip)" style="fill:var(--fk-face)"/><circle cx="62" cy="178" r="17.6" style="fill:var(--fk-cheek)"/><circle cx="194" cy="178" r="17.6" style="fill:var(--fk-cheek)"/><path d="M81.6 160q14.4 13.6 28.8 0M145.6 160q14.4 13.6 28.8 0" fill="none" stroke="#17120F" stroke-width="8.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M117.6 176.8Q128 169.6 138.4 176.8Q137.6 193.6 128 199.2Q118.4 193.6 117.6 176.8Z" fill="#D9978F"/></symbol>
+  <symbol id="octo-idle" viewBox="0 0 256 256"><path d="M76 168Q32 204 12 216q-13.6 0.8 -12.8 -12.8q-0.8 -9.6 9.6 -8.8M96 180Q60 228 38 230q-13.6 0.8 -12.8 -12.8q-0.8 -9.6 9.6 -8.8M116 184Q108 232 84 234q13.6 0.8 12.8 -12.8q-0.8 -9.6 -9.6 -8.8M180 168Q224 204 244 216q13.6 0.8 12.8 -12.8q-0.8 -9.6 -9.6 -8.8M160 180Q196 228 218 230q13.6 0.8 12.8 -12.8q-0.8 -9.6 -9.6 -8.8M140 184Q148 232 172 234q-13.6 0.8 -12.8 -12.8q-0.8 -9.6 9.6 -8.8" fill="none" stroke-width="20" stroke-linecap="round" stroke-linejoin="round" style="stroke:var(--oc-body)"/><g style="fill:color-mix(in srgb, var(--oc-body), #fff 55%)"><circle cx="34.9" cy="206.7" r="3.4"/><circle cx="21" cy="216.6" r="3.4"/><circle cx="60.6" cy="225.3" r="3.4"/><circle cx="47.4" cy="233.8" r="3.4"/><circle cx="102.4" cy="229.3" r="3.4"/><circle cx="93" cy="237.8" r="3.4"/><circle cx="221.1" cy="206.7" r="3.4"/><circle cx="235" cy="216.6" r="3.4"/><circle cx="195.4" cy="225.3" r="3.4"/><circle cx="208.6" cy="233.8" r="3.4"/><circle cx="153.6" cy="229.3" r="3.4"/><circle cx="163" cy="237.8" r="3.4"/></g><path d="M128 36C200 36 220 100 200 148Q188 180 160 184H96Q68 180 56 148C36 100 56 36 128 36Z" style="fill:var(--oc-body)"/><g style="fill:var(--oc-spot)"><circle cx="88" cy="80" r="8.8"/><circle cx="160" cy="60" r="6.4"/><circle cx="180" cy="96" r="5.2"/></g><g transform="translate(0 -12)"><g fill="#17120F"><rect x="84.8" y="140" width="22.4" height="40" rx="11.2"/><rect x="148.8" y="140" width="22.4" height="40" rx="11.2"/></g></g></symbol>
+  <symbol id="octo-happy" viewBox="0 0 256 256"><path d="M76 168Q32 204 12 216q-13.6 0.8 -12.8 -12.8q-0.8 -9.6 9.6 -8.8M96 180Q60 228 38 230q-13.6 0.8 -12.8 -12.8q-0.8 -9.6 9.6 -8.8M116 184Q108 232 84 234q13.6 0.8 12.8 -12.8q-0.8 -9.6 -9.6 -8.8M180 168Q224 204 244 216q13.6 0.8 12.8 -12.8q-0.8 -9.6 -9.6 -8.8M160 180Q196 228 218 230q13.6 0.8 12.8 -12.8q-0.8 -9.6 -9.6 -8.8M140 184Q148 232 172 234q-13.6 0.8 -12.8 -12.8q-0.8 -9.6 9.6 -8.8" fill="none" stroke-width="20" stroke-linecap="round" stroke-linejoin="round" style="stroke:var(--oc-body)"/><g style="fill:color-mix(in srgb, var(--oc-body), #fff 55%)"><circle cx="34.9" cy="206.7" r="3.4"/><circle cx="21" cy="216.6" r="3.4"/><circle cx="60.6" cy="225.3" r="3.4"/><circle cx="47.4" cy="233.8" r="3.4"/><circle cx="102.4" cy="229.3" r="3.4"/><circle cx="93" cy="237.8" r="3.4"/><circle cx="221.1" cy="206.7" r="3.4"/><circle cx="235" cy="216.6" r="3.4"/><circle cx="195.4" cy="225.3" r="3.4"/><circle cx="208.6" cy="233.8" r="3.4"/><circle cx="153.6" cy="229.3" r="3.4"/><circle cx="163" cy="237.8" r="3.4"/></g><path d="M128 36C200 36 220 100 200 148Q188 180 160 184H96Q68 180 56 148C36 100 56 36 128 36Z" style="fill:var(--oc-body)"/><g style="fill:var(--oc-spot)"><circle cx="88" cy="80" r="8.8"/><circle cx="160" cy="60" r="6.4"/><circle cx="180" cy="96" r="5.2"/></g><g transform="translate(0 -12)"><path d="M80.8 167.2q15.2 -21.6 30.4 0M144.8 167.2q15.2 -21.6 30.4 0" fill="none" stroke="#17120F" stroke-width="9.6" stroke-linecap="round" stroke-linejoin="round"/></g></symbol>
+  <symbol id="octo-sleep" viewBox="0 0 256 256"><path d="M76 168Q32 204 12 216q-13.6 0.8 -12.8 -12.8q-0.8 -9.6 9.6 -8.8M96 180Q60 228 38 230q-13.6 0.8 -12.8 -12.8q-0.8 -9.6 9.6 -8.8M116 184Q108 232 84 234q13.6 0.8 12.8 -12.8q-0.8 -9.6 -9.6 -8.8M180 168Q224 204 244 216q13.6 0.8 12.8 -12.8q-0.8 -9.6 -9.6 -8.8M160 180Q196 228 218 230q13.6 0.8 12.8 -12.8q-0.8 -9.6 -9.6 -8.8M140 184Q148 232 172 234q-13.6 0.8 -12.8 -12.8q-0.8 -9.6 9.6 -8.8" fill="none" stroke-width="20" stroke-linecap="round" stroke-linejoin="round" style="stroke:var(--oc-body)"/><g style="fill:color-mix(in srgb, var(--oc-body), #fff 55%)"><circle cx="34.9" cy="206.7" r="3.4"/><circle cx="21" cy="216.6" r="3.4"/><circle cx="60.6" cy="225.3" r="3.4"/><circle cx="47.4" cy="233.8" r="3.4"/><circle cx="102.4" cy="229.3" r="3.4"/><circle cx="93" cy="237.8" r="3.4"/><circle cx="221.1" cy="206.7" r="3.4"/><circle cx="235" cy="216.6" r="3.4"/><circle cx="195.4" cy="225.3" r="3.4"/><circle cx="208.6" cy="233.8" r="3.4"/><circle cx="153.6" cy="229.3" r="3.4"/><circle cx="163" cy="237.8" r="3.4"/></g><path d="M128 36C200 36 220 100 200 148Q188 180 160 184H96Q68 180 56 148C36 100 56 36 128 36Z" style="fill:var(--oc-body)"/><g style="fill:var(--oc-spot)"><circle cx="88" cy="80" r="8.8"/><circle cx="160" cy="60" r="6.4"/><circle cx="180" cy="96" r="5.2"/></g><g transform="translate(0 -12)"><path d="M81.6 160q14.4 13.6 28.8 0M145.6 160q14.4 13.6 28.8 0" fill="none" stroke="#17120F" stroke-width="8.8" stroke-linecap="round" stroke-linejoin="round"/></g></symbol>
+</svg>
+<main>
+  <h1>Maskot yang mengintip di sticky note</h1>
+  <p class="lead">Gambar diskala dari ukuran asli di app (maskot 44 dip, ruang di atas kertas 30 dip, hanya bagian yang menonjol di atas kertas yang terlihat).</p>
+
+  <h2>Masalahnya sekarang</h2>
+  <p class="note">User memilih cockatiel di Settings → Maskot, tapi sticky note tetap menampilkan kucing (warna bulunya pun diambil dari setelan kucing).</p>
+  <div class="pair" id="bug"></div>
+
+  <h2>Setelah diperbaiki: tiap maskot di tiap keadaan</h2>
+  <p class="note">Keadaan, urutan sama dengan sekarang: pengingat lewat (pegang jam) → checklist selesai (senyum) → 3 hari tidak disentuh (tidur) → kursor di atas note (melirik) → diam.</p>
+  <div id="moods"></div>
+
+  <h2>Warna bulu ikut setelan tiap maskot</h2>
+  <p class="note">Aksesori (topi, pita, syal) tetap tidak dipakai di sticky note, sama seperti sekarang, karena terpotong tepi kertas.</p>
+  <div class="grid coats" id="coats"></div>
+</main>
+<script>
+const COATS = {
+  cat: [
+    ['Terracotta', {coat:'#E2683C', earl:'#E2683C', earr:'#E2683C', eye:'#17120F', rim:'transparent', pa:'0'}],
+    ['Calico',     {coat:'#F4EDE4', earl:'#E2683C', earr:'#2B2420', eye:'#17120F', rim:'transparent', pa:'1'}],
+    ['Putih',      {coat:'#F6F1EA', earl:'#F6F1EA', earr:'#F6F1EA', eye:'#17120F', rim:'transparent', pa:'0'}],
+    ['Hitam',      {coat:'#1E1B22', earl:'#1E1B22', earr:'#1E1B22', eye:'#F2B33D', rim:'#8E7CB8', pa:'0'}],
+  ],
+  falk: [
+    ['Lutino',     {'fk-body':'#F1E4A2', 'fk-face':'#F6D04A', 'fk-crest':'#F6D04A', 'fk-cheek':'#EC6B3A'}],
+    ['Kuning',     {'fk-body':'#F2D35A', 'fk-face':'#F2D35A', 'fk-crest':'#E9CF62', 'fk-cheek':'#EC6B3A'}],
+    ['Muka putih', {'fk-body':'#9A959C', 'fk-face':'#F4EFE6', 'fk-crest':'#E4DED6', 'fk-cheek':'transparent'}],
+  ],
+  octo: [
+    ['Koral', {'oc-body':'#E87C8E'}], ['Merah', {'oc-body':'#D9505F'}],
+    ['Ungu', {'oc-body':'#A98BD6'}], ['Biru laut', {'oc-body':'#5FA8C9'}],
+  ],
+};
+const NAME = { cat:'Kucing', falk:'Cockatiel', octo:'Gurita' };
+function darken(hex, t) {
+  let o = '#';
+  for (let i = 1; i < 7; i += 2) o += Math.round(parseInt(hex.slice(i, i + 2), 16) * (1 - t)).toString(16).padStart(2, '0');
+  return o;
+}
+for (const c of COATS.octo) c[1]['oc-spot'] = darken(c[1]['oc-body'], 0.18);
+function vars(o) { return Object.entries(o).map(([k, v]) => `--${k}:${v}`).join(';'); }
+
+// Geometry in dip, from widgets/paint.rs: CAT_SIZE 44, CAT_ROOM 30, 47 of 64 rows above the paper,
+// x = right - 28 - 44, clock at (cat_left - 12, -10), "z" at (x + 34, -26) and (x + 42, -30).
+const W = 180, H = 118, OX = 8, OY = 38, CAT = 44, K = CAT / 64;
+let uid = 0;
+function note({ mascot, coat, expr = 'idle', look = 0, clock = false, zzz = false, done = false, chip = null, cursor = false, title = 'Belanja' }) {
+  const id = 'c' + (uid++);
+  const x = OX + W - 28 - CAT + look, top = OY - 47 * K;
+  const items = [['Susu', true], ['Roti', done], ['Telur', done]];
+  const checks = items.map(([t, on], i) => {
+    const y = OY + 40 + i * 20;
+    return `<rect x="${OX + 14}" y="${y - 10}" width="12" height="12" rx="3" fill="${on ? '#5B4A2E' : 'none'}" stroke="#5B4A2E" stroke-width="1.4"/>`
+      + (on ? `<path d="M${OX + 17} ${y - 4} l3 3 l5 -6" fill="none" stroke="#FBEFB0" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>` : '')
+      + `<text x="${OX + 34}" y="${y}" font-size="12" fill="#3B2F1E" ${on ? 'text-decoration="line-through" opacity=".55"' : ''}>${t}</text>`;
+  }).join('');
+  const n = items.filter(i => i[1]).length;
+  const bar = `<rect x="${OX + 14}" y="${OY + H - 16}" width="${W - 28}" height="4" rx="2" fill="#E3CF7A"/><rect x="${OX + 14}" y="${OY + H - 16}" width="${(W - 28) * n / 3}" height="4" rx="2" fill="#8A6F2E"/>`;
+  const chipSvg = chip ? `<rect x="${OX + W - 92}" y="${OY + 10}" width="80" height="18" rx="9" fill="${chip.bad ? '#C9472B' : '#EAD58A'}"/><text x="${OX + W - 52}" y="${OY + 23}" font-size="10.5" text-anchor="middle" fill="${chip.bad ? '#FFF4EC' : '#3B2F1E'}">${chip.text}</text>` : '';
+  const clk = clock ? (() => {
+    const cx = OX + (W - 28 - CAT) - 12, cy = OY - 10;
+    return `<g><circle cx="${cx - 5}" cy="${cy - 6}" r="3" fill="#8A6F2E"/><circle cx="${cx + 5}" cy="${cy - 6}" r="3" fill="#8A6F2E"/>`
+      + `<circle cx="${cx}" cy="${cy}" r="7" fill="#FFF7D6" stroke="#8A6F2E" stroke-width="1.6"/>`
+      + `<path d="M${cx} ${cy} v-4 M${cx} ${cy} h3" stroke="#3B2F1E" stroke-width="1.3" stroke-linecap="round"/>`
+      + `<path d="M${cx - 4} ${cy + 6} l-2 3 M${cx + 4} ${cy + 6} l2 3" stroke="#8A6F2E" stroke-width="1.4" stroke-linecap="round"/></g>`;
+  })() : '';
+  const z = zzz ? `<text x="${x + 34}" y="${OY - 26 + 9}" font-size="10" font-weight="600" fill="#C9BFAF" opacity=".9">z</text><text x="${x + 42}" y="${OY - 30 + 7}" font-size="7.5" font-weight="600" fill="#C9BFAF" opacity=".6">z</text>` : '';
+  const cur = cursor ? `<path transform="translate(${OX + W - 18} ${OY + 56})" d="M0 0 L0 15 L4 11 L7 18 L9.5 17 L6.5 10 L12 10 Z" fill="#fff" stroke="#111" stroke-width="1"/>` : '';
+  return `<svg viewBox="0 0 ${W + 16} ${OY + H + 10}" role="img" aria-label="${NAME[mascot]} di sticky note">
+    <defs><clipPath id="${id}"><rect x="${OX}" y="${OY - 30}" width="${W}" height="31"/></clipPath>
+    <filter id="s${id}" x="-10%" y="-10%" width="120%" height="130%"><feDropShadow dx="0" dy="2" stdDeviation="2.5" flood-opacity=".35"/></filter></defs>
+    <g clip-path="url(#${id})" style="${vars(coat)}"><use href="#${mascot}-${expr}" x="${x}" y="${top}" width="${CAT}" height="${CAT}"/></g>
+    ${clk}${z}
+    <rect x="${OX}" y="${OY}" width="${W}" height="${H}" rx="6" fill="#FBE98F" filter="url(#s${id})"/>
+    <text x="${OX + 14}" y="${OY + 22}" font-size="13" font-weight="700" fill="#3B2F1E">${title}</text>
+    ${chipSvg}${checks}${bar}${cur}
+  </svg>`;
+}
+function fig(svg, cap) { return `<figure class="cell">${svg}<figcaption>${cap}</figcaption></figure>`; }
+
+document.getElementById('bug').innerHTML =
+  fig(note({ mascot: 'cat', coat: COATS.cat[0][1] }), '<span class="tag bad">Sekarang</span><br>Dipilih: cockatiel. Tampil: <b>kucing</b>.') +
+  fig(note({ mascot: 'falk', coat: COATS.falk[0][1] }), '<span class="tag ok">Seharusnya</span><br>Dipilih: cockatiel. Tampil: <b>cockatiel</b>.');
+
+const MOODS = [
+  ['Pengingat lewat', 'pegang jam', { clock: true, chip: { text: 'Lewat · 10.00', bad: true } }],
+  ['Checklist selesai', 'senyum', { expr: 'happy', done: true }],
+  ['3 hari tidak disentuh', 'tidur + "z"', { expr: 'sleep', zzz: true }],
+  ['Kursor di atas note', 'melirik ke kursor', { look: 3, cursor: true }],
+  ['Diam', 'biasa', {}],
+];
+document.getElementById('moods').innerHTML = ['cat', 'falk', 'octo'].map(m =>
+  `<h3 style="font-size:15px;margin:22px 0 8px">${NAME[m]} <span style="color:var(--mute);font-weight:400">(${COATS[m][0][0]})</span></h3><div class="grid">`
+  + MOODS.map(([t, d, o]) => fig(note({ mascot: m, coat: COATS[m][0][1], ...o }), `<b>${t}</b> · ${d}`)).join('') + '</div>'
+).join('');
+
+document.getElementById('coats').innerHTML = ['cat', 'falk', 'octo'].flatMap(m =>
+  COATS[m].map(([label, coat]) => fig(note({ mascot: m, coat }), `<b>${NAME[m]}</b> · ${label}`))
+).join('');
+</script>
+</body>
+</html>
