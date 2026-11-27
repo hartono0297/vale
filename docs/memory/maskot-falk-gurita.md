@@ -45,7 +45,9 @@ pilihan 1") and the **gurita duduk** (sitting octopus). Spec:
 - The falk's crest carries the mood the cat's ears carry (`crest_pose`:
   Idle 10°, Happy 2° ×1.08, Alert −4° ×1.22, Sleep 62° ×0.8, Sad 46° ×0.75,
   dancing 6° + 9·sin(beat), Wave 10° + 10·wave). Typing: two feather tips at
-  the cat's paw places. Beak opens to sing and on alert.
+  the cat's paw places. Beak opens to sing and on alert, and on Yawn.
+  Sleep-reminder faces: Drowsy 30° ×0.92, Yawn 38° ×0.9, Doze 50° ×0.85;
+  octopus curl 1.2, 1.2, 1.5 ([[sleep-reminder]]).
 - The octopus: `arms(expr, pose)`, six arms; Sleep is coiled (curl 1.8),
   dancing arms sway `sin(t/190 ms + i·1.4 + side)`, the right outer arm waves,
   the two left outer arms type. Still arm paths are cached per `Expr`;

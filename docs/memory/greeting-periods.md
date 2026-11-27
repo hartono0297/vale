@@ -46,6 +46,9 @@ is gone.
 unreadable (bad date, unknown period, a number, null) reads as none and never
 fails the rest of the file.
 
+The Night greeting and the sleep reminder ([[sleep-reminder]]) are separate
+notices and can come back to back at 01-03.
+
 ## No new timer
 
 Triggers are unchanged: startup after the first calendar snapshot, a wake by

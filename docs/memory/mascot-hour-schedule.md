@@ -30,4 +30,6 @@ Spec `docs/superpowers/specs/2026-11-18-jadwal-jam-maskot-design.md`. Part of
   `hour_timer`, like `on_typing_timer`).
 - No catch-up: sleep, lock or a missed window skips the hour. `on_clock_jump`
   re-arms at once from the new wall clock and opens no window.
+- While `sleep_reminder` is on, hours 01 to 04 are skipped when arming
+  (`hour_arm_ms` `skip_night`): [[sleep-reminder]].
 - Power: nothing runs at idle between hours ([[bata-idle-power-budget]]).

@@ -52,6 +52,8 @@ checks it. Every row keeps its exact behaviour: the same `Hit`, `Action` and
   Tampilan.
 - **Kucing preview** is still: no timer and no animation in Settings. The
   chips only change `Settings::cat_face` (window state, never saved).
+- Sapaan card (2026-11-27): a row "Pengingat tidur" (`sleep_reminder`), and
+  the periods note sits directly under the Sapaan row, before the new one ([[sleep-reminder]]).
 - **While the cat is off**, Warna, Latar, Aksesori, Animasi, Tidur setelah,
   Ikuti kursor, Joget ikut musik and Sapaan fade and take no clicks (`enabled`);
   **Mengecil jadi mata** does not need the cat (the eyes show without it), but

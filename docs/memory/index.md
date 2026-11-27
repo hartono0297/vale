@@ -164,5 +164,6 @@ One note per decision, gotcha or convention. Link each new note here.
 - [[screenshot-capture-script]]
 - [[settings-spacing]]: one spacing rule and one button size on every Settings page (2026-11-12): text buttons label + 16 each side, min 64, 30 high; fields 30; list rows divided; 24 above a section title, 8 to its card; footnotes 12/12; blocks 16 under; 8 px fade under the title while scrolled; the tests that hold it
 - [[logo]]: the cat head is the logo (icon, tray, Settings, README); Windows icon caches
+- [[sleep-reminder]]: "Pengingat tidur" (2026-11-27): a 6 s notice at 01-04 with Drowsy/Yawn/Doze faces, own one-shot `TIMER_SLEEP_REMINDER`, 10 min window retried every 30 s, `sleep_done`, the hour story skips 1-4 while on
 - [[parallel-worktrees-shared-target]]: six parallel story agents shared one CARGO_TARGET_DIR (disk); its lock serialises builds, so agents run focused tests and the full suite runs once after merging
 - [[repo-not-rustfmt-clean]]: never run `cargo fmt` on the repo (it reformats ~156 files); format new code by hand

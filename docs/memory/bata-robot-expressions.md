@@ -73,6 +73,9 @@ colours and the island surface that follows them in
 above are unchanged; the logo, tray and the notch-peek eyes stay terracotta.
 The label "Asisten di notch" is now "Kucing di notch".
 
+**2026-11-27: three faces for the sleep reminder** (Drowsy, Yawn, Doze), chosen
+by the notice kind, never by `choose_expr`: [[sleep-reminder]].
+
 Related: [[bata-idle-power-budget]], [[bata-morning-greeting]],
 [[studio-bata-logo-sources]], [[cat-accessories]], [[cat-colours-and-surfaces]],
 [[cat-types-while-working]]
