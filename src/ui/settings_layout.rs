@@ -424,6 +424,8 @@ pub fn hit_tip(hit: &Hit) -> Option<Tip> {
             crate::i18n::reset_to(crate::i18n::lang(), id.default().map(|h| h.to_string())),
         )),
         Hit::WidgetAdd => Some(Tip::named(Key::StickyNew).key(KeyHint::Hotkey(HotkeyId::StickyNote))),
+        Hit::WidgetCard => Some(Tip::named(Key::StickySettingsTip)),
+        Hit::WidgetBack => Some(Tip::named(Key::SecWidgets)),
         Hit::Repo => Some(Tip::named(Key::TipOpenBrowser)),
         Hit::Surface(v) => Some(Tip::named(surface_key(*v))),
         Hit::CatColor(v) => Some(Tip::named(cat_color_key(*v))),
@@ -4267,7 +4269,7 @@ fn panel_page(b: &mut Builder, s: &State) {
 
 /// The gallery's tile: its picture, and the room under it for the title and
 /// the description (two lines at most) beside the (+).
-const TILE_PREVIEW_H: f32 = 104.0;
+const TILE_PREVIEW_H: f32 = 92.0;
 const TILE_H: f32 = 190.0;
 const TILE_PAD: f32 = 12.0;
 
@@ -4428,6 +4430,14 @@ fn widget_tile(b: &mut Builder, grid: Rect, s: &State) {
         };
         b.text(r, line, Font::Desc, tone, Align::Left);
     }
+    // What a click on the card does, under the description.
+    let link = Rect {
+        x: title.x,
+        y: title_y + 22.0 + 2.0 * DESC_LINE_H + 2.0,
+        w: title.w,
+        h: 16.0,
+    };
+    b.text(link, b.t(Key::StickySettingsLink), Font::Desc, Tone::Secondary, Align::Left);
     // The count on the picture, when there is one.
     if s.sticky_count > 0 {
         let label = s.sticky_count.to_string();
@@ -12398,6 +12408,29 @@ mod tests {
     }
 
     #[test]
+    fn gallery_tile_says_it_opens_the_settings() {
+        for lang in [Lang::Id, Lang::En] {
+            for count in [0, 20] {
+                let l = layout_in(Section::Widgets, &widgets_state(lang, count), &Estimate, TALL);
+                let tile = l.tiles[0].rect;
+                let link = l
+                    .texts
+                    .iter()
+                    .find(|t| t.text == text(lang, Key::StickySettingsLink))
+                    .unwrap_or_else(|| panic!("{lang:?} the link"));
+                assert!(inside(link.rect, tile), "{lang:?} {:?} in {tile:?}", link.rect);
+                let (plus, _) = plus_of(&l);
+                assert!(!overlaps(link.rect, plus), "{lang:?} {:?} vs {plus:?}", link.rect);
+                // The description (the cap's reason too) stays whole above it.
+                for t in l.texts.iter().filter(|t| t.rect.x >= tile.x && t.rect.right() <= tile.right() && t.rect.y > tile.y + 100.0 && t.text != link.text) {
+                    assert!(t.rect.bottom() <= link.rect.y + 0.5 || t.rect.right() <= link.rect.x || t.rect.x >= link.rect.right(), "{lang:?} {:?} over {:?}", t.rect, link.rect);
+                    assert!(t.rect.bottom() <= tile.bottom(), "{lang:?} {:?}", t.rect);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn gallery_tile_shows_the_count_and_its_plus_adds() {
         for lang in [Lang::Id, Lang::En] {
             let l = layout_in(Section::Widgets, &widgets_state(lang, 3), &Estimate, TALL);
@@ -14009,6 +14042,8 @@ mod tests {
                 Hit::TileGrip(0),
                 Hit::HotkeyReset(HotkeyId::Search),
                 Hit::WidgetAdd,
+                Hit::WidgetCard,
+                Hit::WidgetBack,
                 Hit::Repo,
                 Hit::Surface(Surface::Plum),
                 Hit::CatColor(CatColor::Calico),

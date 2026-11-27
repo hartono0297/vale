@@ -1341,7 +1341,6 @@ keys! {
     // Widgets: Settings -> Widget, the sticky notes on the desktop, the tray
     // entry, the hotkey row and the Notes page's pin.
     SecWidgets => "Widget", "Widgets";
-    GroupWidgetsDesktop => "Di desktop", "On the desktop";
     GroupWidgetsGallery => "Galeri", "Gallery";
     GroupStickyPlace => "Posisi", "Position";
     GroupStickyLook => "Tampilan", "Look";
@@ -1363,6 +1362,8 @@ keys! {
     WidgetsPeekDesc => "Kucing mengintip di catatan yang terakhir disentuh",
         "The cat peeks over the note you touched last";
     StickyName => "Catatan tempel", "Sticky notes";
+    StickySettingsLink => "Atur ›", "Settings ›";
+    StickySettingsTip => "Atur catatan tempel", "Sticky notes settings";
     StickyDesc => "Catatan berwarna yang nempel di desktop.",
         "Colourful notes that stick to your desktop.";
     StickyAdd => "Tambah catatan tempel", "Add a sticky note";

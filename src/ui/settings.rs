@@ -1005,6 +1005,7 @@ struct Settings {
     drag: Option<Drag>,
     /// The template editor (or the rename field) while it is open.
     arrange_edit: Option<ArrangeEdit>,
+    /// Widget shows the Catatan tempel page (window state, not saved; reset on leaving the section).
     sticky_page: bool,
     /// What the Rekaman card's device rows show (`rec_device_labels`), read
     /// when the window opens and when a choice or the language changes.
@@ -2784,11 +2785,13 @@ impl Settings {
             Hit::WidgetCard => {
                 self.sticky_page = true;
                 self.scroll = 0.0;
+                self.hover = None;
                 widget_card_after(m.sticky_count)
             }
             Hit::WidgetBack => {
                 self.sticky_page = false;
                 self.scroll = 0.0;
+                self.hover = None;
                 Vec::new()
             }
             Hit::Robot => post(Action::Robot(!m.robot)),
