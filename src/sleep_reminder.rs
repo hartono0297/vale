@@ -1,6 +1,3 @@
-// The app wires this module up next, so nothing calls it yet.
-#![allow(dead_code)]
-
 use std::time::Duration;
 
 use crate::ui::play::trigger::next_hour;

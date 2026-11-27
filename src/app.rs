@@ -90,6 +90,7 @@ use crate::pomodoro::PomoStatus;
 use crate::reminders::{self, Reminder, RemindersStore, due_now, next_due};
 use crate::shelf_ole;
 use crate::shortcuts;
+use crate::sleep_reminder;
 use crate::sources::battery::{
     BatteryMonitor, battery_low_now, battery_notice, energy_saver_on, read_battery,
 };
@@ -140,7 +141,7 @@ use crate::ui::play::gate::{Env, instant_stop, may_start, must_stop};
 use crate::ui::play::state::Play;
 use crate::ui::play::stories::{self, Stage};
 use crate::ui::play::trigger::{
-    HOUR_RETRY, HOUR_WINDOW, Moment, PRESENCE_MIN, Story, cooldown, has_ready, next_hour, pick,
+    HOUR_RETRY, HOUR_WINDOW, Moment, PRESENCE_MIN, Story, cooldown, has_ready, pick,
     wait_for,
 };
 use crate::ui::settings_layout::{CardId, MonitorRow};
@@ -324,6 +325,10 @@ const TIMER_MASCOT_PLAY: usize = 19;
 /// `HOUR_RETRY` for up to `HOUR_WINDOW` while another refuses, then waits for
 /// the next hour. Never repeating, and never catches up a missed hour.
 const TIMER_MASCOT_HOUR: usize = 36;
+/// One-shot to the next sleep reminder hour (01:00 to 04:00, while
+/// `sleep_reminder` and the mascot are on). A fire checks every gate and asks
+/// again every `sleep_reminder::RETRY` until the hour's window is over.
+const TIMER_SLEEP_REMINDER: usize = 37;
 /// One-shot: a lyric line too long for the notch starts scrolling
 /// (`LYRIC_HOLD_MS` after it showed); the frame clock then runs until its end.
 const TIMER_LYRIC_SCROLL: usize = 16;
@@ -636,6 +641,7 @@ pub fn run(media_log_flag: bool, start: Start) {
             mascot_timer: false,
             hour_timer: false,
             hour_deadline: None,
+            sleep_timer: false,
             greeting_up: false,
             pending: None,
             play_clock_jumped: false,
@@ -1153,6 +1159,8 @@ struct App {
     hour_timer: bool,
     /// While an hour story is being retried: when the hour's window ends.
     hour_deadline: Option<Instant>,
+    /// `TIMER_SLEEP_REMINDER` is set.
+    sleep_timer: bool,
     /// A greeting notice was on screen at the last refresh.
     greeting_up: bool,
     /// The next fire of `TIMER_MASCOT_PLAY` is this moment's (the greeting's,
@@ -2450,6 +2458,7 @@ impl App {
     /// the presence rule and the cooldown, is judged when it fires.
     fn sync_mascot_timer(&mut self, now: Instant) {
         self.sync_hour_timer();
+        self.sync_sleep_timer();
         // The timer is a pending moment's for now; its fire checks every gate.
         if self.pending.is_some() {
             return;
@@ -2509,11 +2518,100 @@ impl App {
         }
     }
 
+    /// Arms or kills `TIMER_SLEEP_REMINDER` so it matches the toggle and the
+    /// mascot. A timer that is already set is never set again.
+    fn sync_sleep_timer(&mut self) {
+        let wanted = self.config.sleep_reminder && self.config.robot;
+        match timer_change(self.sleep_timer, wanted) {
+            Some(true) => {
+                let t = Local::now();
+                let ms = sleep_reminder::next_ms(t.hour(), t.minute(), t.second());
+                self.set_sleep_timer(ms);
+            }
+            Some(false) => self.kill_sleep_timer(),
+            None => {}
+        }
+    }
+
+    fn set_sleep_timer(&mut self, ms: u32) {
+        unsafe {
+            SetTimer(Some(self.hwnd), TIMER_SLEEP_REMINDER, ms, None);
+        }
+        self.sleep_timer = true;
+    }
+
+    fn kill_sleep_timer(&mut self) {
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), TIMER_SLEEP_REMINDER);
+        }
+        self.sleep_timer = false;
+    }
+
+    /// `TIMER_SLEEP_REMINDER` fired: gone unless re-armed. Inside the hour's
+    /// window every gate is checked; one that blocks asks again later, and
+    /// the window's end drops the hour.
+    fn on_sleep_timer(&mut self) {
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), TIMER_SLEEP_REMINDER);
+        }
+        if !self.sleep_timer {
+            // A tick posted just before the timer was killed.
+            return;
+        }
+        self.sleep_timer = false;
+        let t = Local::now();
+        let Some((hour, since)) = sleep_reminder::in_window(t.hour(), t.minute(), t.second())
+        else {
+            self.sync_sleep_timer();
+            return;
+        };
+        let now = Instant::now();
+        self.fold_pc_input(now);
+        let gates = sleep_reminder::Gates {
+            screen_away: self.screen_away(),
+            fullscreen: self.state.fullscreen(),
+            recording: hotkeys::any_recording(self.rec.active(), self.screen.recording()),
+            idle_for: self.bata.brain.since_activity(now),
+            menu_open: MENU_OPEN.with(Cell::get),
+            timed_notice: self.state.timed_notice_up(),
+            panel_open: matches!(self.state.view(), View::Panel(_)),
+        };
+        let retry = sleep_reminder::RETRY.as_millis() as u32;
+        match sleep_reminder::decide(&gates, since) {
+            sleep_reminder::Step::Show => {
+                let lang = i18n::lang();
+                self.apply_now(Event::Notice(Notice {
+                    key: "sleep-reminder".into(),
+                    source: tr(Key::SourceVale).into(),
+                    title: i18n::sleep_reminder_title(lang, hour).into(),
+                    body: i18n::sleep_reminder_body(lang, hour).into(),
+                    kind: NoticeKind::SleepReminder { hour },
+                }));
+                let shown = matches!(
+                    self.state.view(),
+                    View::Notice(n) if matches!(n.kind, NoticeKind::SleepReminder { .. })
+                );
+                if shown {
+                    self.sync_sleep_timer();
+                } else {
+                    self.set_sleep_timer(retry);
+                }
+            }
+            sleep_reminder::Step::Retry => self.set_sleep_timer(retry),
+            sleep_reminder::Step::Drop => self.sync_sleep_timer(),
+        }
+    }
+
     /// Sets `TIMER_MASCOT_HOUR` for the next chosen hour of the local clock.
     fn arm_hour_timer(&mut self) {
         let t = Local::now();
-        let Some(ms) = hour_arm_ms(t.hour(), t.minute(), t.second(), self.config.mascot_hours)
-        else {
+        let Some(ms) = hour_arm_ms(
+            t.hour(),
+            t.minute(),
+            t.second(),
+            self.config.mascot_hours,
+            self.config.sleep_reminder && self.config.robot,
+        ) else {
             return;
         };
         self.set_hour_timer(ms);
@@ -5932,6 +6030,8 @@ impl App {
         // new one, with no catch-up of an hour that was jumped over.
         self.stop_hour_timer();
         self.sync_hour_timer();
+        self.kill_sleep_timer();
+        self.sync_sleep_timer();
         if !self.clock_timer {
             return;
         }
@@ -6112,6 +6212,7 @@ impl App {
             TIMER_TYPING => self.on_typing_timer(),
             TIMER_MASCOT_PLAY => self.on_mascot_play_timer(),
             TIMER_MASCOT_HOUR => self.on_hour_timer(),
+            TIMER_SLEEP_REMINDER => self.on_sleep_timer(),
             TIMER_HALO => self.on_halo_poll(),
             TIMER_BLINK => self.on_blink(),
             TIMER_ROBOT => {
@@ -7424,6 +7525,9 @@ impl App {
             SettingsAction::SleepReminder(on) => {
                 self.config.sleep_reminder = on;
                 self.save_config();
+                // Both timers re-arm with the new rule (`refresh` syncs them).
+                self.stop_hour_timer();
+                self.refresh(now);
             }
             SettingsAction::Hotkey(id, hk) => self.set_hotkey(id, hk),
             SettingsAction::HotkeysResetAll => self.reset_all_hotkeys(),
@@ -9377,8 +9481,8 @@ const HOUR_ARM_MARGIN: Duration = Duration::from_secs(1);
 
 /// Milliseconds to arm `TIMER_MASCOT_HOUR` for from the local `hour:min:sec`:
 /// the next chosen hour plus `HOUR_ARM_MARGIN`. `None` when `step` is 0.
-fn hour_arm_ms(hour: u32, min: u32, sec: u32, step: u8) -> Option<u32> {
-    let wait = next_hour(hour, min, sec, step)? + HOUR_ARM_MARGIN;
+fn hour_arm_ms(hour: u32, min: u32, sec: u32, step: u8, skip_night: bool) -> Option<u32> {
+    let wait = sleep_reminder::story_wait(hour, min, sec, step, skip_night)? + HOUR_ARM_MARGIN;
     Some(wait.as_millis().min(u128::from(u32::MAX)) as u32)
 }
 
@@ -12398,6 +12502,7 @@ mod tests {
             clip::TIMER_CLIP_DRAG,
             TIMER_MASCOT_PLAY,
             TIMER_MASCOT_HOUR,
+            TIMER_SLEEP_REMINDER,
         ];
         assert_eq!(clip::TIMER_CLIP_DRAG, 55);
         assert_eq!(TIMER_PHONE, 48);
@@ -12425,6 +12530,7 @@ mod tests {
     #[test]
     fn the_hour_timer_has_its_own_id() {
         assert_eq!(TIMER_MASCOT_HOUR, 36);
+        assert_eq!(TIMER_SLEEP_REMINDER, 37);
     }
 
     #[test]
@@ -12498,10 +12604,17 @@ mod tests {
 
     #[test]
     fn the_hour_timer_is_armed_a_second_past_the_hour_so_an_early_fire_still_lands_after_it() {
-        assert_eq!(hour_arm_ms(9, 59, 59, 1), Some(2_000));
-        assert_eq!(hour_arm_ms(10, 0, 0, 1), Some(3_601_000));
-        assert_eq!(hour_arm_ms(23, 59, 59, 6), Some(2_000));
-        assert_eq!(hour_arm_ms(9, 0, 0, 0), None);
+        assert_eq!(hour_arm_ms(9, 59, 59, 1, false), Some(2_000));
+        assert_eq!(hour_arm_ms(10, 0, 0, 1, false), Some(3_601_000));
+        assert_eq!(hour_arm_ms(23, 59, 59, 6, false), Some(2_000));
+        assert_eq!(hour_arm_ms(9, 0, 0, 0, false), None);
+    }
+
+    #[test]
+    fn the_hour_timer_skips_the_reminder_hours_when_the_night_is_reserved() {
+        assert_eq!(hour_arm_ms(0, 30, 0, 1, true), Some(16_201_000));
+        assert_eq!(hour_arm_ms(0, 30, 0, 1, false), Some(1_801_000));
+        assert_eq!(hour_arm_ms(0, 30, 0, 2, true), Some(19_801_000));
     }
 
     #[test]

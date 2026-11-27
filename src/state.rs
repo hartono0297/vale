@@ -1377,6 +1377,11 @@ impl IslandState {
         self.fullscreen
     }
 
+    /// A timed notice is current; a sticky one waiting underneath does not count.
+    pub fn timed_notice_up(&self) -> bool {
+        self.current.is_some()
+    }
+
     pub fn timeline(&self) -> Option<&Timeline> {
         self.timeline.as_ref()
     }
@@ -3860,6 +3865,17 @@ mod tests {
                 period: crate::greeting::DayPeriod::Morning,
             },
         }
+    }
+
+    #[test]
+    fn timed_notice_up_ignores_sticky_notices() {
+        let t0 = Instant::now();
+        let mut s = st();
+        assert!(!s.timed_notice_up());
+        s.apply(Event::Notice(waiting("a")), t0);
+        assert!(!s.timed_notice_up());
+        s.apply(Event::Notice(greeting()), t0);
+        assert!(s.timed_notice_up());
     }
 
     #[test]
