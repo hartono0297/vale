@@ -12454,6 +12454,29 @@ mod tests {
     }
 
     #[test]
+    fn sticky_page_fits_or_scrolls_at_the_minimum_and_never_overlaps() {
+        for lang in [Lang::Id, Lang::En] {
+            let s = sticky_page(lang, 3);
+            let min = layout(Section::Widgets, &s, &Estimate);
+            // Too tall for the minimum window, so it scrolls there (not at TALL).
+            assert!(min.viewport.is_some() && min.scroll_max > 0.0, "{lang:?} fits at the minimum");
+            let l = layout_in(Section::Widgets, &s, &Estimate, TALL);
+            assert!(l.viewport.is_none() && l.scroll_max == 0.0, "{lang:?} scrolls at TALL");
+            let last = l.cards.last().unwrap();
+            assert!(last.bottom() <= 900.0 - PAD + 0.01, "{lang:?} {last:?}");
+            let hits = l.hits();
+            for (i, (ha, a)) in hits.iter().enumerate() {
+                for (hb, b) in &hits[i + 1..] {
+                    if matches!((ha, hb), (Hit::WidgetAdd, Hit::WidgetCard) | (Hit::WidgetCard, Hit::WidgetAdd)) {
+                        continue;
+                    }
+                    assert!(!overlaps(*a, *b), "{lang:?}: {ha:?} overlaps {hb:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn sticky_page_plus_is_off_at_the_cap_with_the_reason() {
         for lang in [Lang::Id, Lang::En] {
             let l = layout_in(Section::Widgets, &sticky_page(lang, 20), &Estimate, TALL);
