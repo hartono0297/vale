@@ -1150,13 +1150,18 @@ fn load_at(path: &Path) -> Config {
 }
 
 impl Config {
-    /// The first run's layout: a Notch with the new page and tile lists;
-    /// everything else is `Config::default()`.
+    /// The first run's layout: a Notch with the new page and tile lists, and
+    /// screenshots drawn on the screen after capture; everything else is
+    /// `Config::default()`.
     pub fn fresh() -> Config {
         Config {
             style: Style::Notch,
             panel_pages: PanelPages::fresh().to_saved(),
             shortcut_tiles: ShortcutTiles::fresh().to_saved(),
+            screenshot: ScreenshotSettings {
+                after_capture: AfterCapture::Inline,
+                ..ScreenshotSettings::default()
+            },
             ..Config::default()
         }
     }
@@ -2777,6 +2782,7 @@ mod tests {
     fn fresh_is_a_notch_with_the_new_layout() {
         let c = Config::fresh();
         assert_eq!(c.style, Style::Notch);
+        assert_eq!(c.screenshot.after_capture, AfterCapture::Inline);
         assert_eq!(
             PanelPages::from_saved(&c.panel_pages).visible(),
             PanelPages::fresh().visible()
@@ -2789,6 +2795,7 @@ mod tests {
             style: Style::Pill,
             panel_pages: vec![],
             shortcut_tiles: vec![],
+            screenshot: ScreenshotSettings::default(),
             ..Config::fresh()
         };
         assert_eq!(rest, Config::default(), "nothing else differs");
@@ -2799,6 +2806,11 @@ mod tests {
         let tmp = TempDir::new("fresh-load");
         let path = tmp.file("config.json");
         assert_eq!(load_at(&path), Config::fresh(), "no file");
+        assert_eq!(
+            load_at(&path).screenshot.after_capture,
+            AfterCapture::Inline,
+            "first run draws on screen"
+        );
         std::fs::write(&path, "  \n").unwrap();
         assert_eq!(load_at(&path), Config::fresh(), "whitespace only");
         std::fs::write(&path, "\u{feff}").unwrap();
