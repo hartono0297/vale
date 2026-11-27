@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pengingat tidur maskot</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&display=swap" rel="stylesheet">
+<style>
+  /* Same cream design sheet as the other mascot mockups; the notch is the real 360 x 76 notice. */
+  :root {
+    --paper: #F4EDE4; --card: #FFFBF5; --ink: #231C18; --ink-2: #5E5045;
+    --line: #D9CBBB; --edge: #8C7B6C; --pick: #A8451F; --notch: #17120F; --cream: #F4EDE4; --cream-2: #C9BBAC;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--paper); color: var(--ink); font: 16px/1.5 "DM Sans", system-ui, sans-serif; }
+  header, main { max-width: 1180px; margin: 0 auto; padding: 0 16px; }
+  header { padding-top: 32px; }
+  main { padding-bottom: 80px; }
+  h1 { font-size: 34px; line-height: 1.15; margin: 0 0 8px; letter-spacing: -0.01em; }
+  h2 { font-size: 22px; margin: 48px 0 4px; }
+  h3 { font-size: 17px; margin: 0 0 6px; }
+  p { margin: 0 0 12px; max-width: 72ch; }
+  .lead { color: var(--ink-2); font-size: 17px; }
+  .muted { color: var(--ink-2); }
+  small { font-size: 14px; }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  button:focus-visible { outline: 3px solid var(--ink); outline-offset: 3px; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 16px 0 0; }
+  .toggle { border: 2px solid var(--edge); background: var(--card); border-radius: 10px; padding: 8px 14px; min-height: 44px; }
+  .toggle:hover { border-color: var(--ink); }
+  .toggle[aria-pressed="true"] { border-color: var(--pick); color: var(--pick); font-weight: 500; }
+
+  /* the hour grid */
+  .hours { display: grid; gap: 28px; margin-top: 20px; }
+  .hour { display: grid; grid-template-columns: 88px 1fr; gap: 16px; align-items: start; }
+  .clock { font-size: 30px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1; padding-top: 22px; }
+  .clock span { display: block; font-size: 13px; font-weight: 500; color: var(--ink-2); margin-top: 6px; }
+  .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+  .who { font-size: 13px; color: var(--ink-2); margin: 0 0 4px 2px; }
+  /* close-up of the same mascot, the notch below is real size */
+  .big { background: var(--notch); border-radius: 12px; width: 104px; height: 104px; display: grid; place-items: center; margin-bottom: 8px; }
+  .big svg { width: 84px; height: 84px; overflow: visible; display: block; }
+
+  /* the notice: 360 x 76, 40 px mascot badge, title + body, the close square */
+  .notch { background: var(--notch); color: var(--cream); width: 100%; max-width: 360px; height: 76px; border-radius: 0 0 24px 24px;
+    display: grid; grid-template-columns: 40px 1fr 20px; align-items: center; gap: 12px; padding: 0 14px 0 18px; }
+  .notch svg { width: 40px; height: 40px; overflow: visible; display: block; }
+  .notch .t { font-size: 14px; font-weight: 700; line-height: 18px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .notch .b { font-size: 12.5px; color: var(--cream-2); line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .notch .x { width: 20px; height: 20px; border-radius: 50%; background: #2C2420; display: grid; place-items: center; }
+  .notch .x svg { width: 9px; height: 9px; }
+
+  /* option cards */
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-top: 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+  .card.rec { border: 2px solid var(--pick); }
+  .tag { font-size: 13px; font-weight: 500; color: var(--pick); }
+  .strip { display: flex; gap: 6px; }
+  .strip .s { background: var(--notch); border-radius: 10px; width: 64px; height: 64px; display: grid; place-items: center; }
+  .strip svg { width: 48px; height: 48px; overflow: visible; }
+  .strip .c { font-size: 12px; text-align: center; color: var(--ink-2); }
+
+  /* settings sketch */
+  .win { background: #1B1613; color: var(--cream); border-radius: 12px; padding: 16px; max-width: 520px; font-size: 14px; }
+  .win .head { font-weight: 700; font-size: 15px; margin-bottom: 12px; }
+  .win .sec { color: #B3A495; font-size: 13px; margin: 14px 0 6px; }
+  .set { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; padding: 10px 12px; border-radius: 10px; background: #241D19; margin-bottom: 6px; }
+  .set .sub { color: #B3A495; font-size: 12.5px; }
+  .set.new { box-shadow: inset 0 0 0 1.5px #E2683C; }
+  .sw { width: 38px; height: 22px; border-radius: 11px; background: #E2683C; position: relative; }
+  .sw::after { content: ""; position: absolute; top: 3px; right: 3px; width: 16px; height: 16px; border-radius: 50%; background: var(--cream); }
+  .sw.off { background: #4A3E36; }
+  .sw.off::after { right: auto; left: 3px; }
+  .val { color: #B3A495; }
+
+  /* timeline */
+  .line { display: grid; grid-template-columns: repeat(6, 1fr); gap: 0; margin-top: 18px; border-top: 2px solid var(--edge); }
+  .slot { padding: 10px 8px 0; border-left: 1px solid var(--line); min-height: 110px; }
+  .slot b { font-variant-numeric: tabular-nums; display: block; }
+  .slot .e { font-size: 13px; margin-top: 6px; padding: 4px 8px; border-radius: 8px; display: inline-block; }
+  .slot .e.story { background: #E9DFD3; }
+  .slot .e.sleep { background: #2A211C; color: var(--cream); }
+  .slot .e.greet { background: transparent; border: 1px dashed var(--edge); }
+
+  table { border-collapse: collapse; width: 100%; max-width: 900px; margin-top: 12px; background: var(--card); border-radius: 12px; overflow: hidden; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; font-size: 15px; }
+  th { font-size: 13px; color: var(--ink-2); font-weight: 500; }
+  td:first-child { font-weight: 500; width: 38%; }
+  .q { background: #FBEDE4; }
+
+  @media (max-width: 640px) {
+    .hour { grid-template-columns: 1fr; gap: 6px; }
+    .clock { padding-top: 0; }
+    .line { grid-template-columns: repeat(3, 1fr); }
+    .slot { min-height: 96px; }
+    td:first-child { width: 44%; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Pengingat tidur, dalam gambar</h1>
+  <p class="lead">Jam 01.00, 02.00, 03.00 dan 04.00 maskot muncul di notch seperti sapaan, lalu ngajak tidur. Teks dan gerak di bawah masih usulan, belum ada kode yang diubah.</p>
+</header>
+<main>
+  <h2>1. Di notch, tiap jam</h2>
+  <p class="muted">Kotak besar: maskot diperbesar. Di bawahnya notch ukuran asli (360 x 76). Usulan: makin malam makin ngantuk. Jam 1 matanya sayu, jam 2 menguap, jam 3 terkantuk-kantuk, jam 4 sudah tidur dengan "z". Muncul 6 detik, lalu notch balik seperti biasa.</p>
+  <div class="bar">
+    <button class="toggle" type="button" id="lang" aria-pressed="false">Bahasa: Indonesia</button>
+    <button class="toggle" type="button" id="pause" aria-pressed="false">Jeda gerak</button>
+  </div>
+  <div class="hours" id="hours"></div>
+
+  <h2>2. Gerak maskot</h2>
+  <p class="muted">Dua cara. Semua numpang di frame clock yang sudah ada, hanya selama pengingat tampil. Tidak ada timer yang jalan terus.</p>
+  <div class="grid" id="motion"></div>
+
+  <h2>3. Settings, Maskot</h2>
+  <p class="muted">Satu baris baru di bawah "Sapaan". Usulan: nyala dari awal, jamnya tetap 01.00 sampai 04.00.</p>
+  <div class="win" role="img" aria-label="Sketsa halaman Settings Maskot dengan baris Pengingat tidur">
+    <div class="head">Settings, Maskot</div>
+    <div class="sec">Otomatis</div>
+    <div class="set"><div>Mainkan cerita<div class="sub">Sesekali</div></div><span class="val">Sesekali</span></div>
+    <div class="set"><div>Tiap jam<div class="sub">Maskot main tiap jam bulat</div></div><span class="val">Tiap 1 jam</span></div>
+    <div class="set"><div>Sapaan<div class="sub">Sekali tiap pagi, siang, sore, malam, dini hari</div></div><span class="sw"></span></div>
+    <div class="set new"><div>Pengingat tidur<div class="sub">Jam 01.00 sampai 04.00, maskot ngajak tidur</div></div><span class="sw"></span></div>
+  </div>
+
+  <h2>4. Dini hari, jam per jam</h2>
+  <p class="muted">Contoh dengan "Tiap jam" nyala. Di jam 01 sampai 04 pengingat menggantikan cerita jam itu, jadi tidak muncul dua-duanya.</p>
+  <div class="line" role="list">
+    <div class="slot" role="listitem"><b>00.00</b><span class="e story">Cerita maskot</span></div>
+    <div class="slot" role="listitem"><b>01.00</b><span class="e sleep">Pengingat tidur</span></div>
+    <div class="slot" role="listitem"><b>02.00</b><span class="e sleep">Pengingat tidur</span></div>
+    <div class="slot" role="listitem"><b>03.00</b><span class="e sleep">Pengingat tidur</span></div>
+    <div class="slot" role="listitem"><b>04.00</b><span class="e sleep">Pengingat tidur</span></div>
+    <div class="slot" role="listitem"><b>05.00</b><span class="e story">Cerita maskot</span></div>
+  </div>
+  <p class="muted" style="margin-top:10px"><small>Sapaan "Masih begadang?" (saat buka kunci jam 00 sampai 03) tetap ada seperti sekarang.</small></p>
+
+  <h2>5. Kalau sedang ada hal lain</h2>
+  <table>
+    <thead><tr><th scope="col">Keadaan pas jamnya tiba</th><th scope="col">Usulan</th></tr></thead>
+    <tbody>
+      <tr><td>Layar terkunci, layar mati, PC tidur</td><td>Dilewati, tidak disusulkan nanti.</td></tr>
+      <tr><td>Game atau video layar penuh</td><td>Dilewati.</td></tr>
+      <tr><td>Sedang rekam suara atau rekam layar</td><td>Dilewati, biar tidak ikut terekam.</td></tr>
+      <tr><td>Musik sedang main</td><td>Tetap muncul 6 detik di atas tampilan musik, lalu balik ke musik.</td></tr>
+      <tr><td>Tidak ada yang pakai PC (tidak ada ketikan atau gerak mouse 10 menit)</td><td>Dilewati, tidak ada yang lihat.</td></tr>
+      <tr><td>Panel terbuka atau notifikasi lain tampil</td><td>Ditunggu sampai 10 menit, seperti cerita "Tiap jam". Lewat itu, dilewati.</td></tr>
+      <tr><td>Maskot dimatikan</td><td>Tidak muncul, sama seperti sapaan.</td></tr>
+      <tr class="q"><td>Klik notch atau tombol silang</td><td>Menutup pengingat jam itu. Perlu tombol "Cukup malam ini" yang mematikan sisa pengingat sampai pagi?</td></tr>
+    </tbody>
+  </table>
+</main>
+
+<script>
+(() => {
+  const D = '#17120F', CR = '#F4EDE4';
+  const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let paused = reduce, lang = 'id', uid = 0;
+  const pill = (x, y, w, h, c = D) => `<rect x="${x - w / 2}" y="${y - h / 2}" width="${w}" height="${h}" rx="${Math.min(w, h) / 2}" fill="${c}"/>`;
+  const dot = (x, y, r, c) => `<circle cx="${x}" cy="${y}" r="${r}" fill="${c}"/>`;
+  const st = (d, w = 2.4, c = D, o = 1) => `<path d="${d}" fill="none" stroke="${c}" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round" opacity="${o}"/>`;
+  const mix = (a, b, t) => {
+    const p = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+    const A = p(a), B = p(b);
+    return '#' + A.map((v, i) => Math.round(v + (B[i] - v) * t).toString(16).padStart(2, '0')).join('');
+  };
+  const svg = (vb, inner, label) => `<svg viewBox="${vb}" role="img" aria-label="${label}">${inner}</svg>`;
+  const ease = x => x < 0 ? 0 : x > 1 ? 1 : x * x * (3 - 2 * x);
+
+  // ---------- eyes: lid 0 open .. 1 closed, plus the sleep arcs ----------
+  function eyes(lid, state) {
+    const L = 24, R = 40, Y = 40;
+    if (state === 'sleep') return st(`M${L - 3.6} ${Y}q3.6 3.4 7.2 0M${R - 3.6} ${Y}q3.6 3.4 7.2 0`, 2.2);
+    if (lid < 0.05) return pill(L, Y, 5.6, 10) + pill(R, Y, 5.6, 10);
+    // a droopy eye: the open pill cut from the top, the lid a flat line
+    const h = 10 * (1 - lid), top = Y + 5 - h;
+    const one = x => `<path d="M${x - 2.8} ${top}h5.6v${Math.max(h - 2.8, 0)}a2.8 2.8 0 0 1 -5.6 0z" fill="${D}"/>` + st(`M${x - 3.6} ${top}h7.2`, 2);
+    return one(L) + one(R);
+  }
+  const zz = (o = 1) => st('M55 3h5l-5 5.5h5M62 -4h3.6l-3.6 4h3.6', 1.6, CR, 0.9 * o);
+  const mouth = (open, y = 48) => open > 0.02 ? `<ellipse cx="32" cy="${y}" rx="${2 + open * 1.6}" ry="${open * 3.6}" fill="#3A1F18"/>` : '';
+
+  // ---------- cat ----------
+  const HEAD = 'M7 50V41Q7 24 32 24Q57 24 57 41V50Q57 54 53 54H11Q7 54 7 50Z';
+  function cat(p) {
+    const droop = p.droop * 5;
+    const ear = s => {
+      const pts = s < 0 ? [[9, 37], [12 - droop * 0.4, 10 + droop], [27, 26]] : [[55, 37], [52 + droop * 0.4, 10 + droop], [37, 26]];
+      return `<path d="M${pts[0]}L${pts[1]}L${pts[2]}Z" fill="#E2683C" stroke="#E2683C" stroke-width="5" stroke-linejoin="round"/>`;
+    };
+    return { body: ear(-1) + ear(1) + `<path d="${HEAD}" fill="#E2683C"/>`, clip: `<path d="${HEAD}"/>`, eyeDy: 0,
+             mouth: mouth(p.yawn, 48.5) };
+  }
+  // ---------- falk ----------
+  const FALK = 'M9 43Q9 22 32 22Q55 22 55 43Q55 57 32 57Q9 57 9 43Z';
+  function feather(bx, by, tx, ty, w, bend, c) {
+    const dx = tx - bx, dy = ty - by, l = Math.hypot(dx, dy), nx = -dy / l, ny = dx / l;
+    const mx = (bx + tx) / 2 + nx * bend, my = (by + ty) / 2 + ny * bend;
+    return `<path d="M${bx} ${by}Q${mx + nx * w} ${my + ny * w} ${tx} ${ty}Q${mx - nx * w} ${my - ny * w} ${bx} ${by}Z" fill="${c}"/>`;
+  }
+  const CREST = [[28, 27, 27, 11, 2.8, -3.5], [30.5, 26, 35, 3, 3.2, -5], [33, 26, 42, 6, 3.2, -5], [35.5, 27, 46, 14, 2.6, -3.5]];
+  function falk(p, id) {
+    const rot = 10 + p.droop * 52, sc = 1 - p.droop * 0.2;
+    const crest = `<g transform="translate(32 27) rotate(${rot}) scale(${sc}) translate(-32 -27)"><ellipse cx="32" cy="26" rx="5.5" ry="4" fill="#F6D04A"/>${CREST.map(f => feather(...f, '#F6D04A')).join('')}</g>`;
+    const face = `<ellipse cx="32" cy="33" rx="22" ry="17" fill="#F6D04A" clip-path="url(#${id})"/>`;
+    const cheeks = dot(15.5, 44.5, 4.4, '#EC6B3A') + dot(48.5, 44.5, 4.4, '#EC6B3A');
+    const o = p.yawn * 3.2;
+    const beak = `<path d="M29.4 44.2Q32 ${42.4 - o * 0.3} 34.6 44.2Q34.4 ${48.4 + o} 32 ${49.8 + o}Q29.6 ${48.4 + o} 29.4 44.2Z" fill="#D9978F"/>` +
+      (o > 0.2 ? `<ellipse cx="32" cy="${46 + o * 0.45}" rx="1.5" ry="${o * 0.5}" fill="#3A1F18"/>` : '');
+    return { body: crest + `<path d="${FALK}" fill="#F1E4A2"/>` + face + cheeks, clip: `<path d="${FALK}"/>`, eyeDy: 0, mouth: beak };
+  }
+  // ---------- octopus ----------
+  const MANTLE = 'M32 9C50 9 55 25 50 37Q47 45 40 46H24Q17 45 14 37C9 25 14 9 32 9Z';
+  function octo(p) {
+    const col = '#E87C8E', shade = mix(col, '#000000', 0.18), sucker = mix(col, '#FFFFFF', 0.55);
+    const arm = (sx, sy, cx, cy, ex, ey, dir, k) => {
+      let s = `<path d="M${sx} ${sy}Q${cx} ${cy} ${ex} ${ey}q${dir * 3.4 * k} 0.2 ${dir * 3.2 * k} ${-3.2 * k}q-0.2 ${-2.4 * k} ${-dir * 2.4 * k} ${-2.2 * k}" fill="none" stroke="${col}" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>`;
+      for (const u of [0.55, 0.8]) {
+        const x = (1 - u) ** 2 * sx + 2 * (1 - u) * u * cx + u * u * ex, y = (1 - u) ** 2 * sy + 2 * (1 - u) * u * cy + u * u * ey;
+        s += dot(x, y + 1.6, 0.85, sucker);
+      }
+      return s;
+    };
+    const L = [[19, 42, 8, 51, 3, 54], [24, 45, 15, 57, 9.5, 57.5], [29, 46, 27, 58, 21, 58.5]];
+    let arms = '';
+    const c = p.droop; // 0 relaxed, 1 coiled
+    [-1, 1].forEach(side => L.forEach(([sx, sy, cx, cy, ex, ey], i) => {
+      const X = v => side < 0 ? v : 64 - v;
+      let dir = side < 0 ? -1 : 1; if (i === 2) dir = -dir;
+      arms += arm(X(sx), sy, X(cx), cy, X(ex + 4 * c), ey - c, dir, 1 + 0.8 * c);
+    }));
+    const spots = dot(22, 20, 2.2, shade) + dot(40, 15, 1.6, shade) + dot(45, 24, 1.3, shade);
+    return { body: arms + `<path d="${MANTLE}" fill="${col}"/>` + spots, clip: `<path d="${MANTLE}"/>`, eyeDy: -3, mouth: mouth(p.yawn, 45) };
+  }
+
+  // p = { lid, droop, yawn, nod, sleep, z }
+  function draw(m, p) {
+    const id = 'c' + (++uid);
+    const parts = m === 'cat' ? cat(p) : m === 'falk' ? falk(p, id) : octo(p);
+    return `<defs><clipPath id="${id}">${parts.clip}</clipPath></defs>` +
+      `<g transform="rotate(${p.nod * 9} 32 56) translate(0 ${p.nod * 1.5})">` + parts.body +
+      `<g transform="translate(0 ${parts.eyeDy})">${eyes(p.lid, p.sleep ? 'sleep' : '')}${parts.mouth}</g></g>` +
+      (p.z > 0 ? zz(p.z) : '');
+  }
+
+  // ---------- the poses over one 4 s loop ----------
+  // level 1..4 = the hour (escalating); 'same' = every hour plays the 02 + 04 story: yawn, then asleep
+  function pose(level, t) {
+    const c = (t % 4000) / 1000; // seconds into the loop
+    const blink = (a) => { const d = Math.abs(c - a); return d < 0.12 ? 1 - d / 0.12 : 0; };
+    if (level === 1) { // sleepy eyes, slow blinks
+      return { lid: Math.max(0.45, blink(1.2), blink(3.0)), droop: 0.35, yawn: 0, nod: 0, sleep: false, z: 0 };
+    }
+    if (level === 2) { // a yawn in the middle
+      const y = c < 0.6 ? 0 : c < 1.4 ? ease((c - 0.6) / 0.8) : c < 2.4 ? 1 : c < 3.0 ? 1 - ease((c - 2.4) / 0.6) : 0;
+      return { lid: Math.max(0.35, y), droop: 0.45 + 0.2 * y, yawn: y, nod: -0.25 * y, sleep: false, z: 0 };
+    }
+    if (level === 3) { // nodding off, jerks back up
+      const nod = c < 2.4 ? ease(c / 2.4) : c < 2.6 ? 1 - ease((c - 2.4) / 0.2) : 0;
+      return { lid: 0.55 + 0.45 * nod, droop: 0.6 + 0.3 * nod, yawn: 0, nod: nod * 0.8, sleep: nod > 0.9, z: 0 };
+    }
+    // level 4: fast asleep, z's drift
+    const z = 0.55 + 0.45 * Math.sin(c / 4 * Math.PI * 2);
+    return { lid: 1, droop: 1, yawn: 0, nod: 0.35, sleep: true, z };
+  }
+  function poseSame(t) { // the alternative: one yawn, then asleep, every hour
+    const c = (t % 4000) / 1000;
+    if (c < 1.8) return pose(2, (c / 1.8 * 3.2 + 0.2) * 1000);
+    const s = ease((c - 1.8) / 0.6);
+    return { lid: Math.max(0.35, s), droop: 0.45 + 0.55 * s, yawn: 0, nod: 0.35 * s, sleep: s > 0.95, z: s > 0.95 ? 0.9 : 0 };
+  }
+
+  // ---------- texts ----------
+  const TXT = {
+    1: { id: ['Sudah jam 1', 'Yuk mulai siap-siap tidur'], en: ["It's 1 AM", 'Time to start winding down'] },
+    2: { id: ['Jam 2, masih melek?', 'Tidur yuk, besok lanjut lagi'], en: ['2 AM, still up?', "Let's sleep, pick it up tomorrow"] },
+    3: { id: ['Jam 3 pagi', 'Aku sudah ngantuk berat. Tidur yuk'], en: ['3 AM', "I can't keep my eyes open. Bed?"] },
+    4: { id: ['Sebentar lagi subuh', 'Tidur dulu, walau sebentar'], en: ['Almost dawn', 'Get some sleep, even a little'] },
+  };
+  const FACE = { 1: 'mata sayu', 2: 'menguap', 3: 'terkantuk-kantuk', 4: 'tertidur' };
+  const MASCOTS = [['cat', 'Kucing'], ['falk', 'Falk'], ['oct', 'Gurita']];
+  const X = `<svg viewBox="0 0 9 9" aria-hidden="true"><path d="M1 1l7 7M8 1l-7 7" stroke="${CR}" stroke-width="1.6" stroke-linecap="round"/></svg>`;
+
+  const live = [];
+  const hours = document.getElementById('hours');
+  [1, 2, 3, 4].forEach(h => {
+    const el = document.createElement('section');
+    el.className = 'hour';
+    el.innerHTML = `<div class="clock">0${h}.00<span>${FACE[h]}</span></div><div class="row">` +
+      MASCOTS.map(([m, l]) => `<div><div class="who">${l}</div><div class="big"><span class="face" data-m="${m}" data-h="${h}"></span></div><div class="notch"><span class="face" data-m="${m}" data-h="${h}"></span>` +
+        `<div><div class="t" data-h="${h}" data-k="0"></div><div class="b" data-h="${h}" data-k="1"></div></div><span class="x">${X}</span></div></div>`).join('') +
+      `</div>`;
+    hours.appendChild(el);
+    el.querySelectorAll('.face').forEach(f => live.push({ el: f, m: f.dataset.m, f: t => pose(h, t), label: `${f.dataset.m} ${FACE[h]}` }));
+  });
+  function texts() {
+    document.querySelectorAll('[data-k]').forEach(n => { n.textContent = TXT[n.dataset.h][lang][n.dataset.k]; });
+  }
+  texts();
+
+  // ---------- motion options ----------
+  const motion = document.getElementById('motion');
+  const OPTS = [
+    ['A', 'Makin malam makin ngantuk', 'Tiap jam beda gerak (seperti bagian 1). Jam 4 paling ngantuk. Sedikit lebih banyak kerja: empat pose.', h => (t => pose(h, t)), true],
+    ['B', 'Sama tiap jam', 'Tiap jam: menguap sekali, lalu tertidur dengan "z". Teks tetap beda tiap jam. Lebih sederhana.', () => poseSame, false],
+  ];
+  OPTS.forEach(([k, name, desc, fn, rec]) => {
+    const c = document.createElement('div');
+    c.className = 'card' + (rec ? ' rec' : '');
+    c.innerHTML = `${rec ? '<span class="tag">Usulan</span>' : ''}<h3>${k}. ${name}</h3><div class="strip">` +
+      [1, 2, 3, 4].map(h => `<div><div class="s" data-o="${k}" data-h="${h}"></div><div class="c">0${h}.00</div></div>`).join('') +
+      `</div><small class="muted">${desc}</small>`;
+    motion.appendChild(c);
+    c.querySelectorAll('.s').forEach(s => live.push({ el: s, m: 'cat', f: fn(+s.dataset.h), label: `kucing ${name} jam ${s.dataset.h}` }));
+  });
+
+  // ---------- controls ----------
+  const langBtn = document.getElementById('lang');
+  langBtn.addEventListener('click', () => {
+    lang = lang === 'id' ? 'en' : 'id';
+    langBtn.textContent = lang === 'id' ? 'Bahasa: Indonesia' : 'Bahasa: English';
+    langBtn.setAttribute('aria-pressed', String(lang === 'en'));
+    texts();
+  });
+  const pauseBtn = document.getElementById('pause');
+  const setPause = v => { paused = v; pauseBtn.textContent = v ? 'Jalankan gerak' : 'Jeda gerak'; pauseBtn.setAttribute('aria-pressed', String(v)); };
+  setPause(paused);
+  pauseBtn.addEventListener('click', () => { setPause(!paused); if (!paused) requestAnimationFrame(tick); });
+
+  // ---------- loop ----------
+  const t0 = performance.now();
+  let frozen = 2000; // a frame that shows each pose clearly
+  function paint(t) { live.forEach(o => { o.el.innerHTML = svg('-4 -8 72 72', draw(o.m, o.f(t)), o.label); }); }
+  function tick() {
+    if (paused) { paint(frozen); return; }
+    frozen = performance.now() - t0;
+    paint(frozen);
+    requestAnimationFrame(tick);
+  }
+  paint(frozen);
+  if (!paused) requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>
