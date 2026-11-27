@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Settings Widget dirapikan</title>
+<style>
+  :root {
+    --bg: #ecebe8; --ink: #1d1c1a; --muted: #6b6862;
+    --win: #1f1d1b; --side: #191715; --card: #2a2825; --line: #3a3733;
+    --t1: #f1eee9; --t2: #a49f97; --acc: #e0a458; --sel: #34312d;
+    --on: #e0a458; --off: #4a4641; --new: #6fbf8a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.45 "Segoe UI", system-ui, sans-serif; padding: 28px 16px 60px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .lead { color: var(--muted); margin: 0 0 28px; max-width: 760px; }
+  h2 { font-size: 16px; margin: 36px 0 4px; }
+  .note { color: var(--muted); margin: 0 0 14px; max-width: 760px; }
+  .row-of { display: flex; flex-wrap: wrap; gap: 22px; align-items: flex-start; }
+  .cap { font-size: 12px; font-weight: 600; color: var(--muted); margin: 0 0 6px;
+    text-transform: uppercase; letter-spacing: .04em; }
+
+  /* the Settings window, 720 wide like the real one */
+  .win { width: 720px; max-width: 100%; height: 560px; background: var(--win);
+    border-radius: 10px; display: flex; overflow: hidden; color: var(--t1);
+    box-shadow: 0 10px 30px rgba(0,0,0,.18); }
+  .side { width: 168px; background: var(--side); padding: 14px 8px; flex: none; }
+  .side div { padding: 6px 10px; border-radius: 6px; color: var(--t2); font-size: 13px; }
+  .side .on { background: var(--sel); color: var(--t1); }
+  .main { flex: 1; padding: 16px 20px; overflow: hidden; }
+  .eb { font-size: 12px; color: var(--t2); margin: 14px 2px 6px; display: flex; justify-content: space-between; }
+  .eb:first-child { margin-top: 0; }
+  .card { background: var(--card); border-radius: 8px; }
+  .r { display: flex; align-items: center; gap: 12px; padding: 9px 14px; border-top: 1px solid var(--line); }
+  .r:first-child { border-top: 0; }
+  .r .tx { flex: 1; min-width: 0; }
+  .r b { font-weight: 500; font-size: 13px; display: block; }
+  .r small { color: var(--t2); font-size: 11.5px; display: block; }
+  .tg { width: 34px; height: 18px; border-radius: 9px; background: var(--off); position: relative; flex: none; }
+  .tg::after { content: ""; position: absolute; top: 3px; left: 3px; width: 12px; height: 12px; border-radius: 50%; background: #d8d3cb; }
+  .tg.on { background: var(--on); } .tg.on::after { left: 19px; background: #1d1c1a; }
+  .seg { display: flex; background: #1c1a18; border-radius: 6px; padding: 2px; flex: none; font-size: 11.5px; }
+  .seg span { padding: 3px 9px; border-radius: 5px; color: var(--t2); }
+  .seg .s { background: var(--sel); color: var(--t1); }
+  .moved { outline: 2px dashed #d0675a; outline-offset: -2px; }
+  .new { box-shadow: inset 3px 0 0 var(--new); }
+
+  /* gallery tile */
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 12px; }
+  .tile { background: #33302c; border-radius: 8px; padding: 8px; position: relative; }
+  .tile.click { box-shadow: 0 0 0 2px var(--acc); }
+  .pv { height: 92px; border-radius: 6px; background: #3b3833; display: grid; place-items: center; position: relative; }
+  .paper { width: 74px; height: 62px; background: #f3e6c4; border-radius: 3px; transform: rotate(-3deg);
+    box-shadow: 0 3px 6px rgba(0,0,0,.35); padding: 6px; }
+  .paper i { display: block; height: 4px; background: #c9b894; margin: 5px 0; border-radius: 2px; }
+  .chip { position: absolute; right: 8px; top: 8px; font-size: 11px; background: #1c1a18; border-radius: 9px; padding: 1px 7px; }
+  .tt { padding: 8px 4px 0; display: flex; gap: 8px; align-items: flex-end; }
+  .tt .tx { flex: 1; } .tt b { font-size: 13px; font-weight: 500; display: block; }
+  .tt small { color: var(--t2); font-size: 11.5px; }
+  .plus { width: 26px; height: 26px; border-radius: 6px; background: #45413b; display: grid; place-items: center; font-size: 16px; flex: none; }
+  .atur { font-size: 11.5px; color: var(--acc); margin-top: 4px; display: block; }
+
+  /* sub page header */
+  .back { font-size: 12.5px; color: var(--acc); margin-bottom: 10px; }
+  .head { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
+  .head .paper { width: 46px; height: 38px; padding: 4px; }
+  .head .paper i { height: 3px; margin: 4px 0; }
+  .head .tx { flex: 1; } .head b { font-size: 16px; font-weight: 600; display: block; }
+  .head small { color: var(--t2); font-size: 12px; }
+  .btn { background: #45413b; border-radius: 6px; padding: 5px 10px; font-size: 12px; flex: none; }
+
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); margin: 6px 0 16px; }
+  .legend span::before { content: ""; display: inline-block; width: 14px; height: 10px; margin-right: 6px; vertical-align: middle; }
+  .legend .l1::before { outline: 2px dashed #d0675a; }
+  .legend .l2::before { box-shadow: inset 3px 0 0 var(--new); background: #ddd; }
+  .legend .l3::before { box-shadow: 0 0 0 2px var(--acc); border-radius: 2px; }
+  ul { margin: 6px 0 0; padding-left: 20px; max-width: 760px; }
+  li { margin: 3px 0; }
+</style>
+</head>
+<body>
+<h1>Settings → Widget, dirapikan</h1>
+<p class="lead">Mockup kasar untuk diskusi, bukan tampilan akhir. Ukuran jendela seperti aslinya (720 lebar).</p>
+<div class="legend">
+  <span class="l1">pindah ke halaman Catatan tempel</span>
+  <span class="l2">baru</span>
+  <span class="l3">diklik untuk membuka</span>
+</div>
+
+<!-- ============ SEKARANG ============ -->
+<h2>Sekarang</h2>
+<p class="note">Tujuh setting campur di satu kartu "Di desktop", lalu galeri di bawahnya. Halaman ini harus di-scroll di jendela 720x520. Klik kartu galeri hanya membuat catatan berkedip.</p>
+<div class="win">
+  <div class="side">
+    <div>Umum</div><div>Tampilan</div><div>Maskot</div><div>Panel</div>
+    <div class="on">Widget</div><div>Clipboard</div><div>Tombol pintas</div>
+    <div>Fitur</div><div>Integrasi</div><div>Tentang</div>
+  </div>
+  <div class="main">
+    <div class="eb">Di desktop</div>
+    <div class="card">
+      <div class="r"><div class="tx"><b>Tampilkan widget</b><small>Semua widget di desktop</small></div><div class="tg on"></div></div>
+      <div class="r moved"><div class="tx"><b>Lapisan</b><small>Catatan yang disematkan selalu di atas</small></div><div class="seg"><span class="s">Di desktop</span><span>Di atas jendela</span></div></div>
+      <div class="r moved"><div class="tx"><b>Saat layar penuh</b><small>Game, video, presentasi</small></div><div class="seg"><span class="s">Sembunyikan</span><span>Biarkan</span></div></div>
+      <div class="r moved"><div class="tx"><b>Kunci posisi</b><small>Tidak bisa digeser atau diubah ukurannya</small></div><div class="tg"></div></div>
+      <div class="r moved"><div class="tx"><b>Kucing ngintip</b><small>Kucing mengintip di catatan yang terakhir disentuh</small></div><div class="tg on"></div></div>
+      <div class="r moved"><div class="tx"><b>Miring sedikit</b><small>Setiap catatan sedikit miring, seperti ditempel tangan.</small></div><div class="tg"></div></div>
+      <div class="r moved"><div class="tx"><b>Isi dari clipboard</b><small>Catatan baru dari hotkey atau tray berisi teks yang disalin</small></div><div class="tg"></div></div>
+    </div>
+    <div class="eb"><span>Galeri</span><span>3 di desktop</span></div>
+    <div class="card"><div class="grid">
+      <div class="tile"><div class="pv"><div class="paper"><i></i><i></i><i style="width:60%"></i></div><span class="chip">● 3</span></div>
+        <div class="tt"><div class="tx"><b>Catatan tempel</b><small>Catatan berwarna yang nempel di desktop.</small></div><div class="plus">+</div></div></div>
+    </div></div>
+  </div>
+</div>
+
+<!-- ============ USULAN ============ -->
+<h2>Usulan: halaman Widget jadi galeri, setting pindah ke Catatan tempel</h2>
+<p class="note">Halaman Widget hanya berisi saklar utama dan galeri. Klik kartu Catatan tempel membuka halamannya sendiri (seperti editor template di Fitur), dengan tombol kembali. Datanya tetap sama, hanya letaknya yang pindah.</p>
+<div class="row-of">
+  <div>
+    <p class="cap">1 · Widget</p>
+    <div class="win">
+      <div class="side">
+        <div>Umum</div><div>Tampilan</div><div>Maskot</div><div>Panel</div>
+        <div class="on">Widget</div><div>Clipboard</div><div>Tombol pintas</div>
+        <div>Fitur</div><div>Integrasi</div><div>Tentang</div>
+      </div>
+      <div class="main">
+        <div class="card">
+          <div class="r"><div class="tx"><b>Tampilkan widget</b><small>Semua widget di desktop</small></div><div class="tg on"></div></div>
+        </div>
+        <div class="eb"><span>Galeri</span><span>3 di desktop</span></div>
+        <div class="card"><div class="grid">
+          <div class="tile click"><div class="pv"><div class="paper"><i></i><i></i><i style="width:60%"></i></div><span class="chip">● 3</span></div>
+            <div class="tt"><div class="tx"><b>Catatan tempel</b><small>Catatan berwarna yang nempel di desktop.</small><span class="atur new" style="padding-left:6px">Atur ›</span></div><div class="plus">+</div></div></div>
+        </div></div>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <p class="cap">2 · setelah kartu diklik</p>
+    <div class="win">
+      <div class="side">
+        <div>Umum</div><div>Tampilan</div><div>Maskot</div><div>Panel</div>
+        <div class="on">Widget</div><div>Clipboard</div><div>Tombol pintas</div>
+        <div>Fitur</div><div>Integrasi</div><div>Tentang</div>
+      </div>
+      <div class="main">
+        <div class="back new" style="padding-left:6px">‹ Widget</div>
+        <div class="head">
+          <div class="paper"><i></i><i></i><i style="width:60%"></i></div>
+          <div class="tx"><b>Catatan tempel</b><small>3 di desktop · maksimal 20</small></div>
+          <div class="btn new">+ Catatan baru</div>
+        </div>
+        <div class="eb">Posisi</div>
+        <div class="card">
+          <div class="r"><div class="tx"><b>Lapisan</b><small>Catatan yang disematkan selalu di atas</small></div><div class="seg"><span class="s">Di desktop</span><span>Di atas jendela</span></div></div>
+          <div class="r"><div class="tx"><b>Saat layar penuh</b><small>Game, video, presentasi</small></div><div class="seg"><span class="s">Sembunyikan</span><span>Biarkan</span></div></div>
+          <div class="r"><div class="tx"><b>Kunci posisi</b><small>Tidak bisa digeser atau diubah ukurannya</small></div><div class="tg"></div></div>
+        </div>
+        <div class="eb">Tampilan</div>
+        <div class="card">
+          <div class="r"><div class="tx"><b>Miring sedikit</b><small>Setiap catatan sedikit miring</small></div><div class="tg"></div></div>
+          <div class="r"><div class="tx"><b>Kucing ngintip</b><small>Kucing mengintip di catatan yang terakhir disentuh</small></div><div class="tg on"></div></div>
+        </div>
+        <div class="eb">Catatan baru</div>
+        <div class="card">
+          <div class="r"><div class="tx"><b>Isi dari clipboard</b><small>Dari hotkey atau tray, berisi teks yang disalin</small></div><div class="tg"></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<h2>Yang perlu kamu putuskan</h2>
+<ul>
+  <li><b>"Tampilkan widget" tetap di luar?</b> Usulan saya: ya, karena itu saklar untuk semua widget nanti, bukan khusus catatan.</li>
+  <li><b>Klik kartu galeri:</b> sekarang membuat catatan berkedip. Di usulan, klik membuka halaman Catatan tempel. Kedipnya dibuang, atau dipindah ke tombol di halaman itu?</li>
+  <li><b>Pengelompokan:</b> Posisi / Tampilan / Catatan baru. Boleh diubah.</li>
+  <li><b>"Kucing ngintip":</b> ada sesi lain yang sedang mengubahnya (maskot ikut pilihan user). Namanya bisa berubah, letaknya tetap di grup Tampilan.</li>
+</ul>
+</body>
+</html>
